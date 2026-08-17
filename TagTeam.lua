@@ -475,11 +475,26 @@ end
 -- Parented to the Blizzard base nameplate frame rather than any unit frame:
 -- ThreatPlates/Plater/KUI recycle and restyle their own children, but the base
 -- frame from C_NamePlate is stable, so the badge survives their re-skinning.
+-- badge point, plate point, x, y
+local BADGE_ANCHORS = {
+    above = { "BOTTOM", "TOP",     0,   4 },
+    below = { "TOP",    "BOTTOM",  0,  -4 },
+    left  = { "RIGHT",  "LEFT",   -4,   0 },
+    right = { "LEFT",   "RIGHT",   4,   0 },
+}
+
+local function ApplyBadgeAnchor(badge, plateFrame)
+    local a = BADGE_ANCHORS[db.badgePos] or BADGE_ANCHORS.above
+    badge:ClearAllPoints()
+    badge:SetPoint(a[1], plateFrame, a[2], a[3], a[4])
+    badge.anchorMode = db.badgePos   -- so GetBadge can spot a changed setting
+end
+
 local function CreateBadge(plateFrame)
     local badge = CreateFrame("Frame", nil, plateFrame)
     badge:SetSize(24, 24)
-    badge:SetPoint("BOTTOM", plateFrame, "TOP", 0, 4)
     badge:SetFrameStrata("HIGH")
+    ApplyBadgeAnchor(badge, plateFrame)
 
     badge.check = badge:CreateTexture(nil, "OVERLAY")
     badge.check:SetTexture(CHECK_TEXTURE)
@@ -509,7 +524,14 @@ local function GetBadge(unit, createIfMissing)
     if not plateFrame.tagTeamBadge and createIfMissing then
         plateFrame.tagTeamBadge = CreateBadge(plateFrame)
     end
-    return plateFrame.tagTeamBadge
+
+    -- Re-anchor lazily instead of sweeping every plate when the setting changes:
+    -- badges live on recycled frames, so some aren't reachable at that moment.
+    local badge = plateFrame.tagTeamBadge
+    if badge and badge.anchorMode ~= db.badgePos then
+        ApplyBadgeAnchor(badge, plateFrame)
+    end
+    return badge
 end
 
 -- The moment a mob crosses the threshold, slam its badge checkmark into place.
@@ -1788,6 +1810,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
+        db.badgePos = BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"
 
         -- Rebind the runtime table onto the saved one: who has the addon is a
         -- stable fact about a character pair, and losing it on /reload silently
@@ -1943,6 +1966,7 @@ local function Status()
         db.autoLeave and "on" or "off",
         db.groupWarning and "on" or "off",
         db.focusWarning and "on" or "off"))
+    Print(format("badge position: |cffffff00%s|r the nameplate", db.badgePos))
     Print(format("audio: %s | tag cue: %s (%s)",
         db.audio and "|cff00ff00on|r" or "|cffff2020MUTED|r",
         db.sound and "on" or "off", db.soundFile or ("id " .. db.soundId)))
@@ -1987,7 +2011,8 @@ local function HandleSlash(input)
         Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
         Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
         Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
-        Print("|cffffff00/tag audio|r  |cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag continent|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+        Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
+        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag continent|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
@@ -2323,6 +2348,19 @@ local function HandleSlash(input)
     if cmd == "focuswarn" then
         db.focusWarning = not db.focusWarning
         Print("no-focus reminder " .. (db.focusWarning and "on." or "off."))
+        return
+    end
+
+    if cmd == "pos" or cmd == "position" then
+        local mode = strlower(strtrim(rest or ""))
+        if not BADGE_ANCHORS[mode] then
+            Print(format("badge position: |cffffff00%s|r", db.badgePos))
+            Print("|cffffff00/tag pos above|below|left|right|r")
+            return
+        end
+        db.badgePos = mode
+        UpdateAllPlates()   -- GetBadge re-anchors each plate as it comes through
+        Print(format("badge moved |cffffff00%s|r the nameplate.", mode))
         return
     end
 
