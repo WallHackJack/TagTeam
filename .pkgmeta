@@ -1,0 +1,7 @@
+package-as: TagTeam
+
+ignore:
+    - README.md
+    - AGENTS.md
+    - XP_RULES.md
+    - .pkgmeta

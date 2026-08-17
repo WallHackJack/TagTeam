@@ -1,0 +1,3 @@
+<Bindings>
+    <Binding name="CLICK TagTeamFollowButton:LeftButton" header="TAGTEAM" />
+</Bindings>

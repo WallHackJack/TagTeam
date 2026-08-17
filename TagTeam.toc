@@ -1,0 +1,15 @@
+## Interface: 20505, 11509
+## Title: TagTeam
+## Notes: Tracks how much of a mob's health your power-levelling partner has dealt, and marks the nameplate the moment they've earned credit for the kill.
+## Author: Wallhackjack
+## Version: @project-version@
+#@debug@
+# Keep this literal synchronized with the release tag, it's used when running
+# straight from the repo rather than a packaged build.
+## Version: 0.1.0
+#@end-debug@
+## SavedVariables: TagTeamDB
+## X-Category: Leveling
+## X-License: MIT
+
+TagTeam.lua
