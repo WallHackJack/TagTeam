@@ -137,17 +137,25 @@ preferred wherever both exist.
 
 ## Releases (CurseForge automatic packaging)
 
-Same pipeline as WhoDoesWhat. A GitHub push webhook feeds the CurseForge packager,
-configured to package **tagged commits only** — pushes to `main` are free, a
-release happens only when a tag lands.
+Same pipeline as WhoDoesWhat. A **GitHub webhook** feeds the CurseForge packager.
+There is no CurseForge-side repo link or GitHub app — the whole integration is one
+webhook on the GitHub repo. The webhook fires on every push, but CurseForge only
+builds when the push carries a tag, which is why pushes to `main` are free.
 
-One-time setup on the CurseForge side:
+One-time setup:
 
 1. Create the project on the CurseForge author dashboard (name, summary, category,
-   MIT license, supported game versions). Note the project ID.
-2. In the project's settings, link the public GitHub repo
-   `WallHackJack/TagTeam` and authorise the CurseForge GitHub app for it.
-3. Set packaging to **tagged commits only**.
+   MIT license, supported game versions). Note the numeric **project ID** from the
+   project URL.
+2. Get an API token from CurseForge's API tokens page. It is **account-level**, so
+   the same token serves every project — WhoDoesWhat's webhook already carries one.
+3. Add a webhook at `github.com/WallHackJack/TagTeam/settings/hooks`:
+   - Payload URL `https://www.curseforge.com/api/projects/<projectID>/package?token=<token>`
+   - Content type `application/json`
+   - Events: **just `push`**
+
+WhoDoesWhat's working reference config is project `1617330`, content type `json`,
+events `["push"]`.
 
 Per release:
 
