@@ -2016,7 +2016,8 @@ local function HandleSlash(input)
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
-        Print("|cffffff00/tag invite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
+        Print("|cffffff00/tag inv|r - invite your taggers (or your carry) to the group now")
+        Print("|cffffff00/tag autoinvite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
         Print("|cffffff00/tag leave|r  |cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
         return
     end
@@ -2374,10 +2375,53 @@ local function HandleSlash(input)
         return
     end
 
-    if cmd == "invite" then
+    if cmd == "autoinvite" then
         db.autoInvite = not db.autoInvite
-        Print(format("whisper \"%s\" when out of range: %s",
-            INVITE_MESSAGE, db.autoInvite and "on." or "off."))
+        Print(format("ask for an invite when out of range: %s",
+            db.autoInvite and "on." or "off."))
+        return
+    end
+
+    if cmd == "inv" or cmd == "invite" then
+        -- Who the other side of the pair is depends on which mode we're in.
+        local targets = {}
+        if InTaggerMode() then
+            if db.carry then targets[1] = db.carry end
+        else
+            for _, n in ipairs(TaggerNames()) do targets[#targets + 1] = n end
+        end
+
+        if #targets == 0 then
+            Print("|cffff8080Nobody to invite|r - add a tagger or set a carry first.")
+            return
+        end
+
+        -- Skip anyone already here; re-inviting a party member is just an error.
+        local present = {}
+        if IsInRaid() then
+            for i = 1, GetNumGroupMembers() do
+                present[NormalizeName(UnitName("raid" .. i)) or ""] = true
+            end
+        elseif IsInGroup() then
+            for i = 1, 4 do
+                local u = "party" .. i
+                if UnitExists(u) then present[NormalizeName(UnitName(u)) or ""] = true end
+            end
+        end
+
+        local sent = {}
+        for i = 1, #targets do
+            if not present[NormalizeName(targets[i])] then
+                InviteToParty(targets[i])
+                sent[#sent + 1] = targets[i]
+            end
+        end
+
+        if #sent == 0 then
+            Print("everyone's already in the group.")
+        else
+            Print(format("invited |cff00ff00%s|r.", table.concat(sent, ", ")))
+        end
         return
     end
 
