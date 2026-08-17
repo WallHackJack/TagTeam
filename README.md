@@ -1,7 +1,9 @@
 # TagTeam
 
-**TagTeam shows you, live on every nameplate, whether the character you're
-power-levelling has done enough damage to earn credit for the kill.**
+**An addon for World of Warcraft Classic and Burning Crusade Classic.**
+
+TagTeam shows you, live on every nameplate, whether the character you're
+power-levelling has done enough damage to earn credit for the kill.
 
 Boosting a low-level alt or a friend means walking a line: hit the mob too hard
 and they get nothing, hold back too long and it takes all night. TagTeam tracks
@@ -23,6 +25,10 @@ Type `/tag` for all options.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
   first and the threshold ding suppressed, because nothing can be earned there.
 - **Raid markers** on the mobs your taggers have claimed — skull, cross, square.
+- **One keybind to target, follow and focus your partner.** It builds itself from
+  whoever you've set up, tries each of them in priority order, and falls back to
+  following your current target if nobody's configured. Bind it under
+  **Key Bindings → TagTeam** and it stays current as your roster changes.
 
 ## Why not just group up?
 
