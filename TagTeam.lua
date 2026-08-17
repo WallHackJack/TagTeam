@@ -475,12 +475,17 @@ end
 -- Parented to the Blizzard base nameplate frame rather than any unit frame:
 -- ThreatPlates/Plater/KUI recycle and restyle their own children, but the base
 -- frame from C_NamePlate is stable, so the badge survives their re-skinning.
+-- Horizontal anchors are pulled inward: the Blizzard base plate frame is wider
+-- than the health bar most nameplate addons actually draw, so anchoring flush to
+-- its edge leaves the badge floating well clear of the visible plate.
+local BADGE_SIDE_INSET = 12
+
 -- badge point, plate point, x, y
 local BADGE_ANCHORS = {
-    above = { "BOTTOM", "TOP",     0,   4 },
-    below = { "TOP",    "BOTTOM",  0,  -4 },
-    left  = { "RIGHT",  "LEFT",   -4,   0 },
-    right = { "LEFT",   "RIGHT",   4,   0 },
+    above = { "BOTTOM", "TOP",     0,                    4 },
+    below = { "TOP",    "BOTTOM",  0,                   -4 },
+    left  = { "RIGHT",  "LEFT",    BADGE_SIDE_INSET,     0 },
+    right = { "LEFT",   "RIGHT",  -BADGE_SIDE_INSET,     0 },
 }
 
 local function ApplyBadgeAnchor(badge, plateFrame)
