@@ -135,6 +135,39 @@ Rested (2×) and group splits are invisible to an addon, so the number is always
 labelled an estimate. A linked tagger's reported XP is authoritative and should be
 preferred wherever both exist.
 
+## Releases (CurseForge automatic packaging)
+
+Same pipeline as WhoDoesWhat. A GitHub push webhook feeds the CurseForge packager,
+configured to package **tagged commits only** — pushes to `main` are free, a
+release happens only when a tag lands.
+
+One-time setup on the CurseForge side:
+
+1. Create the project on the CurseForge author dashboard (name, summary, category,
+   MIT license, supported game versions). Note the project ID.
+2. In the project's settings, link the public GitHub repo
+   `WallHackJack/TagTeam` and authorise the CurseForge GitHub app for it.
+3. Set packaging to **tagged commits only**.
+
+Per release:
+
+- Set the TOC debug block's literal `## Version` to exactly the intended tag.
+- Add the release summary to [CHANGELOG.md](CHANGELOG.md).
+- Include both in the tagged commit, then `git tag 0.1.1 && git push origin 0.1.1`.
+
+Rules that bite:
+
+- Tag text becomes the packaged `## Version:` through `@project-version@`. Use
+  plain `0.1.1`, **no `v` prefix**. A tag containing `alpha`/`beta` packages to
+  that channel instead of Release.
+- `.pkgmeta` sets `package-as: TagTeam` and ignores the dev docs. Anything added
+  to the repo that shouldn't ship needs an entry there.
+- `## Interface:` stays literal. CurseForge documents `@project-version@` but has
+  no equivalent token for the current Interface number — revalidate it after
+  client patches.
+- Reference: [CurseForge automatic packaging](https://support.curseforge.com/support/solutions/articles/9000197281)
+  and the [BigWigs packager](https://github.com/BigWigsMods/packager).
+
 ## Working checks
 
 No automated test suite. For every change:
