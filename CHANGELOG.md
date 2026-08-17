@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- Badge position is configurable: `/tag pos above|below|left|right`.
+- `/tag inv` invites your taggers, or your carry in tagger mode, skipping anyone
+  already in the group.
+- Side badge positions are inset so they sit against the visible plate rather than
+  the wider Blizzard frame underneath it.
+- **Renamed:** the out-of-range whisper toggle is now `/tag autoinvite`, freeing
+  `/tag inv` for the action and matching `/tag autoleave`.
+
 ## 0.1.0
 
 First release.
