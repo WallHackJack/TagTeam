@@ -101,6 +101,11 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
 - "Confirmed" means their addon has talked to ours, or we have seen them on a unit
   token. Any name can be added; only a confirmed one can hold the triangle.
 - Only the player we held **focus** on gets asked for an invite.
+- `TaggerKeyOf` and `IsPartner` answer different questions and are not
+  interchangeable. Tagger mode keeps the carry **out** of `dynamicTaggers` on
+  purpose — the carry's damage is never pooled — so `TaggerKeyOf` says no to our
+  own carry. Anything about *trust* (auto-accept, honouring `INV`, free-for-all
+  loot) must ask `IsPartner`, which matches either half of the pair.
 
 ## Addon comms
 
@@ -111,7 +116,7 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `PAIRC` / `PAIRT` | either | Offer the inverse role. Always confirmed by popup — never applied unilaterally. |
 | `OK` / `NO` | reply | Pairing accepted / declined. |
 | `HELLO` / `HI` | either | Silent handshake, sent 5 s after login to re-verify saved links. |
-| `INV` | carry → tagger | Ask for a party invite. **Only honoured from an established pair.** |
+| `INV` | either | Ask the other end to invite *us*. Sent by the carry's out-of-range check and by `/tag inv` from either side. **Only honoured from an established pair.** |
 | `XP:<n>` | tagger → carry | Real XP from `UnitXP` deltas. `0` means max level. |
 
 `db.linked` persists so a `/reload` does not silently drop back to visible
@@ -134,6 +139,23 @@ mob at no level gap paid 544 against a predicted 545.
 Rested (2×) and group splits are invisible to an addon, so the number is always
 labelled an estimate. A linked tagger's reported XP is authoritative and should be
 preferred wherever both exist.
+
+**Pairing an estimate with its report.** The kill and the `XP:<n>` that follows it
+are separate events on separate clients, so the carry queues each tagged kill in
+`pendingKills` and the report claims one. The ratio it prints is the only visible
+handle on rested, splits and stale levels — the very things the formula can't see.
+
+- Claims are **per tagger**, not a pop: damage is pooled against one threshold but
+  XP is not, so one kill draws one report from *every* linked tagger and each must
+  claim the same entry.
+- Greys are never queued. They pay nothing, so `PLAYER_XP_UPDATE` never fires on
+  the tagger's end and no report is ever sent; an entry left to expire would
+  mispair the next real kill.
+- Entries expire after `XP_MATCH_WINDOW` and the queue is capped at
+  `XP_MATCH_MAX`, because kills outside the tagger's client range are reported by
+  nobody and would otherwise accumulate for the whole session.
+- The percentage printed is the **pooled** share, the same number the threshold was
+  measured against. It is deliberately not broken down per tagger.
 
 ## Releases (CurseForge automatic packaging)
 

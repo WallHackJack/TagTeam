@@ -56,6 +56,13 @@ local TAG_MARKERS = { 8, 7, 6 }
 -- recently - otherwise every mob you kill while questing alone would scold you.
 local NEAR_SECONDS = 60
 
+-- A tagged kill and the tagger's XP report are two separate events on two
+-- separate clients: we see the death, their client reads the real gain off UnitXP
+-- and whispers it over a moment later. Kills wait in a queue to be paired with
+-- their report, which is what lets the carry print expected against actual.
+local XP_MATCH_WINDOW = 20  -- seconds a kill waits before it's written off
+local XP_MATCH_MAX    = 12  -- queue cap, so unreported kills can't grow it forever
+
 -- Client differences in one place, the way WhoDoesWhat's ClientFeatures does it,
 -- so version checks don't get scattered through the logic. Focus arrived in TBC;
 -- the 1.x client has no focus unit at all, so everything built on it is skipped
@@ -148,6 +155,8 @@ local playerGUID            -- our own GUID, for spotting mobs we tapped ourselv
 local trackedActiveAt = 0   -- last time we saw the tagger do anything
 local markerSlot = 1        -- rotates through TAG_MARKERS, resets out of combat
 local lastRawXP, lastXPInfo -- last unscaled estimate, for /tag calibrate
+local pendingKills = {}     -- tagged kills awaiting an XP report, oldest first
+local matchedEst, matchedXP = 0, 0  -- paired totals, for the session multiplier
 local askedForInvite = false
 local lastWhisperAt = 0
 local lastFocusNagAt = 0
@@ -245,6 +254,19 @@ local function TaggerKeyOf(name)
     if db and db.taggers and db.taggers[key] then return key end
     if dynamicTaggers[key] then return key end
     return nil
+end
+
+-- The other half of an established pair, in EITHER direction: our carry, or one
+-- of our taggers. Distinct from TaggerKeyOf, which answers a different question -
+-- tagger mode deliberately keeps the carry out of dynamicTaggers (it is not
+-- someone whose damage we pool), so asking TaggerKeyOf about our own carry
+-- correctly says no. That is right for damage accounting and wrong for trust.
+local function IsPartner(name)
+    if not db then return false end
+    local key = NormalizeName(name)
+    if not key then return false end
+    if db.carryKey == key then return true end
+    return (db.taggers and db.taggers[key] ~= nil) or false
 end
 
 local function TaggerInfo(key)
@@ -889,6 +911,44 @@ local function EstimateXP(guid)
     return floor(xp + 0.5)
 end
 
+-- Pairing a kill with the report it produces is what turns "they gained 545 XP"
+-- into "545 against an expected 545". The ratio between the two is the only
+-- honest read on the multipliers an addon cannot observe from this side: rested
+-- doubles it, a group split cuts it, a stale cached level skews it.
+local function QueueKillForReport(name, pct, est)
+    pendingKills[#pendingKills + 1] = {
+        name = name, pct = pct, est = est, at = GetTime(), claimed = {},
+    }
+    -- Reports that never arrive - comms off, an unlinked tagger, a kill outside
+    -- their client's range - would otherwise pile up. Oldest goes first.
+    while #pendingKills > XP_MATCH_MAX do tremove(pendingKills, 1) end
+end
+
+-- Hand one reporting tagger the oldest kill it has not already claimed. Claims
+-- are per tagger because damage is pooled against one threshold but XP is not: a
+-- single kill draws one report from every linked tagger, and each of those wants
+-- the same kill, not the one before it.
+local function ClaimKillForReport(key)
+    local now = GetTime()
+    while pendingKills[1] and now - pendingKills[1].at > XP_MATCH_WINDOW do
+        tremove(pendingKills, 1)
+    end
+    for i = 1, #pendingKills do
+        if not pendingKills[i].claimed[key] then
+            pendingKills[i].claimed[key] = true
+            return pendingKills[i]
+        end
+    end
+    return nil
+end
+
+-- 1.00x is exactly what the estimate assumes: not rested, not grouped, both
+-- levels current. Anything else is the reading worth noticing, so it gets colour.
+local function MultiplierText(mult)
+    return format("|cff%s%.2fx|r",
+        (mult >= 0.95 and mult <= 1.05) and "00ff00" or "ffff00", mult)
+end
+
 local function CacheMobInfo(unit, guid)
     if not mobName[guid] then mobName[guid] = UnitName(unit) end
 
@@ -973,8 +1033,7 @@ local function InTagPairGroup()
     if not other then return false end
 
     -- Only for the other half of a pair, never a random duo.
-    local key = NormalizeName(other)
-    return (db.carryKey == key) or (db.taggers and db.taggers[key] ~= nil) or false
+    return IsPartner(other)
 end
 
 -- A two-person carry+tagger group is never a real party, it's transport. Free for
@@ -1309,11 +1368,12 @@ local function HandleDeath(guid, name)
     if pct >= db.threshold then
         local raw = EstimateXP(guid)
         local label, r, g, b
+        local shown   -- scaled estimate; stays nil when either level was unknown
 
         if raw == 0 then
             label, r, g, b = "grey", 0.62, 0.62, 0.62
         elseif raw then
-            local shown = floor(raw * (db.xpScale or 1) + 0.5)
+            shown = floor(raw * (db.xpScale or 1) + 0.5)
             label, r, g, b = format("+%d XP", shown), 1, 0.86, 0.3
             sessionXP = sessionXP + shown
 
@@ -1323,6 +1383,14 @@ local function HandleDeath(guid, name)
                 name or "target", mobLevel[guid] or 0, LowestTaggerLevel() or 0)
         end
         sessionTags = sessionTags + 1
+
+        -- Queued before the report can arrive. pct is the POOLED share of every
+        -- tagger, the same number the threshold was measured against - never a
+        -- per-head breakdown. A grey pays nothing, so PLAYER_XP_UPDATE never fires
+        -- on their end and no report is ever sent: queuing one would leave an
+        -- entry to expire and mispair the next real kill.
+        if raw ~= 0 then QueueKillForReport(name, pct, shown) end
+
         if ReportTaggedKill then ReportTaggedKill() end
 
         SafeCall(SpawnBurst, CHECK_TEXTURE, label, r, g, b)
@@ -1618,9 +1686,9 @@ local function OnAddonMessage(msg, sender)
     elseif cmd == "INV" then
         -- Only ever from the other half of an established pair. Without this
         -- check any stranger running the addon could make us open a group.
-        if db.carryKey ~= key and not (db.taggers and db.taggers[key]) then return end
+        if not IsPartner(who) then return end
         InviteToParty(who)
-        Print(format("|cff00ff00%s|r is out of range - invite sent.", who))
+        Print(format("|cff00ff00%s|r asked for an invite - sent.", who))
 
     elseif cmd == "OK" then
         Print(format("|cff00ff00TagTeam linked|r with %s.", who))
@@ -1645,8 +1713,30 @@ local function OnAddonMessage(msg, sender)
         end
 
         reportedXP = reportedXP + amount
-        Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP |cff808080(actual)|r.",
-            who, amount))
+
+        local kill = ClaimKillForReport(key)
+        if not kill then
+            -- Killed outside our combat log range, or reported before we ever had
+            -- eyes on the mob. Nothing to hold it against, so claim nothing.
+            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP |cff808080(actual)|r.",
+                who, amount))
+            return
+        end
+
+        if not kill.est or kill.est <= 0 then
+            -- A level was unknown when it died, so there is no estimate. The
+            -- damage share was still measured, and is still worth saying.
+            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s "
+                .. "|cff808080(%d%% dealt, no estimate)|r.",
+                who, amount, kill.name or "the mob", kill.pct))
+            return
+        end
+
+        matchedEst, matchedXP = matchedEst + kill.est, matchedXP + amount
+        Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s - expected "
+            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%d%%|r.",
+            who, amount, kill.name or "the mob", kill.est,
+            MultiplierText(amount / kill.est), kill.pct))
     end
 end
 
@@ -1775,9 +1865,13 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         markerSlot = 1   -- start each pull back at skull
         UpdateMacroButton()   -- secure attributes were locked during the fight
     elseif event == "PARTY_INVITE_REQUEST" then
-        -- Strictly the tagger, by name. Auto-accepting anything else would hand
-        -- any passing stranger a way into your group.
-        if db.autoAccept and TaggerKeyOf(arg1) then
+        -- Strictly the other half of the pair, by name. Auto-accepting anything
+        -- else would hand any passing stranger a way into your group.
+        --
+        -- Either direction, because /tag inv asks THEM to invite US: in tagger
+        -- mode the invite that arrives is the carry's, and the carry is not a
+        -- tagger by any definition this addon uses.
+        if db.autoAccept and IsPartner(arg1) then
             AcceptGroup()
             StaticPopup_Hide("PARTY_INVITE")
             askedForInvite = false
@@ -2021,7 +2115,7 @@ local function HandleSlash(input)
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
-        Print("|cffffff00/tag inv|r - invite your taggers (or your carry) to the group now")
+        Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
         Print("|cffffff00/tag autoinvite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
         Print("|cffffff00/tag leave|r  |cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
         return
@@ -2268,6 +2362,13 @@ local function HandleSlash(input)
                 reportedKills,
                 BreakUpLargeNumbers and BreakUpLargeNumbers(reportedXP) or tostring(reportedXP),
                 saidMaxLevel and " |cff808080(tagger at max level)|r" or ""))
+            if matchedEst > 0 then
+                Print(format("paired against estimates: |cffffff00%s|r expected, "
+                    .. "|cffffff00%s|r actual, %s overall.",
+                    BreakUpLargeNumbers and BreakUpLargeNumbers(matchedEst) or tostring(matchedEst),
+                    BreakUpLargeNumbers and BreakUpLargeNumbers(matchedXP) or tostring(matchedXP),
+                    MultiplierText(matchedXP / matchedEst)))
+            end
         else
             Print("|cff808080Estimate only: doubles if they're rested, splits if grouped.|r")
         end
@@ -2388,44 +2489,72 @@ local function HandleSlash(input)
     end
 
     if cmd == "inv" or cmd == "invite" then
-        -- Who the other side of the pair is depends on which mode we're in.
-        local targets = {}
+        -- Asks THEM to invite US, which is the same exchange the automatic
+        -- out-of-range path runs - this is just the manual trigger for it.
+        --
+        -- One target, never the whole tagger list: several taggers would mean
+        -- several party invites arriving at once and only one of them could ever
+        -- be accepted, leaving the rest as stale popups.
+        local target
         if InTaggerMode() then
-            if db.carry then targets[1] = db.carry end
+            target = db.carry
         else
-            for _, n in ipairs(TaggerNames()) do targets[#targets + 1] = n end
+            -- The same pick CheckContact makes, for the same reason: the tagger we
+            -- actually held focus on, falling back to the primary. Asking whoever
+            -- happens to be first reaches names that are typo'd, offline or simply
+            -- somewhere else.
+            target = focusTaggerName
+            if not target then
+                local list = TaggersByPriority()
+                target = list[1] and list[1].name
+            end
         end
 
-        if #targets == 0 then
-            Print("|cffff8080Nobody to invite|r - add a tagger or set a carry first.")
+        if not target then
+            Print("|cffff8080Nobody to ask|r - add a tagger or set a carry first.")
             return
         end
 
-        -- Skip anyone already here; re-inviting a party member is just an error.
-        local present = {}
+        local key = NormalizeName(target)
+        local present = false
         if IsInRaid() then
             for i = 1, GetNumGroupMembers() do
-                present[NormalizeName(UnitName("raid" .. i)) or ""] = true
+                if NormalizeName(UnitName("raid" .. i)) == key then present = true end
             end
         elseif IsInGroup() then
             for i = 1, 4 do
                 local u = "party" .. i
-                if UnitExists(u) then present[NormalizeName(UnitName(u)) or ""] = true end
+                if UnitExists(u) and NormalizeName(UnitName(u)) == key then
+                    present = true
+                end
             end
         end
-
-        local sent = {}
-        for i = 1, #targets do
-            if not present[NormalizeName(targets[i])] then
-                InviteToParty(targets[i])
-                sent[#sent + 1] = targets[i]
-            end
+        if present then
+            Print(format("|cff00ff00%s|r is already in your group.", target))
+            return
         end
 
-        if #sent == 0 then
-            Print("everyone's already in the group.")
+        -- Claim the automatic path's rate limit rather than sitting outside it,
+        -- so asking by hand can't be followed by the ticker asking again a second
+        -- later. No cooldown CHECK though - this one was typed, so it happens.
+        lastWhisperAt = GetTime()
+        askedForInvite = true
+
+        if db.comms and linked[key] then
+            SendAddon("INV", target)
+            Print(format("asked |cff00ff00%s|r to invite you |cff808080(addon link)|r.",
+                target))
+
+            -- A saved link proves they HAD the addon, not that it's listening now.
+            C_Timer.After(INVITE_FALLBACK, function()
+                if IsInGroup() or IsInRaid() then return end
+                SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+                Print(format("no invite from %s - whispered \"%s\" instead.",
+                    target, INVITE_MESSAGE))
+            end)
         else
-            Print(format("invited |cff00ff00%s|r.", table.concat(sent, ", ")))
+            SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+            Print(format("whispered \"%s\" to |cff00ff00%s|r.", INVITE_MESSAGE, target))
         end
         return
     end

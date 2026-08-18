@@ -18,8 +18,18 @@ Type `/tag` for all options.
   and hold off until it's there.
 - **A sound and a stamped checkmark at 31%**, so you never have to stare at
   numbers mid-pull.
-- **Real XP reporting.** When both sides run TagTeam, your alt's client sends its
-  actual XP gain — rested included — and it prints on yours.
+- **Real XP reporting, checked against the estimate.** When both sides run
+  TagTeam, your alt's client sends its actual XP gain — rested included — and it
+  prints on yours next to what TagTeam predicted, the multiplier between the two,
+  and how much of that mob your taggers actually dealt:
+
+  ```
+  Aimbotscott gained 545 XP on Netherweb Victim - expected 545, 1.00x, taggers dealt 43%.
+  ```
+
+  A multiplier that isn't 1.00x is telling you something: 2.00x is rested, a
+  fraction is a group split, and anything else usually means a cached level has
+  gone stale. `/tag xp` shows the same ratio across the whole session.
 - **A red X and a percentage when a mob dies short**, so you know exactly how
   close it got.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
@@ -65,7 +75,8 @@ out of range, and it can't set focus for you — that action is protected.
 
 ## Logistics it handles for you
 
-- Whispers or silently asks for a party invite when you lose your partner
+- Whispers or silently asks for a party invite when you lose your partner, or on
+  demand with `/tag inv`
 - Auto-accepts invites from your partner only
 - Sets loot to free-for-all in a two-person tag group
 - Leaves the party again once you're back together

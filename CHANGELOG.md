@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- A linked tagger's XP report now prints against the carry's own estimate:
+  expected, actual, the multiplier between them, and the pooled damage share the
+  taggers dealt on that mob. The multiplier reads 1.00x when the estimate is
+  right, and is the tell for the things an addon cannot see from the carry's
+  side — rested doubles it, a group split cuts it, a stale cached tagger level
+  skews it.
+- `/tag xp` totals the paired kills separately and shows the overall multiplier
+  across them, so one noisy kill doesn't have to be read on its own.
+- **Changed:** `/tag inv` now *requests* an invite from the other side instead of
+  inviting them — the same exchange the automatic out-of-range path already ran,
+  just triggered by hand. It asks one player, not the whole tagger list, since
+  only one incoming party invite can ever be accepted.
+- Auto-accept now honours an invite from either half of the pair. It only ever
+  recognised taggers, so an invite arriving from your carry — which is exactly
+  what `/tag inv` now produces in tagger mode — needed clicking by hand.
+
 ## 0.2.0
 
 - Badge position is configurable: `/tag pos above|below|left|right`.
