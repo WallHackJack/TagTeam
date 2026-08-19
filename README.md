@@ -95,6 +95,7 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag ban <mob>` | Ignore a mob by name entirely |
 | `/tag audio` | Mute all cues |
 | `/tag reset` (`/tag clear`) | Clear all roles |
+| `/tag instance` | Stop the addon entirely inside dungeons and raids (on by default) |
 | `/tag zone` | Force the XP base constant (`auto`, `outland`, `azeroth`) when auto-detect is wrong |
 
 ## Requirements

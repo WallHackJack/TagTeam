@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **New:** TagTeam now suspends itself entirely inside dungeons and raids. No
+  badges, no sounds, no combat-log tracking, no invite or leave logistics — the
+  carry and tagger are necessarily grouped in there, so a tag is worth almost
+  nothing, and the auto-leave check would otherwise try to drop the party
+  mid-run. `/tag` says **SUSPENDED** when it applies. `/tag instance` turns the
+  behaviour off if you want the badges anyway. Pairing and threshold sync stay
+  live with your partner throughout.
 - **Changed:** the default tag threshold is now **36%**, up from 31%. A saved 31
   is moved to 36 at load, since it can't be told apart from a deliberate one —
   `/tag threshold 31` puts it back.

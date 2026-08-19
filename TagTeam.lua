@@ -183,6 +183,22 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99TagTeam|r: " .. msg)
 end
 
+-- Dungeons and raids are not what this addon is for: the carry and the tagger
+-- are necessarily grouped, so a tag earns almost nothing, and every cue fires
+-- into a run where none of it can be acted on. Worse, the carry-side logistics
+-- would actively misbehave - the auto-leave check would try to drop the party
+-- mid-dungeon and the auto-invite check would whisper for one.
+--
+-- Read live rather than cached on a zone event. IsInInstance is a cheap client-
+-- state lookup, and asking each time means /tag instance takes effect the moment
+-- it's typed, with nothing to invalidate. It's also a global, which costs no
+-- upvalue in the callers - see HandleSlash's ceiling, noted on PushThreshold.
+local function Suspended()
+    if not db or db.instanceOff == false then return false end
+    local inside, kind = IsInInstance()
+    return (inside and (kind == "party" or kind == "raid")) and true or false
+end
+
 local lastCosmeticError   -- surfaced by /tag diag
 
 -- Cosmetics run behind this. Twice now a fault in the death animation has taken
@@ -640,7 +656,7 @@ local function UpdatePlate(unit)
 
     -- The carry owns this tag, so nothing the tagger does can earn credit. Show a
     -- standing X instead of a percentage that would only be misleading.
-    if db.enabled and HasTaggers() and tapOwner[guid] == "carry" then
+    if db.enabled and not Suspended() and HasTaggers() and tapOwner[guid] == "carry" then
         local badge = GetBadge(unit, true)
         if badge then
             badge.text:Hide()
@@ -650,7 +666,7 @@ local function UpdatePlate(unit)
         return
     end
 
-    if not db.enabled or not HasTaggers() or not dealt or not maxhp or maxhp <= 0 then
+    if not db.enabled or Suspended() or not HasTaggers() or not dealt or not maxhp or maxhp <= 0 then
         local badge = GetBadge(unit, false)
         if badge then
             badge.check:Hide()
@@ -1174,6 +1190,7 @@ local SCAN_TOKENS = {
 }
 
 local function ScanForTracked()
+    if Suspended() then return end
     if not HasTaggers() then return end
     NoticeFocus()
     for i = 1, #SCAN_TOKENS do
@@ -1245,6 +1262,7 @@ end
 -- Grace period after joining so an invite that arrives when we're already close
 -- doesn't join and bounce in the same breath.
 local function CheckAutoLeave()
+    if Suspended() then return end
     if InTaggerMode() then return end   -- our party IS the tagger group
     if not db.autoLeave or InCombatLockdown() then return end
     if not GroupedWithTagger() then return end
@@ -1265,6 +1283,7 @@ end
 -- detection is blind without it. Silent if focus points anywhere at all, even at
 -- something unrelated - that's a deliberate choice by the user, not an oversight.
 local function CheckFocusNag()
+    if Suspended() then return end
     if InTaggerMode() then return end
     if not HAS_FOCUS or not db.focusWarning or not db.autoFocus then return end
     if not HasTaggers() or UnitExists("focus") then return end
@@ -1283,6 +1302,7 @@ end
 -- that only re-arms when they come back, plus a hard cooldown - because an addon
 -- that whispers on a timer is an addon that spams.
 local function CheckContact()
+    if Suspended() then return end
     if InTaggerMode() then return end   -- carry-side logistics only
     if not db.autoInvite or not HasTaggers() then return end
 
@@ -1906,7 +1926,29 @@ frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_XP_UPDATE")
 
+-- Events that keep running while suspended. Everything else - the combat log,
+-- XP reporting, level sampling, invites, roster and grouped-combat warnings -
+-- is dropped at the door, which is the whole point.
+--
+--   the two zone events   how we find out we've left again
+--   ADDON_LOADED          setup must not be skippable
+--   CHAT_MSG_ADDON        pairing and threshold sync stay live with your
+--                         partner; neither one acts on the world
+--   the nameplate pair    bookkeeping only. Dropping these would leave `plates`
+--                         holding units that no longer exist, and UpdatePlate
+--                         hides the badge itself while suspended anyway
+local SUSPEND_EXEMPT = {
+    PLAYER_ENTERING_WORLD   = true,
+    ZONE_CHANGED_NEW_AREA   = true,
+    ADDON_LOADED            = true,
+    CHAT_MSG_ADDON          = true,
+    NAME_PLATE_UNIT_ADDED   = true,
+    NAME_PLATE_UNIT_REMOVED = true,
+}
+
 frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
+    if not SUSPEND_EXEMPT[event] and Suspended() then return end
+
     if event == "COMBAT_LOG_EVENT_UNFILTERED" then
         OnCombatLog()
     elseif event == "CHAT_MSG_ADDON" then
@@ -1960,6 +2002,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         TagTeamDB = TagTeamDB or {}
         db = TagTeamDB
         if db.enabled     == nil then db.enabled     = true end
+        if db.instanceOff == nil then db.instanceOff = true end
         if db.includePets == nil then db.includePets = true end
         if db.audio       == nil then db.audio       = true end
         if db.sound       == nil then db.sound       = true end
@@ -2126,6 +2169,10 @@ local function Status()
         db.markers and "on" or "off",
         db.stealWarning and "on" or "off",
         db.enabled and "on" or "off"))
+    -- Loud, because a suspended addon looks exactly like a broken one.
+    if Suspended() then
+        Print("|cffff8080SUSPENDED|r - dungeon or raid. |cffffff00/tag instance|r to run here anyway.")
+    end
     Print(format("auto-invite: %s | auto-accept: %s | marks: %s | focus: %s | grouped: %s",
         db.autoInvite and "on" or "off",
         db.autoAccept and "on" or "off",
@@ -2184,7 +2231,7 @@ local function HandleSlash(input)
         Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
         Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
         Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
-        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
@@ -2672,6 +2719,21 @@ local function HandleSlash(input)
     if cmd == "pets" then
         db.includePets = not db.includePets
         Print("pet damage " .. (db.includePets and "counted." or "ignored."))
+        return
+    end
+
+    -- On by default: a dungeon or raid run is grouped by definition, so a tag
+    -- there is worth almost nothing and every cue is noise. Off is for anyone
+    -- who wants the badges anyway.
+    if cmd == "instance" or cmd == "dungeon" then
+        db.instanceOff = (db.instanceOff == false)
+        UpdateAllPlates()
+        local inside, kind = IsInInstance()
+        inside = inside and (kind == "party" or kind == "raid")
+        Print(format("dungeon/raid suspend %s.%s",
+            db.instanceOff and "on" or "off",
+            inside and (db.instanceOff and " |cffff8080Suspended now.|r"
+                or " |cff00ff00Active now.|r") or ""))
         return
     end
 

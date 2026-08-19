@@ -124,6 +124,26 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 whispers. A saved link proves they *had* the addon, not that they are listening —
 so a direct `INV` falls back to a readable whisper after 8 s if no invite lands.
 
+## Suspending in dungeons and raids
+
+`Suspended()` is the single predicate: `db.instanceOff` (default on) and
+`IsInInstance()` reporting `party` or `raid`. Deliberately **not** cached on a
+zone event — `IsInInstance` is a cheap client-state lookup, so reading it live
+means `/tag instance` takes effect the moment it's typed with nothing to
+invalidate, and it's a *global*, which costs no upvalue in its callers.
+
+It is enforced in one place that matters — the `OnEvent` dispatcher drops every
+event not in `SUSPEND_EXEMPT` — plus `UpdatePlate` (so badges hide) and the four
+`C_Timer` tickers, which the dispatcher can't see. The exempt list is small on
+purpose: the two zone events are how we notice leaving, `ADDON_LOADED` must not
+be skippable, `CHAT_MSG_ADDON` keeps pairing and threshold sync live with the
+partner, and the nameplate add/remove pair is bookkeeping — dropping those would
+leave `plates` holding units that no longer exist.
+
+This is not politeness. In a dungeon the carry and tagger are necessarily
+grouped, so the tag is worth almost nothing, and `CheckAutoLeave` would try to
+drop the party mid-run while `CheckContact` whispered for an invite.
+
 ## XP estimate
 
 Formula verified against warcraft.wiki.gg, not memory. Base is
