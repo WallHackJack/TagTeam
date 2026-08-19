@@ -24,7 +24,11 @@
 
 local ADDON_NAME = ...
 
-local THRESHOLD_DEFAULT = 31   -- damage share needed to tag a mob
+local THRESHOLD_DEFAULT = 36   -- damage share needed to tag a mob
+-- Anyone whose saved threshold is still the previous default gets moved to the
+-- new one at load. A saved 31 can't be told apart from a deliberate 31, so the
+-- cost of being wrong is one `/tag threshold 31` for whoever meant it.
+local LEGACY_THRESHOLD  = 31
 
 -- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
 -- in: it's WA's asset, not Blizzard's, so it isn't in SOUNDKIT and can't be
@@ -848,23 +852,44 @@ end
 -- where the number is shown: rested XP doubles it, and grouping splits it.
 --------------------------------------------------------------------------------
 
+-- Retail's uiMapIDs for Outland and its zones.
 local OUTLAND_MAP_ID = 101
 -- Outland's zone uiMapIDs cluster in this range. Checked as well as the parent
 -- chain, because a zone whose parent lookup fails still identifies itself.
 local OUTLAND_MAP_MIN, OUTLAND_MAP_MAX = 100, 111
+-- This client numbers its maps from a different block, which is why auto-detect
+-- called Nagrand (1951) "Azeroth" and under-paid every Outland estimate by the
+-- gap between the two base constants. Only the continent itself is matched here:
+-- the zones around it interleave with the Azeroth ones the Burning Crusade added
+-- (Eversong, Ghostlands, Azuremyst, Bloodmyst, Silvermoon, the Exodar), so a
+-- range over this block would call those Outland too.
+local OUTLAND_MAP_ID_CLASSIC = 1945
+-- Map.dbc id for the Outland world. uiMapIDs get renumbered from client to
+-- client; this one has meant Outland since the Burning Crusade shipped, so it's
+-- the signal we trust first. Instances inside Outland report their own id and
+-- fall through to the map walk below.
+local OUTLAND_INSTANCE_ID = 530
 
-local currentMapID   -- surfaced by /tag diag
+local currentMapID, currentInstanceID   -- surfaced by /tag diag
 
 -- Outland mobs use a different base constant to Azeroth's, so the continent has
--- to be known. Walk the map parent chain rather than matching zone names, which
--- are localised.
+-- to be known. Never matches zone names, which are localised.
 local function RefreshContinent()
     local id = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
     currentMapID = id
 
+    -- Asked first because it answers even when the map system isn't ready yet,
+    -- and because it can't be thrown off by a client renumbering its uiMaps.
+    currentInstanceID = GetInstanceInfo and select(8, GetInstanceInfo()) or nil
+    if currentInstanceID == OUTLAND_INSTANCE_ID then
+        inOutland = true
+        return
+    end
+
     local guard = 0
     while id and guard < 12 do
-        if id == OUTLAND_MAP_ID or (id >= OUTLAND_MAP_MIN and id <= OUTLAND_MAP_MAX) then
+        if id == OUTLAND_MAP_ID or id == OUTLAND_MAP_ID_CLASSIC
+            or (id >= OUTLAND_MAP_MIN and id <= OUTLAND_MAP_MAX) then
             inOutland = true
             return
         end
@@ -873,6 +898,13 @@ local function RefreshContinent()
         guard = guard + 1
     end
     inOutland = false
+end
+
+-- Both places that report detection state print this. It exists as a function so
+-- HandleSlash names ONE file-level local for the pair rather than two: it sits
+-- exactly on Lua 5.1's 60-upvalue ceiling, see PushThreshold.
+local function MapDiag()
+    return format("%s (instance %s)", tostring(currentMapID), tostring(currentInstanceID))
 end
 
 -- db.continent forces the base constant when auto-detection is wrong:
@@ -1364,7 +1396,7 @@ local function HandleDeath(guid, name)
     local pct = dealt / maxhp * 100
 
     -- Tagged it. Checkmarks only, no sound: the threshold ding already fired when
-    -- it crossed 31%, and a second cue on every successful kill would be noise.
+    -- it crossed the threshold, and a second cue on every kill would be noise.
     if pct >= db.threshold then
         local raw = EstimateXP(guid)
         local label, r, g, b
@@ -1638,6 +1670,38 @@ StaticPopupDialogs["TAGTEAM_PAIR"] = {
     end,
 }
 
+-- Both halves of the pair, in either direction. Returns how many were reached,
+-- which is zero when comms are off - the caller uses that to decide whether it
+-- can honestly claim the other client heard anything.
+local function SendToPartners(msg)
+    if not db.comms then return 0 end
+    local n = 0
+    if db.carry then SendAddon(msg, db.carry); n = n + 1 end
+    if db.taggers then
+        for _, info in pairs(db.taggers) do SendAddon(msg, info.name); n = n + 1 end
+    end
+    return n
+end
+
+-- One landing spot for a new threshold, whether it came from our own slash
+-- command or from the other client. `alerted` is wiped so a mob that already
+-- dinged under the old number can ding again under the new one.
+local function ApplyThreshold(pct)
+    db.threshold = pct
+    wipe(alerted)
+    UpdateAllPlates()
+end
+
+-- Apply and push, as one call. Split out purely so the slash handler names ONE
+-- of these rather than both: HandleSlash sits on Lua 5.1's 60-upvalue-per-
+-- function ceiling, and each file-level local it mentions costs a slot. Two
+-- mentions here failed to compile the whole file at load. ponytail: if that
+-- chain needs another upvalue, split HandleSlash in half rather than shaving.
+local function PushThreshold(pct)
+    ApplyThreshold(pct)
+    return SendToPartners("THRESH:" .. pct)
+end
+
 local function OnAddonMessage(msg, sender)
     local who = strsplit("-", sender or "")
     if not who or who == "" then return end
@@ -1696,6 +1760,17 @@ local function OnAddonMessage(msg, sender)
     elseif cmd == "NO" then
         Print(format("|cffff8080%s|r declined the pairing.", who))
 
+    elseif cmd == "THRESH" then
+        -- This rewrites config on our side, so it is partners only - a stranger
+        -- running the addon must not get to move our number.
+        local pct = tonumber(arg)
+        if not pct or pct <= 0 or pct > 100 then return end
+        if not IsPartner(who) then return end
+        if pct == db.threshold then return end
+        ApplyThreshold(pct)
+        Print(format("threshold set to |cffffff00%d%%|r of max health by |cff00ff00%s|r.",
+            pct, who))
+
     elseif cmd == "XP" then
         local amount = tonumber(arg)
         if not amount then return end
@@ -1743,11 +1818,7 @@ end
 -- Re-handshake after a reload. The saved link tells us who HAD the addon; this
 -- confirms they still do, and re-marks them if the saved table was lost.
 local function GreetPartners()
-    if not db.comms then return end
-    if db.carry then SendAddon("HELLO", db.carry) end
-    if db.taggers then
-        for _, info in pairs(db.taggers) do SendAddon("HELLO", info.name) end
-    end
+    SendToPartners("HELLO")
 end
 
 -- At max level PLAYER_XP_UPDATE never fires, so there's nothing to hang a report
@@ -1930,6 +2001,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.missFile  == nil then db.missFile  = DEFAULT_MISS_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
         if db.missFile == LEGACY_MISS_FILE then db.missFile = DEFAULT_MISS_FILE end
+        if db.threshold == LEGACY_THRESHOLD then db.threshold = THRESHOLD_DEFAULT end
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
         if db.name then
@@ -2105,13 +2177,14 @@ local function HandleSlash(input)
 
     if cmd == "" or cmd == "status" then
         Status()
-        Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r  |cffffff00/tag <number>|r threshold")
+        Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")
+        Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag; set it from either client, both follow")
         Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
         Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
         Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
         Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
         Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
-        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag continent|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
@@ -2124,7 +2197,7 @@ local function HandleSlash(input)
     if cmd == "diag" then
         RefreshContinent()
         Print(format("map: %s | auto-detect: %s | XP base in use: %s%s|r",
-            tostring(currentMapID),
+            MapDiag(),
             inOutland and "Outland" or "Azeroth",
             UsingOutlandBase() and "|cff00ff00Outland +235" or "|cffffff00Azeroth +45",
             db.continent and " (forced)" or ""))
@@ -2293,7 +2366,7 @@ local function HandleSlash(input)
         return
     end
 
-    if cmd == "reset" or cmd == "off" or cmd == "none" then
+    if cmd == "reset" or cmd == "clear" or cmd == "off" or cmd == "none" then
         -- Clears both roles: reset means "no relationships", not "no taggers".
         wipe(db.taggers)
         db.carry, db.carryKey = nil, nil
@@ -2335,21 +2408,21 @@ local function HandleSlash(input)
         return
     end
 
-    if cmd == "continent" then
+    if cmd == "zone" or cmd == "continent" then
         local mode = strlower(strtrim(rest or ""))
         if mode == "outland" or mode == "azeroth" then
             db.continent = mode
         elseif mode == "auto" then
             db.continent = nil
         else
-            Print("|cffffff00/tag continent auto|outland|azeroth|r - forces the XP base constant.")
+            Print("|cffffff00/tag zone auto|outland|azeroth|r - forces the XP base constant.")
         end
         RefreshContinent()
         Print(format("XP base: |cffffff00%s|r (%s) | auto-detect says %s, map %s",
             UsingOutlandBase() and "Outland +235" or "Azeroth +45",
             db.continent and "forced" or "auto",
             inOutland and "Outland" or "Azeroth",
-            tostring(currentMapID)))
+            MapDiag()))
         return
     end
 
@@ -2644,18 +2717,20 @@ local function HandleSlash(input)
         return
     end
 
-    if cmd == "reset" then
-        ResetAll(); UpdateAllPlates(); UpdateMacroButton()
-        Print("cleared tracked damage.")
-        return
-    end
-
-    local pct = tonumber(cmd)
-    if pct and pct > 0 and pct <= 100 then
-        db.threshold = pct
-        wipe(alerted)
-        UpdateAllPlates()
-        Print(format("threshold set to %d%% of max health.", pct))
+    -- Runs from either end: the tagger watching its own damage climb is usually
+    -- the one who knows the number is wrong, and both clients have to agree on
+    -- it or they disagree about what counts as tagged.
+    if cmd == "threshold" or cmd == "thresh" then
+        local pct = tonumber(strtrim(rest or ""))
+        if not pct or pct <= 0 or pct > 100 then
+            Print(format("threshold is |cffffff00%d%%|r of max health - "
+                .. "|cffffff00/tag threshold <1-100>|r to change it.", db.threshold))
+            return
+        end
+        local sent = PushThreshold(pct)
+        Print(format("threshold set to %d%% of max health%s.", pct,
+            sent > 0 and format(" |cff808080(sent to %d linked client%s)|r",
+                sent, sent == 1 and "" or "s") or ""))
         return
     end
 

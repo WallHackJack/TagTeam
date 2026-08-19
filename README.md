@@ -16,7 +16,7 @@ Type `/tag` for all options.
 
 - **Live percentage on every nameplate.** Watch a mob climb toward the threshold
   and hold off until it's there.
-- **A sound and a stamped checkmark at 31%**, so you never have to stare at
+- **A sound and a stamped checkmark at 36%**, so you never have to stare at
   numbers mid-pull.
 - **Real XP reporting, checked against the estimate.** When both sides run
   TagTeam, your alt's client sends its actual XP gain — rested included — and it
@@ -89,12 +89,13 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag` | Full status and command list |
 | `/tag add <name>` / `/tag remove <name>` | Manage taggers |
 | `/tag carry <name>` | Run on a tagger's client |
-| `/tag <number>` | Change the threshold from 31% |
+| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 36%, on both linked clients |
 | `/tag xp` | Session totals, estimated and actual |
 | `/tag macro` | Copyable target/follow/focus macro |
 | `/tag ban <mob>` | Ignore a mob by name entirely |
 | `/tag audio` | Mute all cues |
-| `/tag reset` | Clear all roles |
+| `/tag reset` (`/tag clear`) | Clear all roles |
+| `/tag zone` | Force the XP base constant (`auto`, `outland`, `azeroth`) when auto-detect is wrong |
 
 ## Requirements
 

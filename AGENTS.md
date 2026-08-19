@@ -16,7 +16,7 @@ opposite characters. Do not reintroduce any of them.
 
 - **carry** — the high-level character doing the killing.
 - **tagger** — a low-level character being levelled, who must deal `db.threshold`
-  percent (default **31%**) of a mob's max health to earn credit for the kill.
+  percent (default **36%**) of a mob's max health to earn credit for the kill.
 
 There can be several taggers. **Their damage is pooled** against the one
 threshold, which is correct when they are grouped with each other, since a party
@@ -54,7 +54,7 @@ These were each learned by breaking them in-game. Do not re-litigate them.
   `PLAYER_REGEN_ENABLED`.
 - **Cosmetic code never runs before functional code** in an event handler, and is
   wrapped in `SafeCall`. A Lua error unwinds the entire handler; the X-burst
-  position code silenced the badge *and* the 31% ding twice before this rule
+  position code silenced the badge *and* the threshold ding twice before this rule
   existed. Errors thrown inside `C_Timer` callbacks are worse — they unwind on a
   later frame where they are invisible and unattributable.
 - **Guard every optional API member individually.** `C_FriendList.SendWho` exists
@@ -117,6 +117,7 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `OK` / `NO` | reply | Pairing accepted / declined. |
 | `HELLO` / `HI` | either | Silent handshake, sent 5 s after login to re-verify saved links. |
 | `INV` | either | Ask the other end to invite *us*. Sent by the carry's out-of-range check and by `/tag inv` from either side. **Only honoured from an established pair.** |
+| `THRESH:<n>` | either | New tag threshold, pushed by `/tag threshold`. Applied silently, **partners only**. Not relayed onward. |
 | `XP:<n>` | tagger → carry | Real XP from `UnitXP` deltas. `0` means max level. |
 
 `db.linked` persists so a `/reload` does not silently drop back to visible
@@ -130,6 +131,16 @@ Formula verified against warcraft.wiki.gg, not memory. Base is
 recomputed per kill, because at login the map system often isn't ready and
 `GetBestMapForUnit` returns nil, which silently latches "Azeroth" and
 under-reports every Outland kill by ~1.5×.
+
+**Detecting Outland: prefer the instance id, never a uiMapID range.** uiMapIDs are
+renumbered per client — retail puts Outland at 101 with its zones in 100–111, this
+client puts it at 1945 with Nagrand at 1951 — and in this client's block the
+Outland zones interleave with the Azeroth zones the Burning Crusade added
+(Eversong, Ghostlands, Azuremyst, Bloodmyst, Silvermoon, the Exodar), so a range
+over it claims those too. `GetInstanceInfo()`'s 8th return is the Map.dbc id,
+which has meant 530 = Outland since the Burning Crusade shipped; that is checked
+first, and it also answers before the map system is ready. The parent-map walk
+stays as the fallback for Outland instances, which report their own id.
 
 **When an estimate looks wrong, suspect the cached tagger level before the
 formula.** One stale level applies a phantom penalty worth ~6% per level gap,
@@ -203,6 +214,19 @@ Rules that bite:
 No automated test suite. For every change:
 
 - `luac -p TagTeam.lua` to catch syntax errors before loading.
+- Upvalue ceiling — the local `luac` is 5.4, WoW is 5.1, and **5.1 allows only 60
+  upvalues per function**. `HandleSlash` sits exactly on it: every file-level
+  local it names costs a slot, so referencing one more helper stops the *whole
+  file* compiling and the addon silently does not load. `luac` 5.4 will not warn
+  (its limit is 255), and it counts `_ENV` as an upvalue where 5.1 does not — so
+  the number below must stay **at or under 61**:
+
+  ```
+  luac -p -l TagTeam.lua | grep -A1 '^function <' | grep upvalues | sort -t, -k3 -n | tail -1
+  ```
+
+  Over the line: split `HandleSlash`'s `if cmd ==` chain into two functions
+  rather than shaving references one at a time.
 - Reload in-game and exercise the affected path.
 - `/tag` for full status, `/tag diag` for the runtime picture including the last
   captured cosmetic error (cleared on read, so a second run shows whether it

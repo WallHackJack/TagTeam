@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Changed:** the default tag threshold is now **36%**, up from 31%. A saved 31
+  is moved to 36 at load, since it can't be told apart from a deliberate one —
+  `/tag threshold 31` puts it back.
+- `/tag continent` is now **`/tag zone`** (the old name still works), and
+  `/tag clear` does what `/tag reset` does.
+- Removed an unreachable second `/tag reset` handler that claimed to clear
+  tracked damage. `/tag reset` matched the roles-clearing handler first and
+  returned, so that branch could never run.
+- **Fixed:** Outland auto-detection failed on this client, so every Outland kill
+  was estimated with Azeroth's `+45` base instead of `+235` — about 1.51× low
+  (a level 66 mob predicted 375 against a real 565). Detection now reads the
+  instance id first (530 = Outland, stable across clients) and recognises this
+  client's Outland uiMapID as well as retail's. `/tag diag` reports the instance
+  id alongside the map. If you worked around this with `/tag continent outland`
+  or `/tag calibrate`, clear them — `/tag continent auto`, `/tag calibrate reset`.
+- **Changed:** the tag threshold moves with `/tag threshold <1-100>` (short form
+  `/tag thresh`) instead of a bare `/tag <number>`, and it now syncs to the
+  linked client over addon comms — set from either end, both follow. A number on
+  its own is no longer a command, so a mistyped one says so rather than silently
+  changing the threshold.
 - A linked tagger's XP report now prints against the carry's own estimate:
   expected, actual, the multiplier between them, and the pooled damage share the
   taggers dealt on that mob. The multiplier reads 1.00x when the estimate is
