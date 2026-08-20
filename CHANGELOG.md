@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
 - **Changed:** the miss burst is now a bare red X — the percentage is gone from
   it. Most misses are incidental, your tagger clipping something you were killing
