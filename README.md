@@ -34,6 +34,11 @@ Type `/tag` for all options.
   close it got.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
   first and the threshold ding suppressed, because nothing can be earned there.
+- **The same standing X on anything tagged while you're grouped with your tagger.**
+  Grouping computes the mob's XP from *your* level and splits it, so the tag is
+  worth a rounding error — the X says so, and every other cue stays quiet rather
+  than promising XP nobody earned. It sticks until the mob dies or resets, even
+  if you drop the party mid-fight.
 - **Raid markers** on the mobs your taggers have claimed — skull, cross, square.
 - **One keybind to target, follow and focus your partner.** It builds itself from
   whoever you've set up, tries each of them in priority order, and falls back to

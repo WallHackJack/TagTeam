@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Fixed:** a kill made while grouped with your tagger fired the GROUPED warning
+  *and* then floated a "+N XP" burst behind it on the same pull. The second one
+  was a lie as well as a duplicate — the two-player rule computes the mob's XP
+  from the carry's level, so the tagger banks a rounding error. Mobs tagged while
+  grouped now wear the **standing X** on their nameplate instead of a percentage
+  or a checkmark, and every cue goes quiet: no XP float, no miss alert, no
+  threshold ding or plate stamp, and no session XP inflated with numbers nobody
+  earned. The GROUPED warning at the pull is the one cue left.
+- The X is latched per mob, so **dropping the party mid-pull does not clear it** —
+  it stays until the mob dies, or until it evades and resets to full health.
 - **New:** TagTeam now suspends itself entirely inside dungeons and raids. No
   badges, no sounds, no combat-log tracking, no invite or leave logistics — the
   carry and tagger are necessarily grouped in there, so a tag is worth almost

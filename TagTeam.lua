@@ -87,6 +87,10 @@ local INVITE_FALLBACK    = 8    -- wait for a direct invite before whispering
 local FOCUS_NAG_INTERVAL = 60   -- between "you have no focus set" reminders
 local GROUPED_WARN_INTERVAL = 15 -- between grouped-in-combat warnings
 local LEAVE_GRACE = 3           -- settle time after joining before auto-leaving
+-- UnitHealth can still report the pre-hit value on the frame the combat log
+-- delivers a hit, so a mob would look "full" the instant we damaged it. Requiring
+-- a quiet gap first means only a real evade-reset clears the grouped mark.
+local RESET_GRACE = 2           -- quiet seconds before full health reads as a reset
 
 -- The burst is drawn at a fixed spot on screen rather than over the mob. It has
 -- to be: nameplate frames and everything parented to them are restricted regions
@@ -139,6 +143,7 @@ local lastSeen  = {}  -- [destGUID]  = GetTime() of last accumulation
 local maxHealth = {}  -- [destGUID]  = cached UnitHealthMax, so we can score off-screen mobs
 local tapOwner  = {}  -- [destGUID]  = "carry" | "tagger" | "other", by first damage
 local marked    = {}  -- [destGUID]  = true once we've put a raid marker on it
+local groupTagged = {} -- [destGUID] = true once tagger damage landed while grouped
 local mobLevel  = {}  -- [destGUID]  = cached UnitLevel, for the XP estimate
 local mobElite  = {}  -- [destGUID]  = true if elite/rare-elite/boss (double XP)
 local mobTrivial = {} -- [destGUID]  = true for critters and "minus" minions
@@ -452,12 +457,13 @@ local function Forget(guid)
     mobName[guid]   = nil
     tapOwner[guid]  = nil
     marked[guid]    = nil
+    groupTagged[guid] = nil
 end
 
 local function ResetAll()
     wipe(damage); wipe(alerted); wipe(lastSeen); wipe(maxHealth); wipe(isTracked)
     wipe(mobLevel); wipe(mobElite); wipe(mobTrivial); wipe(mobName)
-    wipe(tapOwner); wipe(marked); wipe(isCarryGuid)
+    wipe(tapOwner); wipe(marked); wipe(isCarryGuid); wipe(groupTagged)
 end
 
 --------------------------------------------------------------------------------
@@ -652,11 +658,28 @@ local function UpdatePlate(unit)
             maxHealth[guid] = live
             maxhp = live
         end
+
+        -- Back to full with damage still on the books means it evaded and reset.
+        -- That's a fresh mob as far as the next pull is concerned, so the grouped
+        -- mark comes off - otherwise one bad pull would brand it until it died.
+        -- The quiet gap is what makes this safe to read; see RESET_GRACE.
+        local quiet = (GetTime() - (lastSeen[guid] or 0)) >= RESET_GRACE
+        if groupTagged[guid] and quiet and live and live > 0
+            and UnitHealth(unit) >= live then
+            groupTagged[guid] = nil
+        end
     end
 
-    -- The carry owns this tag, so nothing the tagger does can earn credit. Show a
-    -- standing X instead of a percentage that would only be misleading.
-    if db.enabled and not Suspended() and HasTaggers() and tapOwner[guid] == "carry" then
+    -- Nothing the tagger does here can earn credit: either the carry owns the tag,
+    -- or damage landed while we were grouped, which computes the mob's XP from the
+    -- carry's level and splits it. Show a standing X rather than a percentage that
+    -- would only be misleading.
+    --
+    -- The grouped mark is latched per mob, not read live, so dropping the party
+    -- mid-pull does not quietly turn the X back into a promising number. It clears
+    -- when the mob dies (Forget) or resets to full, above.
+    if db.enabled and not Suspended() and HasTaggers()
+        and (tapOwner[guid] == "carry" or groupTagged[guid]) then
         local badge = GetBadge(unit, true)
         if badge then
             badge.text:Hide()
@@ -1027,6 +1050,18 @@ local function GroupedWithTagger()
     return false
 end
 
+-- The carry, grouped with their own tagger. The two-player rule computes the
+-- mob's XP from the CARRY's level and then splits it by level ratio, so the
+-- tagger banks a rounding error no matter how much damage they landed - which
+-- means nothing this addon would say about the kill is true. Every cue that
+-- promises the tagger something has to check this.
+--
+-- Never applies in tagger mode: being grouped with the other taggers is the
+-- correct state there, and the pooled threshold assumes it.
+local function TagIsWasted()
+    return not InTaggerMode() and GroupedWithTagger()
+end
+
 -- A tagger's party/raid token, when we're grouped with one. Worth having because
 -- UnitInRange only gives real answers for group members - which is exactly the
 -- situation auto-leave cares about.
@@ -1240,8 +1275,10 @@ end
 -- computes XP from the carry's level, so the mob is grey to the group and pays
 -- next to nothing. This is the single most expensive mistake the addon can catch.
 local function WarnGroupedCombat()
-    if InTaggerMode() then return end   -- grouped with other taggers is correct
-    if not db.groupWarning or not GroupedWithTagger() then return end
+    -- Same predicate the badge, the ding and the death handler use, so the X on
+    -- the nameplate and this warning can never disagree about whether the pull
+    -- is wasted.
+    if not db.groupWarning or not TagIsWasted() then return end
     if (GetTime() - lastGroupWarnAt) < GROUPED_WARN_INTERVAL then return end
 
     lastGroupWarnAt = GetTime()
@@ -1401,6 +1438,23 @@ local function HandleDeath(guid, name)
     -- warning already fired when it happened.
     if tapOwner[guid] == "carry" then return end
 
+    -- Grouped with the tagger, so the two-player rule computed this mob's XP from
+    -- the CARRY's level and split it: what they actually banked is a rounding
+    -- error, and the threshold no longer decides anything. Every cue this function
+    -- has is a lie in that state - the float would claim XP they never earned, the
+    -- miss alert would scold them for missing a share that was worthless anyway,
+    -- and sessionXP would quietly inflate with numbers nobody got.
+    --
+    -- Silence is the honest answer, and it is also the only cue that fits: the
+    -- pull already fired the GROUPED warning, and on a fast kill a second burst
+    -- lands on top of it. One warning per pull, not one warning plus a lie.
+    --
+    -- Both halves are needed. The latch catches a mob tagged while grouped whose
+    -- killing blow came from the carry, so no tagger damage event refreshed it;
+    -- the live check catches joining a group part-way through a pull that started
+    -- clean. Either one means the X was standing on its plate.
+    if groupTagged[guid] or TagIsWasted() then return end
+
     -- Greys and trivial minions pay nothing: no float, no sound, no session
     -- count. Counting them would quietly inflate the XP total with zeroes.
     if IsWorthless(guid) then return end
@@ -1542,13 +1596,21 @@ local function OnCombatLog()
     damage[destGUID]   = after
     lastSeen[destGUID] = GetTime()
 
+    -- Latched the moment tagger damage lands while grouped, and deliberately not
+    -- re-read afterwards: leaving the party does not retroactively make this mob
+    -- worth tagging, so the X has to outlive the group. Cleared by the mob dying
+    -- or resetting to full - see UpdatePlate.
+    if TagIsWasted() then groupTagged[destGUID] = true end
+
     if not alerted[destGUID] and not worthless then
         local maxhp = maxHealth[destGUID]
         if maxhp and maxhp > 0 and (after / maxhp * 100) >= db.threshold then
             alerted[destGUID] = true
-            -- Silent on mobs the carry tapped: crossing the threshold there earns
-            -- the tagger nothing, so a ding would be a false promise.
-            if tapOwner[destGUID] ~= "carry" then
+            -- Silent on mobs the carry tapped, and silent while grouped with the
+            -- tagger: crossing the threshold earns them nothing in either state,
+            -- so a ding would be a false promise. Same reasoning as the grouped
+            -- early return in HandleDeath.
+            if tapOwner[destGUID] ~= "carry" and not groupTagged[destGUID] then
                 PlayThresholdSound()
                 if unit then SafeCall(SpawnPlateStamp, unit) end
             end

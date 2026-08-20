@@ -95,6 +95,21 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
   names — get no ding, float, XP, marker or steal warning; only a plain checkmark.
 - Mobs the carry tapped first show a standing X and suppress the ding, and the
   death handler skips them entirely. Counting their XP would be a lie.
+- **A wasted tag shows an X and says nothing.** `TagIsWasted()` — the carry
+  grouped with their own tagger — is the shared predicate behind the `GROUPED`
+  combat warning, the suppressed threshold ding, the suppressed plate stamp, and
+  the silent death handler (no XP float, no miss alert, no session totals). The
+  two-player rule computes the mob's XP from the *carry's* level, so the tagger
+  banks a rounding error and every one of those cues would claim something
+  untrue. One warning per pull, not one warning plus a lie.
+- **`groupTagged[guid]` is a latch, not a live read.** Tagger damage landing while
+  grouped brands that mob, and the standing X on its nameplate outlives the group
+  — dropping the party mid-pull must not quietly turn the X back into a promising
+  percentage. It clears only when the mob dies (`Forget`) or evades back to full
+  health. The full-health test needs `RESET_GRACE` seconds of quiet first:
+  `UnitHealth` can still report the pre-hit value on the frame the combat log
+  delivers a hit, so without it a mob would read as "full" the instant we damaged
+  it and un-brand itself immediately.
 - Marker slots are **derived, never handed out**: confirmed taggers sort by who
   answered first, unconfirmed by when they were added. Only three slots exist
   (triangle/diamond/orange, indices 4/3/2). Mob tags use 8/7/6 and cannot clash.
