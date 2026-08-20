@@ -112,6 +112,15 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
   two-player rule computes the mob's XP from the *carry's* level, so the tagger
   banks a rounding error and every one of those cues would claim something
   untrue. One warning per pull, not one warning plus a lie.
+- **`GROUPED` outranks `TAGGED`, and is said once per pull.** `WarnTagStolen`
+  routes straight to `WarnGroupedCombat` when `TagIsWasted()`, and the tagger-tap
+  branch calls it too. Whose tag it was stops mattering once the two-player rule
+  is in play, so naming the theft would hide the bigger problem behind it.
+  `WarnGroupedCombat` otherwise only rides `PLAYER_REGEN_DISABLED`, which **never
+  fires again for someone who joined the party mid-fight** — these two call sites
+  are the only places the warning can still be reached in that combat. Routed
+  rather than duplicated, so it inherits `GROUPED_WARN_INTERVAL`: that rate limit
+  is what makes it one warning per pull instead of one per mob tapped.
 - **`groupTagged[guid]` is a latch, not a live read.** Tagger damage landing while
   grouped brands that mob, and the standing X on its nameplate outlives the group
   — dropping the party mid-pull must not quietly turn the X back into a promising

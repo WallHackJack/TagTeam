@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fixed:** joining the party mid-fight left every mob pulled for the rest of
+  that combat warning about the wrong thing. Mobs you tapped said `TAGGED` —
+  true, but the smaller problem, with the group hidden behind it — and mobs your
+  tagger tapped said nothing at all, so whether you were warned came down to who
+  landed the first hit. Both now say `GROUPED`. The grouped warning otherwise
+  rides entering combat, which never fires again for someone already in it.
+- The grouped warning keeps its one-per-pull rate limit through the new path, so
+  a warning shown at the start of a fight is not replayed on the next mob.
 - **New:** PvP-flagged mobs are ignored by default — the faction guards on
   contested Outland ground, Halaa and the Hellfire towers. They do pay XP, so
   this is a preference rather than a fix: hitting one flags your tagger for PvP,

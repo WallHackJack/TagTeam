@@ -1440,6 +1440,22 @@ end
 -- The carry just took a mob out from under the tagger. Only fires when the tagger
 -- has been active recently, so it can't nag during solo play.
 local function WarnTagStolen()
+    -- Grouped beats stolen. Once the two-player rule is in play it stops
+    -- mattering whose tag it was - the pull is worth a rounding error either way -
+    -- so saying TAGGED here would name the smaller problem and hide the bigger
+    -- one behind it.
+    --
+    -- This is also the only place the grouped warning can still be said. It
+    -- otherwise rides PLAYER_REGEN_DISABLED, which does not fire again for
+    -- someone who joined the party mid-fight: every mob pulled for the rest of
+    -- that combat used to warn about the wrong thing.
+    --
+    -- Routed rather than duplicated so it inherits GROUPED_WARN_INTERVAL. That
+    -- rate limit is what keeps this to one warning per pull instead of one per
+    -- mob tapped, and it means a warning already shown at the start of the fight
+    -- is not replayed on the next mob.
+    if TagIsWasted() then return WarnGroupedCombat() end
+
     if not db.stealWarning then return end
     if GetTime() - trackedActiveAt > NEAR_SECONDS then return end
     SafeCall(SpawnBurst, X_TEXTURE, "TAGGED", 1, 0.55, 0.1)
@@ -1652,6 +1668,13 @@ local function OnCombatLog()
                 WarnTagStolen()
             elseif tapOwner[destGUID] == "tagger" then
                 SafeCall(MarkTaggedMob, destGUID)
+                -- Being grouped is about the pull, not about who tapped it, so it
+                -- has to be said on this side too - WarnTagStolen only covers the
+                -- mobs the carry grabbed. Without it, whether a mob pulled after
+                -- joining mid-fight warned at all came down to who happened to
+                -- land the first hit. No-op when ungrouped, and rate limited when
+                -- grouped, so the marker path stays quiet in the normal case.
+                WarnGroupedCombat()
             end
         end
     end
