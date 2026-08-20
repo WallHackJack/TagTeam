@@ -66,6 +66,11 @@ local NEAR_SECONDS = 60
 -- their report, which is what lets the carry print expected against actual.
 local XP_MATCH_WINDOW = 20  -- seconds a kill waits before it's written off
 local XP_MATCH_MAX    = 12  -- queue cap, so unreported kills can't grow it forever
+-- A miss and the XP report it draws describe the same kill, so they print as one
+-- line. The report is a whisper from the other client and lands a beat later, so
+-- the chat line has to wait for it. The sound and the X burst still fire the
+-- instant the mob dies - only the log line resolves late.
+local MISS_LOG_DELAY  = 2   -- seconds a miss line waits for the XP report
 
 -- Client differences in one place, the way WhoDoesWhat's ClientFeatures does it,
 -- so version checks don't get scattered through the logic. Focus arrived in TBC;
@@ -986,13 +991,26 @@ end
 -- into "545 against an expected 545". The ratio between the two is the only
 -- honest read on the multipliers an addon cannot observe from this side: rested
 -- doubles it, a group split cuts it, a stale cached level skews it.
-local function QueueKillForReport(name, pct, est)
-    pendingKills[#pendingKills + 1] = {
-        name = name, pct = pct, est = est, at = GetTime(), claimed = {},
+local function QueueKillForReport(name, pct, est, missed)
+    local kill = {
+        name = name, pct = pct, est = est, missed = missed,
+        need = db.threshold,   -- pinned: /tag threshold can move under a pending kill
+        at = GetTime(), claimed = {},
     }
+    pendingKills[#pendingKills + 1] = kill
     -- Reports that never arrive - comms off, an unlinked tagger, a kill outside
     -- their client's range - would otherwise pile up. Oldest goes first.
     while #pendingKills > XP_MATCH_MAX do tremove(pendingKills, 1) end
+    return kill
+end
+
+-- One chat line per kill, whoever gets there first. The XP report prints the
+-- combined version when it lands; this prints the bare miss when it doesn't.
+local function LogMiss(kill)
+    if kill.logged then return end
+    kill.logged = true
+    Print(format("|cffff2020MISSED|r %s - died at |cffff8080%d%%|r, needed %d%%.",
+        kill.name or "target", kill.pct, kill.need))
 end
 
 -- Hand one reporting tagger the oldest kill it has not already claimed. Claims
@@ -1505,14 +1523,40 @@ local function HandleDeath(guid, name)
 
     if not db.missAlert then return end
 
-    -- Message first, then sound, then the cosmetic flourish: if the visual ever
-    -- throws, it must not be able to swallow the alert that actually matters.
+    -- A missed mob still pays the tagger - the tap decides that, not the damage
+    -- share - so its report is coming and has to be queued like any other kill.
+    -- Leaving it out was also mispairing: the report would arrive, find no entry
+    -- of its own, and claim the NEXT tagged kill's instead.
+    --
+    -- Greys are the exception. They pay nothing, so no report can ever arrive to
+    -- pair with, and a queued entry would sit there for the next real report to
+    -- claim by mistake.
+    local raw = EstimateXP(guid)
+    local est = (raw and raw > 0) and floor(raw * (db.xpScale or 1) + 0.5) or nil
+    local kill
+    if raw ~= 0 then
+        kill = QueueKillForReport(name, pct, est, true)
+    else
+        kill = { name = name, pct = pct, need = db.threshold }
+    end
+
+    -- The chat line waits for the report so the two can print as one; the sound
+    -- and the burst are the alert itself and fire now. Nothing to wait for when
+    -- no partner has ever talked to us, or when no report is coming at all.
     if db.announce then
-        Print(format("|cffff2020MISSED|r %s - died at |cffff8080%d%%|r, needed %d%%.",
-            name or "target", pct, db.threshold))
+        if kill.at and next(linked) then
+            C_Timer.After(MISS_LOG_DELAY, function() LogMiss(kill) end)
+        else
+            LogMiss(kill)
+        end
     end
     PlayMissSound()
-    SafeCall(SpawnBurst, X_TEXTURE, format("%d%%", pct), 1, 0.35, 0.35)
+    -- A bare X, no number. Most misses are incidental - the tagger clipped
+    -- something the carry was killing anyway - and on those the share they
+    -- happened to reach decides nothing and is worth nothing to read. The buzz
+    -- is the part that carries: that one got away. The exact percentage is still
+    -- in the chat line for the misses that were real attempts.
+    SafeCall(SpawnBurst, X_TEXTURE, nil, 1, 0.35, 0.35)
 end
 
 local function OnCombatLog()
@@ -1880,20 +1924,36 @@ local function OnAddonMessage(msg, sender)
             return
         end
 
+        -- Claiming the kill is what folds the miss line into this one: LogMiss
+        -- checks the same flag, so the timer it is racing prints nothing.
+        --
+        -- Unless the timer won. A report slower than MISS_LOG_DELAY has already
+        -- had its miss announced, so the suffix is dropped rather than repeated.
+        local announced = kill.logged
+        kill.logged = true
+        -- Reads as a suffix on either sentence below.
+        local miss = (kill.missed and not announced)
+            and format(" |cffff2020(MISSED, needed %d%%)|r", kill.need) or ""
+
         if not kill.est or kill.est <= 0 then
             -- A level was unknown when it died, so there is no estimate. The
             -- damage share was still measured, and is still worth saying.
             Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s "
-                .. "|cff808080(%d%% dealt, no estimate)|r.",
-                who, amount, kill.name or "the mob", kill.pct))
+                .. "|cff808080(%d%% dealt, no estimate)|r%s.",
+                who, amount, kill.name or "the mob", kill.pct, miss))
             return
         end
 
-        matchedEst, matchedXP = matchedEst + kill.est, matchedXP + amount
+        -- Missed kills stay out of the session multiplier. Their estimate assumes
+        -- a full tag they never made, so averaging them in would drag the number
+        -- down and hide what the properly tagged kills are actually paying.
+        if not kill.missed then
+            matchedEst, matchedXP = matchedEst + kill.est, matchedXP + amount
+        end
         Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s - expected "
-            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%d%%|r.",
+            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%d%%|r%s.",
             who, amount, kill.name or "the mob", kill.est,
-            MultiplierText(amount / kill.est), kill.pct))
+            MultiplierText(amount / kill.est), kill.pct, miss))
     end
 end
 
@@ -2820,7 +2880,7 @@ local function HandleSlash(input)
             Print("tagged-kill preview.")
         end
         if miss then
-            SafeCall(SpawnBurst, X_TEXTURE, format("%d%%", db.threshold * 0.6), 1, 0.35, 0.35)
+            SafeCall(SpawnBurst, X_TEXTURE, nil, 1, 0.35, 0.35)
         else
             SafeCall(SpawnBurst, CHECK_TEXTURE, "+142 XP", 1, 0.86, 0.3)
         end

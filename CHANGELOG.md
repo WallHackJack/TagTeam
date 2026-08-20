@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Changed:** the miss burst is now a bare red X — the percentage is gone from
+  it. Most misses are incidental, your tagger clipping something you were killing
+  anyway, and on those the share it happened to reach decides nothing. The buzz
+  still carries the part that matters: that one got away. `/tag testmiss` previews
+  the new look, and the exact percentage is still in the chat line.
+- **Changed:** a missed kill that still paid the tagger printed two lines — the
+  `MISSED` alert, then a bare `gained 372 XP (actual)` with nothing tying them
+  together. They are now one line: `gained 372 XP on Young Crust Burster -
+  expected 532, 0.70x, taggers dealt 35% (MISSED, needed 39%)`. The miss sound
+  and the X burst still fire the instant the mob dies; only the chat line waits
+  (up to 2s) for the report to arrive, and only when a linked partner might send
+  one.
+- **Fixed:** missed kills were never queued for XP-report pairing, so the report
+  they generated claimed the *next* tagged kill's entry instead and reported it
+  against the wrong mob. Missed kills now hold their own slot. They stay out of
+  the session multiplier, though — their estimate assumes a full tag they never
+  made, and averaging that in would hide what properly tagged kills are paying.
 - **Fixed:** a kill made while grouped with your tagger fired the GROUPED warning
   *and* then floated a "+N XP" burst behind it on the same pull. The second one
   was a lie as well as a duplicate — the two-player rule computes the mob's XP

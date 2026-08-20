@@ -186,6 +186,21 @@ Rested (2×) and group splits are invisible to an addon, so the number is always
 labelled an estimate. A linked tagger's reported XP is authoritative and should be
 preferred wherever both exist.
 
+**One chat line per kill.** A missed mob still pays the tagger — the tap decides
+that, not the damage share — so the `MISSED` alert and the `XP:<n>` report that
+follows describe the same kill. The report is a whisper from the other client and
+lands a beat later, so the chat line waits `MISS_LOG_DELAY` for it and prints the
+combined version; `kill.logged` is the flag both paths check, so whichever gets
+there first wins and the other stays quiet. The miss **sound and X burst are not
+deferred** — they are the alert, the chat line is only the log.
+
+Missed kills are queued for pairing like tagged ones. Leaving them out was
+mispairing: the report would arrive, find no entry of its own, and claim the next
+tagged kill's. Greys stay unqueued, because they pay nothing and no report can
+ever arrive to pair with, so the entry would sit waiting for a real report to
+claim by mistake. Missed kills are also kept out of `matchedEst`/`matchedXP` —
+their estimate assumes a full tag they never made.
+
 **Pairing an estimate with its report.** The kill and the `XP:<n>` that follows it
 are separate events on separate clients, so the carry queues each tagged kill in
 `pendingKills` and the report claims one. The ratio it prints is the only visible

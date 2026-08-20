@@ -30,8 +30,10 @@ Type `/tag` for all options.
   A multiplier that isn't 1.00x is telling you something: 2.00x is rested, a
   fraction is a group split, and anything else usually means a cached level has
   gone stale. `/tag xp` shows the same ratio across the whole session.
-- **A red X and a percentage when a mob dies short**, so you know exactly how
-  close it got.
+- **A buzz and a red X when a mob dies short.** Most misses are incidental — your
+  tagger clipped something you were killing anyway — so the cue is deliberately
+  just "that one got away", with no number to read mid-pull. The exact share it
+  reached is in the chat line.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
   first and the threshold ding suppressed, because nothing can be earned there.
 - **The same standing X on anything tagged while you're grouped with your tagger.**
