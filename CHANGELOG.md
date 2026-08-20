@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **New:** PvP-flagged mobs are ignored by default — the faction guards on
+  contested Outland ground, Halaa and the Hellfire towers. They do pay XP, so
+  this is a preference rather than a fix: hitting one flags your tagger for PvP,
+  and a defenceless low-level alt wearing a flag out there is a corpse run, not a
+  level. `/tag pvp` tracks them anyway.
+- **Fixed:** enemy players were already ignored, but their **pets, minions and
+  guardians were not** — a tagger clipping a warlock's felhunter or a hunter's
+  boar banked damage on it, badged its nameplate and buzzed when it died. Nothing
+  a player drives pays XP, so none of it was ever a tag. Pets are caught by their
+  GUID; guardians and totems arrive as ordinary creature GUIDs and are caught by
+  `UnitPlayerControlled` whenever a nameplate is up, which is the only time the
+  addon would have shown anything anyway.
+
 ## 0.2.1
 
 - **Changed:** the miss burst is now a bare red X — the percentage is gone from

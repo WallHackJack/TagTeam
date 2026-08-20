@@ -1559,6 +1559,36 @@ local function HandleDeath(guid, name)
     SafeCall(SpawnBurst, X_TEXTURE, nil, 1, 0.35, 0.35)
 end
 
+
+-- Units this addon must never treat as a tag.
+--
+-- Anything a player is driving. Enemy players were already dropped by their GUID
+-- prefix; their pets, minions and guardians were not, so a tagger clipping a
+-- warlock's felhunter or a hunter's boar banked damage on it, badged its
+-- nameplate and buzzed when it died. None of it pays XP, so none of it was ever
+-- a tag. The prefix settles players and hunter/warlock pets outright; guardians
+-- and totems arrive as ordinary Creature GUIDs and need a unit token.
+--
+-- PvP-flagged NPCs too, under db.ignorePvP. These are the faction guards in
+-- contested Outland ground - Halaa, the Hellfire towers - and unlike a player's
+-- pet they DO pay XP, so this one is a preference rather than a fact: hitting one
+-- flags the tagger for PvP, which on a defenceless low-level alt ends the session
+-- rather than advancing it. /tag pvp for anyone who wants to grind them anyway.
+--
+-- Both token checks are blind past nameplate range. That is also the only range
+-- where the addon would have displayed anything, so the gap is invisible.
+local function IgnoredUnit(guid)
+    if not guid then return true end
+    local prefix = strsub(guid, 1, 4)
+    if prefix == "Play" or prefix == "Pet-" then return true end
+
+    local unit = guidToUnit[guid]
+    if not unit then return false end
+    if UnitPlayerControlled and UnitPlayerControlled(unit) then return true end
+    if db.ignorePvP and UnitIsPVP and UnitIsPVP(unit) then return true end
+    return false
+end
+
 local function OnCombatLog()
     local _, subevent, _, sourceGUID, sourceName, _, _, destGUID, destName,
           _, _, p12, p13, p14, p15, p16 = CombatLogGetCurrentEventInfo()
@@ -1587,7 +1617,7 @@ local function OnCombatLog()
     end
 
     if not amount or amount <= 0 then return end
-    if not destGUID or strsub(destGUID, 1, 7) == "Player-" then return end
+    if IgnoredUnit(destGUID) then return end
 
     -- Recorded before the worthless check, which the banlist feeds into.
     if destName and not mobName[destGUID] then mobName[destGUID] = destName end
@@ -2125,6 +2155,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         db = TagTeamDB
         if db.enabled     == nil then db.enabled     = true end
         if db.instanceOff == nil then db.instanceOff = true end
+        if db.ignorePvP   == nil then db.ignorePvP   = true end
         if db.includePets == nil then db.includePets = true end
         if db.audio       == nil then db.audio       = true end
         if db.sound       == nil then db.sound       = true end
@@ -2285,8 +2316,9 @@ local function Status()
     Print(format("XP base: %s | session: %d tags, ~%d XP",
         UsingOutlandBase() and "Outland" or "Azeroth",
         sessionTags, sessionXP))
-    Print(format("pets: %s | announce: %s | markers: %s | steal warning: %s | enabled: %s",
+    Print(format("pets: %s | pvp mobs: %s | announce: %s | markers: %s | steal warning: %s | enabled: %s",
         db.includePets and "on" or "off",
+        db.ignorePvP and "ignored" or "tracked",
         db.announce and "on" or "off",
         db.markers and "on" or "off",
         db.stealWarning and "on" or "off",
@@ -2353,7 +2385,7 @@ local function HandleSlash(input)
         Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
         Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
         Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
-        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag announce|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+        Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
         Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
         Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
         Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
@@ -2841,6 +2873,17 @@ local function HandleSlash(input)
     if cmd == "pets" then
         db.includePets = not db.includePets
         Print("pet damage " .. (db.includePets and "counted." or "ignored."))
+        return
+    end
+
+    -- On by default. These do pay XP, so it is a real choice - but hitting one
+    -- flags the tagger for PvP, and a defenceless low-level alt wearing a PvP
+    -- flag in contested Outland is a corpse run, not a level.
+    if cmd == "pvp" then
+        db.ignorePvP = not db.ignorePvP
+        UpdateAllPlates()
+        Print("PvP-flagged mobs " ..
+            (db.ignorePvP and "|cffff8080ignored|r." or "|cff00ff00tracked|r."))
         return
     end
 

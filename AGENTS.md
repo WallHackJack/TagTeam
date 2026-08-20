@@ -91,6 +91,16 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
 - Reactive damage (`DAMAGE_SHIELD`, `DAMAGE_SPLIT` — Thorns, Retribution Aura,
   Lightning Shield, shield spikes) **never establishes tag ownership**, though it
   still counts toward the threshold.
+- **Nothing a player drives, and nothing PvP-flagged, is ever a tag.**
+  `IgnoredUnit()` gates the damage path: enemy players by GUID prefix, their
+  hunter/warlock pets by `Pet-`, and guardians and totems — ordinary `Creature-`
+  GUIDs — by `UnitPlayerControlled` when a nameplate gives us a unit token.
+  `db.ignorePvP` (default on, `/tag pvp`) adds `UnitIsPVP`, which catches the
+  faction guards on contested Outland ground. Player-driven units are a **fact**:
+  they pay no XP, so tracking them only ever produced badges and buzzes on
+  non-tags. PvP-flagged NPCs are a **preference**: they do pay, but hitting one
+  flags the tagger. Both token checks are blind past nameplate range, which is
+  also the only range where the addon would have displayed anything.
 - Worthless mobs — grey, `UnitClassification == "minus"`, critters, and banned
   names — get no ding, float, XP, marker or steal warning; only a plain checkmark.
 - Mobs the carry tapped first show a standing X and suppress the ding, and the
