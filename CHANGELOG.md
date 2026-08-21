@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+- **Changed:** the default tag threshold is now **38%**, up from 36%. A saved 36
+  is moved to 38 at load, since it can't be told apart from a deliberate one —
+  `/tag threshold 36` puts it back. A saved 31 from before 0.2.1 is moved too, so
+  skipping a release no longer leaves you on a default two versions old.
+- **Fixed:** a tagger's hunter or warlock pet was only counted if you happened to
+  witness the summon. Pet ownership was learned from `SPELL_SUMMON` and keyed by
+  GUID, and pet GUIDs do not survive a loading screen — so a hunter who summoned
+  once and played all evening dealt half their damage into a void, and their
+  tagger read as one who could not reach the threshold. Pets are now tracked by
+  **name** as well: the name sits on the tagger's saved record, survives a
+  reload, and needs no summon to be seen. The old GUID route stays as the exact
+  one where it applies.
+- **New:** linked clients tell each other their pet over the addon channel, on
+  every summon or dismiss, at login, and whenever a link is made — the owner's
+  own client is the only one that can see a pet nobody watched arrive. Nothing
+  appears in chat; the carry prints one line naming the pet the first time it
+  learns it. Nothing to type, and it covers the carry's own pet in the other
+  direction, which taps mobs and steals tags exactly as the carry does.
+- **New:** a pet you can target, mouse over, or that shows up as your target's
+  target — where a pet holding the mob sits for most of a pull — is placed from
+  its own tooltip, which names its owner. That is the route that needs neither a
+  summon nor the other client, so a tagger who is **not** running TagTeam is
+  covered too, without anyone typing anything.
+- `/tag` now lists each tagger's pet, and their carry's pet in tagger mode.
+- Pets stay off the tagger list itself. A pet is not a head the XP formula knows
+  about, and one in the list would put its level into the lowest-level lookup and
+  bias every estimate — as adding it by hand with `/tag add` would have.
 
 - **Fixed:** joining the party mid-fight left every mob pulled for the rest of
   that combat warning about the wrong thing. Mobs you tapped said `TAGGED` —

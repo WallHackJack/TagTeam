@@ -24,11 +24,13 @@
 
 local ADDON_NAME = ...
 
-local THRESHOLD_DEFAULT = 36   -- damage share needed to tag a mob
--- Anyone whose saved threshold is still the previous default gets moved to the
--- new one at load. A saved 31 can't be told apart from a deliberate 31, so the
--- cost of being wrong is one `/tag threshold 31` for whoever meant it.
-local LEGACY_THRESHOLD  = 31
+local THRESHOLD_DEFAULT = 38   -- damage share needed to tag a mob
+-- Anyone whose saved threshold is still an old default gets moved to the current
+-- one at load. A saved 36 can't be told apart from a deliberate 36, so the cost
+-- of being wrong is one `/tag threshold 36` for whoever meant it. Every
+-- superseded default stays listed rather than only the most recent: someone who
+-- skipped a release is still sitting on the one before it.
+local LEGACY_THRESHOLDS = { [31] = true, [36] = true }
 
 -- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
 -- in: it's WA's asset, not Blizzard's, so it isn't in SOUNDKIT and can't be
@@ -159,7 +161,7 @@ local isCarryGuid = {} -- [guid]     = true once a GUID is confirmed as the carr
 local plates    = {}  -- [unitToken] = { guid = , badge = }
 local guidToUnit = {} -- [guid]      = unitToken, for instant nameplate updates
 
--- db.taggers = { [normalisedName] = { name = "Display", level = n } }
+-- db.taggers = { [normalisedName] = { name = "Display", level = n, pet = "Name" } }
 -- Their damage is pooled: the threshold is measured against the sum, which is
 -- correct when the taggers are grouped with each other and sharing a tag.
 local db                    -- TagTeamDB
@@ -256,19 +258,28 @@ local function RebuildDynamicTaggers()
     wipe(dynamicTaggers)
     if not InTaggerMode() then return end
 
-    local function add(unit)
+    -- Pets ride on their owner's entry rather than getting one of their own: a
+    -- pet is not a head the XP formula knows about, and letting one into the
+    -- table would put its level into LowestTaggerLevel and quietly bias every
+    -- estimate. Read off the unit token, which is always current for anyone
+    -- whose damage we pool here - ourselves and our party.
+    local function add(unit, petUnit)
         local name = UnitName(unit)
         local key = NormalizeName(name)
         if not key or key == db.carryKey then return end
-        dynamicTaggers[key] = { name = name, level = UnitLevel(unit) }
+        local pet = petUnit and UnitExists(petUnit) and UnitName(petUnit) or nil
+        dynamicTaggers[key] = {
+            name = name, level = UnitLevel(unit),
+            pet = pet, petKey = NormalizeName(pet),
+        }
     end
 
-    add("player")
+    add("player", "pet")
     if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do add("raid" .. i) end
+        for i = 1, GetNumGroupMembers() do add("raid" .. i, "raid" .. i .. "pet") end
     elseif IsInGroup() then
         for i = 1, 4 do
-            if UnitExists("party" .. i) then add("party" .. i) end
+            if UnitExists("party" .. i) then add("party" .. i, "party" .. i .. "pet") end
         end
     end
 end
@@ -284,6 +295,171 @@ local function TaggerKeyOf(name)
     if db and db.taggers and db.taggers[key] then return key end
     if dynamicTaggers[key] then return key end
     return nil
+end
+
+--------------------------------------------------------------------------------
+-- Pets
+--
+-- A hunter's or warlock's pet does a large share of a tagger's damage, so a pet
+-- that isn't counted reads as a tagger who can't reach the threshold.
+--
+-- Ownership arrives three ways, and all three are needed to cover the cases:
+--
+--   by GUID     petOwner, from SPELL_SUMMON. Exact, but only if we were standing
+--               there for the summon, and pet GUIDs die with every loading
+--               screen. A hunter who summons once and plays all evening is
+--               invisible to it - which is the normal case, not the edge one.
+--   by message  the owner's own client says so over the addon channel. The most
+--               reliable, and the only one that needs nothing to have been
+--               witnessed - but it needs them running TagTeam.
+--   by tooltip  the game names a pet's owner in the pet's tooltip, so any pet we
+--               get a unit token for can be placed on the spot. This is what
+--               covers a tagger who is NOT running the addon, with no summon.
+--
+-- The last two both land as a NAME on the owner's saved record, which is what
+-- survives the loading screen that kills the GUID.
+--
+-- The name route is deliberately restricted to "Pet-" GUIDs. That prefix is
+-- exactly the hunter and warlock pets this is for, and it keeps a wild mob that
+-- happens to share the name out of the tagger's damage. It does not distinguish
+-- a stranger's identically named pet, which is the one hole left; the cost is a
+-- few points of inflated share on a mob someone else is also hitting.
+-- Guardians and totems arrive as ordinary Creature- GUIDs and stay resolvable
+-- only through their summon.
+--
+-- The whole subsystem hangs off ONE main-chunk local, which is not a style
+-- choice: this file compiles against two of Lua 5.1's hard ceilings at once - 200
+-- locals in the main chunk and 60 upvalues per function - and had a single-digit
+-- number of local slots left. A table costs one slot, and one upvalue in each
+-- function that reaches for it rather than one per entry point.
+--------------------------------------------------------------------------------
+
+local Pets = { myGUID = nil }   -- myGUID: our own pet, cached off UNIT_PET
+
+function Pets.IsPetGuid(guid)
+    return (guid and strsub(guid, 1, 4) == "Pet-") or false
+end
+
+-- The tagger whose pet this is, or nil. Compared against a pre-normalised key
+-- because this runs per damage event from every pet in range, strangers included.
+function Pets.TaggerKey(guid, name)
+    if not Pets.IsPetGuid(guid) then return nil end
+    local petKey = NormalizeName(name)
+    if not petKey then return nil end
+
+    if db and db.taggers then
+        for key, info in pairs(db.taggers) do
+            if info.petKey == petKey then return key end
+        end
+    end
+    for key, info in pairs(dynamicTaggers) do
+        if info.petKey == petKey then return key end
+    end
+    return nil
+end
+
+-- One landing spot for a pet name, whichever way it arrived. Both halves of the
+-- pair: a carry's pet taps mobs and steals tags exactly as the carry does, so a
+-- tagger's client needs the answer in that direction too.
+--
+-- Only ever writes to the saved records. dynamicTaggers is derived from unit
+-- tokens on every roster change and would throw this away.
+function Pets.Learn(ownerName, petName)
+    local key = NormalizeName(ownerName)
+    if not key or not db then return end
+    if petName == "" then petName = nil end
+    local petKey = NormalizeName(petName)
+
+    local who
+    if key == db.carryKey then
+        if petKey == db.carryPetKey then return end
+        db.carryPet, db.carryPetKey, who = petName, petKey, db.carry
+    else
+        local info = db.taggers and db.taggers[key]
+        if not info or petKey == info.petKey then return end
+        info.pet, info.petKey, who = petName, petKey, info.name
+    end
+
+    -- Silent when a pet goes away: a dismissed pet deals no damage, so there is
+    -- nothing to tell anyone. Learning one changes what counts, so that is said.
+    if petName then
+        Print(format("|cff00ff00%s|r's pet |cff00ff00%s|r counts as their damage.",
+            who, petName))
+    end
+end
+
+-- The third route in, and the only one that needs neither a summon nor the other
+-- client: the game itself names a pet's owner, in the pet's tooltip. Built from
+-- UNITNAME_TITLE_PET and friends rather than a hardcoded "'s Pet", so it holds in
+-- every locale - and if this client turns out not to carry those strings, the
+-- list comes back empty and the whole route quietly does not exist.
+--
+-- Wrapped in a do block, and not for tidiness: locals declared inside a block
+-- release their slots at the end of it, so the three helpers here cost the main
+-- chunk nothing. See the ceilings note at the top of this section.
+do
+
+local ownerPatterns
+local scanTip
+
+local function OwnerPatterns()
+    if ownerPatterns then return ownerPatterns end
+    ownerPatterns = {}
+    local titles = { UNITNAME_TITLE_PET, UNITNAME_TITLE_MINION,
+                     UNITNAME_TITLE_GUARDIAN, UNITNAME_TITLE_CREATION }
+    for i = 1, #titles do
+        local s = titles[i]
+        if type(s) == "string" and s ~= "" then
+            -- "%s's Pet" becomes "^(.+)'s Pet$": escape every magic character in
+            -- the literal half first, then open the one substitution back up.
+            s = gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+            s = gsub(s, "%%%%s", "(.+)")
+            ownerPatterns[#ownerPatterns + 1] = "^" .. s .. "$"
+        end
+    end
+    return ownerPatterns
+end
+
+local function OwnerFromTooltip(unit)
+    local patterns = OwnerPatterns()
+    if #patterns == 0 then return nil end
+
+    if not scanTip then
+        if not CreateFrame then return nil end
+        scanTip = CreateFrame("GameTooltip", "TagTeamScanTooltip", nil, "GameTooltipTemplate")
+    end
+
+    -- Re-owned every call: a tooltip that has lost its owner populates nothing,
+    -- and ANCHOR_NONE on UIParent is what keeps it off the screen.
+    scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+    scanTip:ClearLines()
+    scanTip:SetUnit(unit)
+    -- Line 1 is the pet's own name; the owner is on one of the lines under it.
+    for i = 2, scanTip:NumLines() do
+        local line = _G["TagTeamScanTooltipTextLeft" .. i]
+        local text = line and line:GetText()
+        if text then
+            for j = 1, #patterns do
+                local owner = strmatch(text, patterns[j])
+                if owner then return owner end
+            end
+        end
+    end
+    return nil
+end
+
+-- A pet on a unit token we can inspect. Cheap enough for the 2s scan: it only
+-- reaches the tooltip for a pet we have not already placed, and during a boost
+-- the tagger's pet is usually holding the mob, which puts it in targettarget.
+function Pets.Notice(unit)
+    local guid = UnitGUID(unit)
+    if not Pets.IsPetGuid(guid) then return end
+    if Pets.TaggerKey(guid, UnitName(unit)) then return end  -- already placed
+
+    local owner = OwnerFromTooltip(unit)
+    if owner then Pets.Learn(owner, UnitName(unit)) end      -- no-op unless ours
+end
+
 end
 
 -- The other half of an established pair, in EITHER direction: our carry, or one
@@ -829,7 +1005,11 @@ end
 local function MatchesCarry(guid, name)
     if not InTaggerMode() then
         if guid == playerGUID then return true end
-        return (db.includePets and petOwner[guid] == playerGUID) or false
+        if not db.includePets then return false end
+        -- Our own pet needs no summon and no name: the client will tell us its
+        -- GUID outright. petOwner stays as the fallback for the frame or two
+        -- before UNIT_PET has been round.
+        return guid == Pets.myGUID or petOwner[guid] == playerGUID
     end
 
     if isCarryGuid[guid] then return true end
@@ -840,6 +1020,10 @@ local function MatchesCarry(guid, name)
     if db.includePets then
         local owner = petOwner[guid]
         if owner and isCarryGuid[owner] then return true end
+        if db.carryPetKey and Pets.IsPetGuid(guid)
+            and NormalizeName(name) == db.carryPetKey then
+            return true
+        end
     end
     return false
 end
@@ -859,6 +1043,11 @@ local function MatchesTracked(guid, name)
     if db.includePets then
         local owner = petOwner[guid]
         if owner and isTracked[owner] then return isTracked[owner] end
+        -- Deliberately not cached into isTracked: that table means "this GUID is
+        -- the tagger themselves", and SampleTrackedLevel reads it to decide whose
+        -- level it just saw. A pet in there would write the pet's level onto its
+        -- owner and hang the triangle on the pet.
+        return Pets.TaggerKey(guid, name)
     end
 
     return nil
@@ -1207,7 +1396,15 @@ end
 -- sample it whenever they pass through a unit we can inspect. Targeting them once
 -- is enough, and it re-samples as they level.
 local function SampleTrackedLevel(unit)
-    if not HasTaggers() or not UnitExists(unit) or not UnitIsPlayer(unit) then return end
+    if not HasTaggers() or not UnitExists(unit) then return end
+
+    -- Not a player, but it may be a tagger's pet. Hung here rather than on its own
+    -- scan so it inherits every call site this already has: the 2s sweep over
+    -- eight tokens, targeting, and mouseover.
+    if not UnitIsPlayer(unit) then
+        SafeCall(Pets.Notice, unit)
+        return
+    end
 
     local guid = UnitGUID(unit)
     local key = guid and isTracked[guid] or TaggerKeyOf(UnitName(unit))
@@ -1615,9 +1812,14 @@ local function OnCombatLog()
         return
     end
 
-    -- Pet damage can't be matched by name, so learn ownership from summons.
+    -- Learn ownership from summons: by GUID for anyone, and by name for a pet
+    -- belonging to someone we care about. CLEU pairs both ends here, and the name
+    -- is the half that survives the next loading screen - see the Pets section.
+    -- Gated on a Pet- destination so a warlock's Infernal, a guardian with an
+    -- ordinary Creature- GUID, can't overwrite the felhunter that does the work.
     if subevent == "SPELL_SUMMON" then
         petOwner[destGUID] = sourceGUID
+        if Pets.IsPetGuid(destGUID) then Pets.Learn(sourceName, destName) end
         return
     end
 
@@ -1752,6 +1954,48 @@ SendAddon = function(msg, target)
     end
 end
 
+-- Both halves of the pair, in either direction. Returns how many were reached,
+-- which is zero when comms are off - the caller uses that to decide whether it
+-- can honestly claim the other client heard anything.
+--
+-- Defined this early so the pairing popup can announce a pet the moment a link
+-- is accepted, rather than leaving the new partner to wait for a summon.
+local function SendToPartners(msg)
+    if not db.comms then return 0 end
+    local n = 0
+    if db.carry then SendAddon(msg, db.carry); n = n + 1 end
+    if db.taggers then
+        for _, info in pairs(db.taggers) do SendAddon(msg, info.name); n = n + 1 end
+    end
+    return n
+end
+
+-- Our own pet, to one partner or to both halves of the pair.
+--
+-- This is the message that makes a pet reliable rather than lucky: the other
+-- client cannot see a pet that was summoned before it arrived, and pet GUIDs do
+-- not survive a loading screen. Our own client always knows. Sent on every pet
+-- change, at login, and whenever a link is established or re-verified.
+--
+-- An empty name is the clear, and is what a dismissed pet sends.
+local AnnouncePet
+do
+local lastSent   -- block-scoped: main-chunk local slots are scarce, see Pets
+AnnouncePet = function(target)
+    local msg = "PET:" .. ((UnitExists("pet") and UnitName("pet")) or "")
+
+    -- Aimed at one partner: always sent. This is the newly-linked or just-logged-
+    -- in case, where the dedupe below would be exactly wrong.
+    if target then SendAddon(msg, target); return end
+
+    -- UNIT_PET fires on more than summons - dismissals, deaths, a pet swap - and
+    -- this rides the whisper channel, so a broadcast only goes out on a change.
+    if msg == lastSent then return end
+    lastSent = msg
+    SendToPartners(msg)
+end
+end
+
 local function InviteToParty(name)
     if C_PartyInfo and C_PartyInfo.InviteUnit then
         C_PartyInfo.InviteUnit(name)
@@ -1779,6 +2023,8 @@ end
 local function SetCarryTo(name)
     db.carry = gsub(name, "^%l", strupper)
     db.carryKey = NormalizeName(name)
+    -- A new carry's pet is not the old carry's pet.
+    db.carryPet, db.carryPetKey = nil, nil
     -- UpdateMacroButton matters here: in tagger mode the carry IS the follow
     -- target, so leaving the secure button stale makes the keybind a no-op.
     RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
@@ -1788,7 +2034,7 @@ end
 -- boosted, never both. Switching always clears the other side, and never without
 -- asking - the old set is someone's configuration, not scratch data.
 local function SwitchToCarryMode(taggerName)
-    db.carry, db.carryKey = nil, nil
+    db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
     RebuildDynamicTaggers()
     return AddTagger(taggerName)
 end
@@ -1843,24 +2089,12 @@ StaticPopupDialogs["TAGTEAM_PAIR"] = {
             Print(format("|cff00ff00%s|r added as a tagger.", info and info.name or data.who))
         end
         SendAddon("OK", data.who)
+        AnnouncePet(data.who)
     end,
     OnCancel = function(_, data)
         if data then SendAddon("NO", data.who) end
     end,
 }
-
--- Both halves of the pair, in either direction. Returns how many were reached,
--- which is zero when comms are off - the caller uses that to decide whether it
--- can honestly claim the other client heard anything.
-local function SendToPartners(msg)
-    if not db.comms then return 0 end
-    local n = 0
-    if db.carry then SendAddon(msg, db.carry); n = n + 1 end
-    if db.taggers then
-        for _, info in pairs(db.taggers) do SendAddon(msg, info.name); n = n + 1 end
-    end
-    return n
-end
 
 -- One landing spot for a new threshold, whether it came from our own slash
 -- command or from the other client. `alerted` is wiped so a mob that already
@@ -1922,9 +2156,18 @@ local function OnAddonMessage(msg, sender)
 
     elseif cmd == "HELLO" then
         SendAddon("HI", who)   -- silent handshake; both ends are now marked linked
+        AnnouncePet(who)       -- they just logged in; their copy of our pet is gone
 
     elseif cmd == "HI" then
-        -- Nothing to say. Arriving at all is the whole message.
+        -- Nothing to say. Arriving at all is the whole message - our own pet went
+        -- out with the HELLO, and answering theirs would only bounce it back.
+
+    elseif cmd == "PET" then
+        -- Their pet, named by the only client that can see it without having
+        -- witnessed the summon. Partners only: this writes into damage
+        -- accounting, and a stranger must not get to point it anywhere.
+        if not IsPartner(who) then return end
+        Pets.Learn(who, arg or "")
 
     elseif cmd == "INV" then
         -- Only ever from the other half of an established pair. Without this
@@ -1935,6 +2178,7 @@ local function OnAddonMessage(msg, sender)
 
     elseif cmd == "OK" then
         Print(format("|cff00ff00TagTeam linked|r with %s.", who))
+        AnnouncePet(who)
 
     elseif cmd == "NO" then
         Print(format("|cffff8080%s|r declined the pairing.", who))
@@ -2014,6 +2258,22 @@ end
 -- confirms they still do, and re-marks them if the saved table was lost.
 local function GreetPartners()
     SendToPartners("HELLO")
+    -- Our pet, unprompted. A hunter who summoned before logging in generates no
+    -- summon for anyone to see, so this is the only notice the other end gets.
+    AnnouncePet()
+end
+
+-- Our own pet changed. Three jobs: cache the GUID the carry-mode damage path
+-- matches on, re-derive the party pets that ride on dynamicTaggers entries, and
+-- tell the other client. UNIT_PET is the only notice that a pet was summoned,
+-- dismissed, or swapped.
+local function OnPetChanged(unit)
+    if not db then return end   -- events are registered at load, before ADDON_LOADED
+    if unit == "player" then
+        Pets.myGUID = UnitExists("pet") and UnitGUID("pet") or nil
+        AnnouncePet()
+    end
+    RebuildDynamicTaggers()
 end
 
 -- At max level PLAYER_XP_UPDATE never fires, so there's nothing to hang a report
@@ -2100,6 +2360,7 @@ frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_XP_UPDATE")
+frame:RegisterEvent("UNIT_PET")
 
 -- Events that keep running while suspended. Everything else - the combat log,
 -- XP reporting, level sampling, invites, roster and grouped-combat warnings -
@@ -2130,6 +2391,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if arg1 == ADDON_PREFIX then OnAddonMessage(arg2, arg4) end
     elseif event == "PLAYER_XP_UPDATE" then
         ReportXPGain()
+    elseif event == "UNIT_PET" then
+        OnPetChanged(arg1)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         OnNameplateAdded(arg1)
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
@@ -2170,6 +2433,9 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         ResetAll()
         RefreshContinent()
         playerGUID = UnitGUID("player")
+        -- A pet already out at login fires no UNIT_PET on some paths, and its
+        -- GUID is new after every loading screen.
+        Pets.myGUID = UnitExists("pet") and UnitGUID("pet") or nil
         RebuildDynamicTaggers()
         -- Delayed: the chat system isn't ready to carry addon messages at login.
         C_Timer.After(5, GreetPartners)
@@ -2220,7 +2486,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.missFile  == nil then db.missFile  = DEFAULT_MISS_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
         if db.missFile == LEGACY_MISS_FILE then db.missFile = DEFAULT_MISS_FILE end
-        if db.threshold == LEGACY_THRESHOLD then db.threshold = THRESHOLD_DEFAULT end
+        if LEGACY_THRESHOLDS[db.threshold] then db.threshold = THRESHOLD_DEFAULT end
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
         if db.name then
@@ -2317,7 +2583,8 @@ end
 
 local function Status()
     if InTaggerMode() then
-        Print(format("|cffffff00tagger mode|r - carry is |cff00ff00%s|r.", db.carry))
+        Print(format("|cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.", db.carry,
+            db.carryPet and format(" with pet |cff00ff00%s|r", db.carryPet) or ""))
     end
 
     local names = TaggerNames()
@@ -2328,12 +2595,13 @@ local function Status()
             #names, #names == 1 and "" or "s", db.threshold))
         for i = 1, #names do
             local info = TaggerInfo(NormalizeName(names[i]))
-            Print(format("  |cff00ff00%s|r  level %s  %s  %s", names[i],
+            Print(format("  |cff00ff00%s|r  level %s  %s  %s%s", names[i],
                 (info and info.level) or "|cffff8080?|r",
                 (info and info.marker) and MARKER_NAMES[info.marker]
                     or "|cffff8080no marker|r",
                 (info and info.confirmed) and "|cff00ff00confirmed|r"
-                    or "|cff808080unverified|r"))
+                    or "|cff808080unverified|r",
+                (info and info.pet) and format("  pet |cff00ff00%s|r", info.pet) or ""))
         end
     end
     Print(format("XP base: %s | session: %d tags, ~%d XP",
@@ -2500,7 +2768,7 @@ local function HandleSlash(input)
     if cmd == "carry" then
         local name = strtrim(rest or "")
         if strlower(name) == "off" or strlower(name) == "none" then
-            db.carry, db.carryKey = nil, nil
+            db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
             RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
             Print("carry cleared - back to |cffffff00carry mode|r (you do the killing).")
             return
@@ -2593,7 +2861,7 @@ local function HandleSlash(input)
     if cmd == "reset" or cmd == "clear" or cmd == "off" or cmd == "none" then
         -- Clears both roles: reset means "no relationships", not "no taggers".
         wipe(db.taggers)
-        db.carry, db.carryKey = nil, nil
+        db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
         RebuildDynamicTaggers()
         ResetAll(); UpdateAllPlates(); UpdateMacroButton()
         Print("cleared - no taggers, no carry.")

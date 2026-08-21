@@ -16,7 +16,7 @@ Type `/tag` for all options.
 
 - **Live percentage on every nameplate.** Watch a mob climb toward the threshold
   and hold off until it's there.
-- **A sound and a stamped checkmark at 36%**, so you never have to stare at
+- **A sound and a stamped checkmark at 38%**, so you never have to stare at
   numbers mid-pull.
 - **Real XP reporting, checked against the estimate.** When both sides run
   TagTeam, your alt's client sends its actual XP gain — rested included — and it
@@ -41,6 +41,12 @@ Type `/tag` for all options.
   worth a rounding error — the X says so, and every other cue stays quiet rather
   than promising XP nobody earned. It sticks until the mob dies or resets, even
   if you drop the party mid-fight.
+- **Pets count, without being asked.** A hunter's or warlock's pet does a large
+  share of a tagger's damage. Linked clients tell each other their pet by name,
+  so it counts even when it was summoned before you logged in — and a tagger who
+  isn't running TagTeam is placed from the pet's own tooltip the first time it
+  crosses your target, your mouseover, or your target's target. `/tag` lists who
+  owns what, and `/tag pets` turns the whole thing off.
 - **Raid markers** on the mobs your taggers have claimed — skull, cross, square.
 - **One keybind to target, follow and focus your partner.** It builds itself from
   whoever you've set up, tries each of them in priority order, and falls back to
@@ -96,7 +102,7 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag` | Full status and command list |
 | `/tag add <name>` / `/tag remove <name>` | Manage taggers |
 | `/tag carry <name>` | Run on a tagger's client |
-| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 36%, on both linked clients |
+| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients |
 | `/tag xp` | Session totals, estimated and actual |
 | `/tag macro` | Copyable target/follow/focus macro |
 | `/tag ban <mob>` | Ignore a mob by name entirely |

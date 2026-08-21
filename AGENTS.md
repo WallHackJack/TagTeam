@@ -16,7 +16,7 @@ opposite characters. Do not reintroduce any of them.
 
 - **carry** — the high-level character doing the killing.
 - **tagger** — a low-level character being levelled, who must deal `db.threshold`
-  percent (default **36%**) of a mob's max health to earn credit for the kill.
+  percent (default **38%**) of a mob's max health to earn credit for the kill.
 
 There can be several taggers. **Their damage is pooled** against the one
 threshold, which is correct when they are grouped with each other, since a party
@@ -129,6 +129,30 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
   `UnitHealth` can still report the pre-hit value on the frame the combat log
   delivers a hit, so without it a mob would read as "full" the instant we damaged
   it and un-brand itself immediately.
+- **A pet is a field on its owner's record, never a tagger of its own.**
+  `info.pet` / `info.petKey` on `db.taggers` entries, `db.carryPet` for the other
+  direction, and `pet`/`petKey` on `dynamicTaggers` entries read off `pet`,
+  `partyNpet`, `raidNpet`. Putting a pet in the list instead would feed its level
+  to `LowestTaggerLevel` and bias every XP estimate, hang a marker on it, and put
+  it in the follow macro. Two independent ways in, and both are needed:
+  `petOwner` by GUID from `SPELL_SUMMON` is exact but requires having witnessed
+  the summon and dies with every loading screen; the **name** survives both,
+  which is what makes a pet summoned before you arrived countable at all.
+  `Pets.TaggerKey` is restricted to `Pet-` GUIDs so a wild mob sharing the name
+  cannot bank tagger damage, and it deliberately does **not** cache into
+  `isTracked` — that table means "this GUID is the tagger themselves", and
+  `SampleTrackedLevel` reads it to decide whose level it just sampled.
+- **Three ways in, and all three are load-bearing.** `SPELL_SUMMON` (exact,
+  needs to have been witnessed), the `PET:` message (needs them running
+  TagTeam), and the pet's **tooltip** (needs only a unit token — the one route
+  that covers a tagger without the addon whose pet was summoned before you
+  arrived). The tooltip scan hangs off `SampleTrackedLevel`'s non-player branch
+  so it inherits every call site that already has: the 2 s sweep over
+  `SCAN_TOKENS`, targeting, and mouseover. `targettarget` is the productive one,
+  since a pet holding the mob sits there for most of a pull. Owner patterns are
+  built from `UNITNAME_TITLE_PET` and friends, never a hardcoded `'s Pet`; if a
+  client lacks those globals the list comes back empty and the route disappears
+  rather than misfiring.
 - Marker slots are **derived, never handed out**: confirmed taggers sort by who
   answered first, unconfirmed by when they were added. Only three slots exist
   (triangle/diamond/orange, indices 4/3/2). Mob tags use 8/7/6 and cannot clash.
@@ -153,6 +177,7 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `INV` | either | Ask the other end to invite *us*. Sent by the carry's out-of-range check and by `/tag inv` from either side. **Only honoured from an established pair.** |
 | `THRESH:<n>` | either | New tag threshold, pushed by `/tag threshold`. Applied silently, **partners only**. Not relayed onward. |
 | `XP:<n>` | tagger → carry | Real XP from `UnitXP` deltas. `0` means max level. |
+| `PET:<name>` | either | Our own pet, by name. Empty name clears. **Partners only** — it writes into damage accounting. Sent on `UNIT_PET`, at login, and on every link established or re-verified; broadcasts are deduped against the last one sent, direct sends are not. |
 
 `db.linked` persists so a `/reload` does not silently drop back to visible
 whispers. A saved link proves they *had* the addon, not that they are listening —
@@ -296,6 +321,20 @@ No automated test suite. For every change:
 
   Over the line: split `HandleSlash`'s `if cmd ==` chain into two functions
   rather than shaving references one at a time.
+- **Main-chunk local ceiling — 200, and the file is near it.** Lua allows 200
+  locals per function, and the main chunk is a function: every file-level `local`
+  spends one. `luac -p` says `too many local variables (limit is 200) in main
+  function`, pointing at whichever declaration happened to be the 201st, which is
+  rarely the one at fault. Measure the headroom rather than guessing:
+
+  ```
+  cp TagTeam.lua /tmp/t.lua && for i in $(seq 1 8); do echo "local zz$i" >> /tmp/t.lua; luac -p /tmp/t.lua || { echo "headroom $((i-1))"; break; }; done
+  ```
+
+  Two ways to spend less: put helpers in a `do ... end` block, which releases
+  their slots at the end of it, and hang a subsystem off one table rather than a
+  local per function — `Pets` does both, and the table also costs its callers one
+  upvalue instead of one per entry point.
 - Reload in-game and exercise the affected path.
 - `/tag` for full status, `/tag diag` for the runtime picture including the last
   captured cosmetic error (cleared on read, so a second run shows whether it
