@@ -2512,10 +2512,24 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.focusWarning == nil then db.focusWarning = true end
         if db.groupWarning == nil then db.groupWarning = true end
         if db.autoLeave    == nil then db.autoLeave    = true end
-        -- Seeded once. Clearing it stays cleared; this won't re-add itself.
+        -- Seeded by version, so each name is offered exactly ONCE. Unbanning one
+        -- deliberately must not have it come back on the next load, and a plain
+        -- "add it if missing" check would do exactly that. A banlist saved
+        -- before this marker existed has already been offered everything in
+        -- seed 1, so it starts there rather than at zero.
         if db.banlist == nil then
-            db.banlist = { ["netherweb victim"] = "Netherweb Victim" }
+            db.banlist, db.banlistSeed = {}, 0
         end
+        db.banlistSeed = db.banlistSeed or 1
+
+        if db.banlistSeed < 1 then
+            db.banlist["netherweb victim"] = "Netherweb Victim"
+        end
+        if db.banlistSeed < 2 then
+            db.banlist["darkness released"] = "Darkness Released"
+            db.banlist["foul purge"]        = "Foul Purge"
+        end
+        db.banlistSeed = 2
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
         db.badgePos = C.BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"

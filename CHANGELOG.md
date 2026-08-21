@@ -26,6 +26,11 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
+- **New:** Darkness Released and Foul Purge are ignored by default, like
+  Netherweb Victim. `/tag unban <name>` drops any of them if you want them
+  counted. Existing installs pick the two new names up — the default list is
+  seeded by version now, so each name is offered exactly once and one you
+  deliberately unbanned never comes back on the next load.
 - **Internal:** `/tag` moved to its own file, `SlashCommands.lua`, and its 575-line
   `if/elseif` chain became a command table — one function per command, aliases as
   assignments. That was the function pinned to Lua's 60-upvalue-per-function
