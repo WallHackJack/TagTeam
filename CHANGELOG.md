@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed:** an invite that worked could still be followed by the visible "inv"
+  whisper, and then the two of you bounced in and out of a party. The addon-link
+  invite lands, the party forms, the auto-leave puts you back out of it because
+  the tagger is in range — all inside the eight seconds the backup whisper waits.
+  The whisper then found no party, assumed the link had failed, and asked again
+  out loud, drawing a second invite and a second auto-leave. It now asks whether
+  a party formed *since* the request rather than whether one exists right now, so
+  an invite that arrived cancels the backup whether or not you are still in it.
+- Both copies of that logic — the automatic out-of-range path and `/tag inv` —
+  are now one function, so the two can't drift apart again.
+- **Fixed:** with `/tag comms` off but a saved link, the automatic path claimed
+  "asked X to invite (addon link)" and sent nothing, then whispered eight seconds
+  later. It now whispers immediately, which is all it could ever have done.
+- The backup whisper no longer checks `/tag autoinvite` when it fires. It
+  completes a request already made, and the check meant a hand-typed `/tag inv`
+  had no backup at all when auto-invite was switched off.
+
 ## 0.3.0
 
 - **Changed:** the default tag threshold is now **38%**, up from 36%. A saved 36

@@ -159,6 +159,15 @@ rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
 - "Confirmed" means their addon has talked to ours, or we have seen them on a unit
   token. Any name can be added; only a confirmed one can hold the triangle.
 - Only the player we held **focus** on gets asked for an invite.
+- **The backup whisper asks whether a party formed *since* the request, never
+  whether one exists now.** `AskForInvite` captures `sentAt` and its timer bails
+  when `groupedAt >= sentAt`. A live `IsInGroup()` test is the wrong question and
+  produced a loop: the link invite lands, we accept, `CheckAutoLeave` drops the
+  party because the tagger is in range, and all of that fits inside
+  `INVITE_FALLBACK` (8 s) — so the timer saw no group, whispered out loud, drew a
+  second invite, and the pair bounced. `WHISPER_COOLDOWN` is the only thing that
+  ever stopped it. Both entry points, the out-of-range ticker and `/tag inv`, go
+  through the one function so they cannot drift.
 - `TaggerKeyOf` and `IsPartner` answer different questions and are not
   interchangeable. Tagger mode keeps the carry **out** of `dynamicTaggers` on
   purpose — the carry's damage is never pooled — so `TaggerKeyOf` says no to our

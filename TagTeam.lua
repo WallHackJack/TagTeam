@@ -1531,6 +1531,46 @@ local function CheckAutoLeave()
     LeaveTaggerParty()
 end
 
+-- Ask one partner to invite us: over the addon link where there is one, by a
+-- visible whisper where there isn't. `why` prefixes the chat line with the
+-- context the caller has and this doesn't.
+--
+-- The fallback whisper is the delicate part. It exists because a saved link
+-- proves they HAD the addon, not that it is listening now - but it must not fire
+-- when the link worked. `IsInGroup()` at fire time is NOT that question: the
+-- invite lands, we accept, and the auto-leave can put us back out of the party
+-- inside the eight seconds, all before the timer runs. It then sees no group,
+-- whispers, draws a second invite, and the two of you bounce in and out of a
+-- party until someone types something. So it asks whether we joined a group at
+-- any point SINCE the ask, which an accepted invite always satisfies.
+local function AskForInvite(target, why)
+    local key = NormalizeName(target)
+    local sentAt = GetTime()
+
+    -- Claims the rate limit either way, so a hand-typed ask can't be followed by
+    -- the ticker asking again a second later.
+    lastWhisperAt = sentAt
+    askedForInvite = true
+
+    if db.comms and linked[key] then
+        SendAddon("INV", target)
+        Print(format("%sasked |cff00ff00%s|r to invite you |cff808080(addon link)|r.",
+            why or "", target))
+
+        C_Timer.After(INVITE_FALLBACK, function()
+            if IsInGroup() or IsInRaid() then return end
+            if groupedAt >= sentAt then return end   -- it worked; we have been and gone
+            SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+            Print(format("no invite from %s - whispered \"%s\" instead.",
+                target, INVITE_MESSAGE))
+        end)
+    else
+        SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+        Print(format("%swhispered \"%s\" to |cff00ff00%s|r.",
+            why or "", INVITE_MESSAGE, target))
+    end
+end
+
 -- Nag when we're clearly levelling but nothing is focused, since out-of-range
 -- detection is blind without it. Silent if focus points anywhere at all, even at
 -- something unrelated - that's a deliberate choice by the user, not an oversight.
@@ -1600,24 +1640,7 @@ local function CheckContact()
     end
     if not target then return end
 
-    lastWhisperAt = GetTime()
-    askedForInvite = true
-
-    if linked[NormalizeName(target)] then
-        SendAddon("INV", target)
-        Print(format("out of range - asked |cff00ff00%s|r to invite (addon link).", target))
-
-        -- A saved link says they HAD the addon, not that they're listening now.
-        C_Timer.After(INVITE_FALLBACK, function()
-            if not db.autoInvite or IsInGroup() or IsInRaid() then return end
-            SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
-            Print(format("no invite from %s - whispered \"%s\" instead.",
-                target, INVITE_MESSAGE))
-        end)
-    else
-        SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
-        Print(format("out of range - whispered \"%s\" to %s.", INVITE_MESSAGE, target))
-    end
+    AskForInvite(target, "out of range - ")
 end
 
 -- Put one of the three markers on a mob the tagger has tagged. Marking is not a
@@ -3099,28 +3122,9 @@ local function HandleSlash(input)
             return
         end
 
-        -- Claim the automatic path's rate limit rather than sitting outside it,
-        -- so asking by hand can't be followed by the ticker asking again a second
-        -- later. No cooldown CHECK though - this one was typed, so it happens.
-        lastWhisperAt = GetTime()
-        askedForInvite = true
-
-        if db.comms and linked[key] then
-            SendAddon("INV", target)
-            Print(format("asked |cff00ff00%s|r to invite you |cff808080(addon link)|r.",
-                target))
-
-            -- A saved link proves they HAD the addon, not that it's listening now.
-            C_Timer.After(INVITE_FALLBACK, function()
-                if IsInGroup() or IsInRaid() then return end
-                SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
-                Print(format("no invite from %s - whispered \"%s\" instead.",
-                    target, INVITE_MESSAGE))
-            end)
-        else
-            SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
-            Print(format("whispered \"%s\" to |cff00ff00%s|r.", INVITE_MESSAGE, target))
-        end
+        -- No cooldown CHECK - this one was typed, so it happens. AskForInvite
+        -- still claims the cooldown, so the ticker can't ask again a second later.
+        AskForInvite(target)
         return
     end
 
