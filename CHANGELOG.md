@@ -26,11 +26,15 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
-- **New:** Darkness Released and Foul Purge are ignored by default, like
-  Netherweb Victim. `/tag unban <name>` drops any of them if you want them
-  counted. Existing installs pick the two new names up — the default list is
-  seeded by version now, so each name is offered exactly once and one you
-  deliberately unbanned never comes back on the next load.
+- **New:** Darkness Released and Foul Purge are ignored by default, alongside
+  Netherweb Victim. `/tag unban <name>` counts any of them again, and `/tag
+  banlist` now marks which entries came with the addon.
+- **Changed:** the default ignore list lives in the addon instead of being copied
+  into your saved settings the first time you ran it. That copy was why a new
+  default would have reached nobody who had played before — everyone already had
+  a list, so the seeding never ran again. Your saved settings now hold only what
+  you changed: mobs you banned, and any of ours you turned off. Existing settings
+  convert on the next login, and a default you had already unbanned stays off.
 - **Internal:** `/tag` moved to its own file, `SlashCommands.lua`, and its 575-line
   `if/elseif` chain became a command table — one function per command, aliases as
   assignments. That was the function pinned to Lua's 60-upvalue-per-function

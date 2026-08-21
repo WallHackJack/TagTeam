@@ -697,13 +697,37 @@ local function IsGrey(guid)
     return (pl - ml) >= ZeroDiff(pl)
 end
 
--- Named mobs you never want tracked, whatever their level says. Netherweb Victims
--- ship banned: they're the cocoon spawns in Terokkar, and they clutter a grind
--- with tags nobody wants.
+-- Named mobs never worth tracking, whatever their level says. Netherweb Victims
+-- are the cocoon spawns in Terokkar, and they clutter a grind with tags nobody
+-- wants.
+--
+-- The defaults live HERE, in code, and are never copied into saved data. That is
+-- the whole point: shipping a new one takes effect for everybody on the next
+-- login, with nothing to migrate. The previous arrangement seeded them into
+-- SavedVariables at first run, which meant a new default reached nobody who had
+-- ever run the addon before.
+C.BANNED_DEFAULT = {
+    ["netherweb victim"]  = "Netherweb Victim",
+    ["darkness released"] = "Darkness Released",
+    ["foul purge"]        = "Foul Purge",
+}
+
+-- db.banlist holds only what the user changed, which is why it is tri-state:
+--
+--   a string   they banned this name; the value is how to display it
+--   false      they unbanned one of ours, which has to outlive the default
+--   nil        they never said anything, so the default decides
+--
+-- Without the `false` case an unban would last until the next login and then
+-- quietly undo itself.
 local function IsBanned(guid)
     local name = state.mobName[guid]
-    if not name or not db or not db.banlist then return false end
-    return db.banlist[strlower(name)] ~= nil
+    if not name or not db then return false end
+
+    local key = strlower(name)
+    local user = db.banlist and db.banlist[key]
+    if user ~= nil then return user ~= false end
+    return C.BANNED_DEFAULT[key] ~= nil
 end
 
 -- Grey mobs, trivial minions and banned names pay nothing, so they get no
@@ -2512,24 +2536,29 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.focusWarning == nil then db.focusWarning = true end
         if db.groupWarning == nil then db.groupWarning = true end
         if db.autoLeave    == nil then db.autoLeave    = true end
-        -- Seeded by version, so each name is offered exactly ONCE. Unbanning one
-        -- deliberately must not have it come back on the next load, and a plain
-        -- "add it if missing" check would do exactly that. A banlist saved
-        -- before this marker existed has already been offered everything in
-        -- seed 1, so it starts there rather than at zero.
-        if db.banlist == nil then
-            db.banlist, db.banlistSeed = {}, 0
+        -- One-time conversion from the scheme that copied defaults into saved
+        -- data. Under that one, deleting an entry WAS the unban, so a default
+        -- missing from an existing list means the user removed it deliberately -
+        -- and that has to become an explicit `false` before the defaults start
+        -- applying on their own, or it would come back on this very login.
+        --
+        -- Netherweb Victim is the only name that scheme ever shipped, so it is
+        -- the only one where "absent" carries that meaning. Entries that merely
+        -- duplicate a current default are dropped; the default covers them.
+        --
+        -- Guarded on db.banlist rather than the flag, so a brand-new install
+        -- (no saved list at all) is never read as somebody having removed things.
+        if db.banlist and not db.banlistMigrated then
+            if db.banlist["netherweb victim"] == nil then
+                db.banlist["netherweb victim"] = false
+            end
+            for key in pairs(C.BANNED_DEFAULT) do
+                if db.banlist[key] then db.banlist[key] = nil end
+            end
         end
-        db.banlistSeed = db.banlistSeed or 1
-
-        if db.banlistSeed < 1 then
-            db.banlist["netherweb victim"] = "Netherweb Victim"
-        end
-        if db.banlistSeed < 2 then
-            db.banlist["darkness released"] = "Darkness Released"
-            db.banlist["foul purge"]        = "Foul Purge"
-        end
-        db.banlistSeed = 2
+        db.banlist = db.banlist or {}
+        db.banlistMigrated = true
+        db.banlistSeed = nil   -- retired with the scheme that used it
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
         db.badgePos = C.BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"

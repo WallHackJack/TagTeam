@@ -283,9 +283,21 @@ commands["ban"] = function(rest, cmd)
 
     if cmd == "unban" and name ~= "" then
         local key = strlower(name)
-        if db.banlist[key] then
-            local was = db.banlist[key]
-            db.banlist[key] = nil
+        local was = db.banlist[key] or C.BANNED_DEFAULT[key]
+        if was and db.banlist[key] ~= false then
+            -- One of ours is unbanned by overriding it, not by deleting it -
+            -- there is nothing saved to delete, and the default would just
+            -- reapply on the next login. One of theirs is simply removed.
+            --
+            -- Spelled out rather than `DEFAULT[key] and false or nil`, which
+            -- looks equivalent and is not: `and false` makes the whole
+            -- expression falsy, so `or nil` always wins and the override is
+            -- never stored. The unban then prints success and does nothing.
+            if C.BANNED_DEFAULT[key] then
+                db.banlist[key] = false
+            else
+                db.banlist[key] = nil
+            end
             ResetAll(); UpdateAllPlates()
             Print(format("|cff00ff00%s|r unbanned.", was))
         else
@@ -294,8 +306,15 @@ commands["ban"] = function(rest, cmd)
         return
     end
 
+    -- Both halves, minus the ones they turned off. Defaults are marked so it is
+    -- clear which came with the addon and which they added.
     local list = {}
-    for _, display in pairs(db.banlist) do list[#list + 1] = display end
+    for key, display in pairs(C.BANNED_DEFAULT) do
+        if db.banlist[key] ~= false then list[#list + 1] = display .. " |cff808080(default)|r" end
+    end
+    for key, display in pairs(db.banlist) do
+        if display and not C.BANNED_DEFAULT[key] then list[#list + 1] = display end
+    end
     sort(list)
     if #list == 0 then
         Print("banlist is empty. |cffffff00/tag ban <mob name>|r")

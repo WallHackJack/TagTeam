@@ -142,6 +142,15 @@ same way — `Pets`.
   also the only range where the addon would have displayed anything.
 - Worthless mobs — grey, `UnitClassification == "minus"`, critters, and banned
   names — get no ding, float, XP, marker or steal warning; only a plain checkmark.
+- **Defaults live in code; saved data holds only the delta.** `C.BANNED_DEFAULT`
+  is the shipped ignore list, and `db.banlist` is tri-state: a string means the
+  user banned that name, `false` means they turned one of ours off, `nil` means
+  they never said and the default decides. Adding a default is a line in the
+  table — no migration, and it reaches existing installs. The old scheme copied
+  defaults into SavedVariables at first run, which meant a new one reached nobody
+  who had ever played before. Apply this shape to any other defaulted list.
+  Note `db.banlist[key] = DEFAULT[key] and false or nil` does **not** work —
+  `and false` makes the expression falsy so `or nil` always wins. Use an `if`.
 - Mobs the carry tapped first show a standing X and suppress the ding, and the
   death handler skips them entirely. Counting their XP would be a lie.
 - **A wasted tag shows an X and says nothing.** `TagIsWasted()` — the carry
