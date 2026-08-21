@@ -26,7 +26,14 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
-- **New:** Darkness Released and Foul Purge are ignored by default, alongside
+- **Changed:** every percentage in chat now carries one decimal — `taggers dealt
+  43.3%`, `died at 36.8%, needed 37.5%`. The numbers were always measured that
+  precisely and were being truncated on the way out, which made a threshold sat
+  between two whole numbers impossible to reason about.
+- **New:** `/tag threshold` takes decimals — `/tag threshold 37.5`. The input is
+  rounded to the one decimal everything displays at, so the stored number and the
+  printed one can never disagree. The nameplate badge stays whole-number; it's a
+  glance, not a measurement. alongside
   Netherweb Victim. `/tag unban <name>` counts any of them again, and `/tag
   banlist` now marks which entries came with the addon.
 - **Changed:** the default ignore list lives in the addon instead of being copied

@@ -128,7 +128,7 @@ local function Status()
     if #names == 0 then
         Print("|cffff8080no taggers set|r - |cffffff00/tag add <name>|r")
     else
-        Print(format("combined damage from %d tagger%s must reach |cffffff00%d%%|r of max health:",
+        Print(format("combined damage from %d tagger%s must reach |cffffff00%.1f%%|r of max health:",
             #names, #names == 1 and "" or "s", db.threshold))
         for i = 1, #names do
             local info = TaggerInfo(NormalizeName(names[i]))
@@ -214,7 +214,7 @@ local commands = {}
 commands[""] = function(rest, cmd)
     Status()
     Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")
-    Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag; set it from either client, both follow")
+    Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag, decimals ok; set it from either client, both follow")
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
     Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
@@ -748,12 +748,19 @@ end
 commands["threshold"] = function(rest, cmd)
     local pct = tonumber(strtrim(rest or ""))
     if not pct or pct <= 0 or pct > 100 then
-        Print(format("threshold is |cffffff00%d%%|r of max health - "
-            .. "|cffffff00/tag threshold <1-100>|r to change it.", db.threshold))
+        Print(format("threshold is |cffffff00%.1f%%|r of max health - "
+            .. "|cffffff00/tag threshold <1-100>|r to change it, decimals allowed.",
+            db.threshold))
         return
     end
+
+    -- Rounded to the one decimal everything prints at, so the stored number and
+    -- the displayed one can never disagree - 37.55 reading as 37.6 while
+    -- behaving as 37.55 is exactly the confusion you don't want while tuning.
+    pct = floor(pct * 10 + 0.5) / 10
+
     local sent = PushThreshold(pct)
-    Print(format("threshold set to %d%% of max health%s.", pct,
+    Print(format("threshold set to %.1f%% of max health%s.", pct,
         sent > 0 and format(" |cff808080(sent to %d linked client%s)|r",
             sent, sent == 1 and "" or "s") or ""))
 end

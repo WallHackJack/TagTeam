@@ -102,7 +102,7 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag` | Full status and command list |
 | `/tag add <name>` / `/tag remove <name>` | Manage taggers |
 | `/tag carry <name>` | Run on a tagger's client |
-| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients |
+| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients. Decimals allowed (`37.5`) |
 | `/tag xp` | Session totals, estimated and actual |
 | `/tag macro` | Copyable target/follow/focus macro |
 | `/tag ban <mob>` | Ignore a mob by name entirely |

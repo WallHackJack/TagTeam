@@ -1238,7 +1238,7 @@ end
 local function LogMiss(kill)
     if kill.logged then return end
     kill.logged = true
-    Print(format("|cffff2020MISSED|r %s - died at |cffff8080%d%%|r, needed %d%%.",
+    Print(format("|cffff2020MISSED|r %s - died at |cffff8080%.1f%%|r, needed %.1f%%.",
         kill.name or "target", kill.pct, kill.need))
 end
 
@@ -2267,7 +2267,7 @@ local function OnAddonMessage(msg, sender)
         if not IsPartner(who) then return end
         if pct == db.threshold then return end
         ApplyThreshold(pct)
-        Print(format("threshold set to |cffffff00%d%%|r of max health by |cff00ff00%s|r.",
+        Print(format("threshold set to |cffffff00%.1f%%|r of max health by |cff00ff00%s|r.",
             pct, who))
 
     elseif cmd == "XP" then
@@ -2306,13 +2306,13 @@ local function OnAddonMessage(msg, sender)
         kill.logged = true
         -- Reads as a suffix on either sentence below.
         local miss = (kill.missed and not announced)
-            and format(" |cffff2020(MISSED, needed %d%%)|r", kill.need) or ""
+            and format(" |cffff2020(MISSED, needed %.1f%%)|r", kill.need) or ""
 
         if not kill.est or kill.est <= 0 then
             -- A level was unknown when it died, so there is no estimate. The
             -- damage share was still measured, and is still worth saying.
             Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s "
-                .. "|cff808080(%d%% dealt, no estimate)|r%s.",
+                .. "|cff808080(%.1f%% dealt, no estimate)|r%s.",
                 who, amount, kill.name or "the mob", kill.pct, miss))
             return
         end
@@ -2324,7 +2324,7 @@ local function OnAddonMessage(msg, sender)
             state.matchedEst, state.matchedXP = state.matchedEst + kill.est, state.matchedXP + amount
         end
         Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s - expected "
-            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%d%%|r%s.",
+            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%.1f%%|r%s.",
             who, amount, kill.name or "the mob", kill.est,
             MultiplierText(amount / kill.est), kill.pct, miss))
     end
