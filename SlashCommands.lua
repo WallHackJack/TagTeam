@@ -217,7 +217,7 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag, decimals ok; set it from either client, both follow")
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
-        Print("|cffffff00/tag autotag <mob>|r - mobs your tagger is credited with without reaching the threshold")
+        Print("|cffffff00/tag autotag <mob>|r - mobs your tagger keeps credit on without tapping first")
     Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
     Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
     Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
@@ -340,12 +340,12 @@ commands["autotag"] = function(rest, cmd)
         local on = db.autotag[key] or (C.AUTOTAG_DEFAULT[key] and db.autotag[key] ~= false)
         if on then
             if C.AUTOTAG_DEFAULT[key] then db.autotag[key] = false else db.autotag[key] = nil end
-            Print(format("|cff00ff00%s|r is no longer auto-tagged - the threshold applies again.",
-                name))
+            Print(format("|cff00ff00%s|r is no longer auto-tagged - tapping it first costs "
+                .. "the tag again.", name))
         else
             db.autotag[key] = name
-            Print(format("|cffffff00%s|r is auto-tagged - shown as tagged on sight, "
-                .. "never reported as a miss, and safe for you to hit first.", name))
+            Print(format("|cffffff00%s|r is auto-tagged - safe for you to hit first, "
+                .. "no stolen-tag warning. The threshold still applies.", name))
         end
         ResetAll(); UpdateAllPlates()
         return
@@ -361,7 +361,7 @@ commands["autotag"] = function(rest, cmd)
     sort(list)
     if #list == 0 then
         Print("no auto-tagged mobs. |cffffff00/tag autotag <mob name>|r")
-        Print("For mobs your tagger gets credit for without reaching the threshold.")
+        Print("For mobs your tagger gets credit on without tapping first.")
     else
         Print(format("auto-tagged (%d): |cffffff00%s|r", #list, table.concat(list, ", ")))
         Print("|cffffff00/tag autotag <name>|r again to turn one off.")

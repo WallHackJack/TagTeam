@@ -159,15 +159,25 @@ same way — `Pets`.
   equivalent on this client, so the critter test is best-effort (`C.CRITTER`
   prefers a client constant, falls back to the English word). The level gap is
   what actually carries that case.
-- **Auto-tagged mobs are tagged by rule, not by damage.** `C.AUTOTAG_DEFAULT` /
-  `db.autotag`, same storage shape as the banlist. On these the threshold never
-  applied, so a percentage, a miss, and a stolen-tag warning would each describe
-  a rule that isn't in play: `UpdatePlate` shows a checkmark **above** the
-  carry-tap X branch, `WarnTagStolen` is skipped, and `HandleDeath` treats the
-  kill as tagged and skips its `tapOwner == "carry"` and max-health guards — an
-  auto-tagged mob needs no denominator, because the share never decided anything.
-  Unlike banned mobs everything on the success side stays: XP, float, marker,
-  session totals, report queueing.
+- **"Auto-tagged" and "pays no XP" are two different things, and must not be
+  merged again.** They were, once, and it produced checkmarks on mobs that still
+  had to earn one.
+
+  | | banned / grey / trivial | auto-tagged |
+  |---|---|---|
+  | why | pays no XP | tap doesn't decide credit |
+  | threshold | meaningless | **still applies** |
+  | plate | checkmark on any damage | normal climbing percentage |
+  | can miss | no | **yes** |
+  | carry taps it first | tag lost, standing X | costs nothing |
+
+  Auto-tag is **only** about the tap. `TapLost(guid)` is the single predicate —
+  `tapOwner == "carry" and not IsAutoTagged(guid)` — and the four places that
+  used to test `tapOwner` directly all route through it: the standing X, the
+  suppressed threshold ding, `WarnTagStolen`, and the silent `HandleDeath`. Add
+  a fifth site and use `TapLost`, never a bare `tapOwner` comparison. Being
+  **grouped** still applies to auto-tagged mobs — that wrecks XP by a different
+  rule and is checked separately everywhere.
 - **Defaults live in code; saved data holds only the delta.** `C.BANNED_DEFAULT`
   is the shipped ignore list, and `db.banlist` is tri-state: a string means the
   user banned that name, `false` means they turned one of ours off, `nil` means

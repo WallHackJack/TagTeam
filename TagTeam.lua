@@ -756,13 +756,26 @@ local function IsBanned(guid)
     return ListHas(db.banlist, C.BANNED_DEFAULT, state.mobName[guid])
 end
 
--- Mobs the tagger gets credit for whatever anyone else does. The threshold is
--- not merely met on these, it never applied - so a percentage, a miss and a
--- stolen-tag warning would each be describing a rule that isn't in play. Unlike
--- a banned mob they still pay XP, so everything on the success side stays.
+-- Mobs where the tagger does not have to land the first hit - credit is theirs
+-- whoever tapped it.
+--
+-- This is ONLY about the tap. These mobs still pay XP and the threshold still
+-- decides whether the tagger earned it, so they show a climbing percentage like
+-- anything else and can still be missed. That is what separates them from the
+-- ban list, which is for mobs paying no XP at all: there the threshold is
+-- meaningless and a plain checkmark is the whole story.
 local function IsAutoTagged(guid)
     if not db then return false end
     return ListHas(db.autotag, C.AUTOTAG_DEFAULT, state.mobName[guid])
+end
+
+-- The carry tapped it first AND that actually cost the tagger something. The
+-- four places that used to test tapOwner directly now ask this instead, so the
+-- auto-tag exception cannot be applied in one of them and forgotten in another:
+-- the standing X, the suppressed threshold ding, the stolen-tag warning and the
+-- silent death handler are the same decision wearing four faces.
+local function TapLost(guid)
+    return state.tapOwner[guid] == "carry" and not IsAutoTagged(guid)
 end
 
 -- Far enough below the lowest tagger to be beneath the point of the session.
@@ -947,32 +960,21 @@ local function UpdatePlate(unit)
         end
     end
 
-    -- Auto-tagged: credit is the tagger's whatever anyone else does, so the only
-    -- honest thing to show is that it's safe - and to show it before they have
-    -- touched it, which is the point of knowing.
-    --
-    -- Above the carry-tap X deliberately. That X means "the tag is gone", and on
-    -- one of these it never could be.
-    if db.enabled and not Suspended() and HasTaggers() and IsAutoTagged(guid) then
-        local badge = GetBadge(unit, true)
-        if badge then
-            badge.text:Hide()
-            badge.deny:Hide()
-            badge.check:Show()
-        end
-        return
-    end
-
     -- Nothing the tagger does here can earn credit: either the carry owns the tag,
     -- or damage landed while we were grouped, which computes the mob's XP from the
     -- carry's level and splits it. Show a standing X rather than a percentage that
     -- would only be misleading.
     --
+    -- TapLost, not tapOwner: on an auto-tagged mob the carry's first hit costs the
+    -- tagger nothing, so the percentage is still worth watching and the X would be
+    -- claiming a tag was lost that was never at risk. Being GROUPED still applies
+    -- to them - that wrecks the XP by a different rule entirely.
+    --
     -- The grouped mark is latched per mob, not read live, so dropping the party
     -- mid-pull does not quietly turn the X back into a promising number. It clears
     -- when the mob dies (Forget) or resets to full, above.
     if db.enabled and not Suspended() and HasTaggers()
-        and (state.tapOwner[guid] == "carry" or state.groupTagged[guid]) then
+        and (TapLost(guid) or state.groupTagged[guid]) then
         local badge = GetBadge(unit, true)
         if badge then
             badge.text:Hide()
@@ -1818,15 +1820,14 @@ end
 local function HandleDeath(guid, name)
     if not db.enabled or not HasTaggers() then return end
 
-    local auto = IsAutoTagged(guid)
-
     -- The carry owned the tag, so the tagger earned nothing regardless of damage
     -- done. Reporting a tag or banking XP here would be a lie, and the steal
     -- warning already fired when it happened.
     --
-    -- Not so on an auto-tagged mob: credit there does not follow the first hit,
-    -- so the carry tapping it costs the tagger nothing.
-    if state.tapOwner[guid] == "carry" and not auto then return end
+    -- Not so on an auto-tagged mob, which is the whole point of that list: credit
+    -- there does not follow the first hit. The threshold still decides, though -
+    -- these pay XP, so falling short of it is a real miss and gets the real cue.
+    if TapLost(guid) then return end
 
     -- Grouped with the tagger, so the two-player rule computed this mob's XP from
     -- the CARRY's level and split it: what they actually banked is a rounding
@@ -1853,17 +1854,15 @@ local function HandleDeath(guid, name)
     if not dealt or dealt <= 0 then return end
 
     -- No cached max health means we never had eyes on this mob, so we have no
-    -- honest denominator - stay quiet rather than guess either way. An auto-tagged
-    -- mob needs none: the share was never what decided it, so a missing
-    -- denominator costs nothing but the percentage in the chat line.
+    -- honest denominator - stay quiet rather than guess either way.
     local maxhp = state.maxHealth[guid]
-    if not auto and (not maxhp or maxhp <= 0) then return end
+    if not maxhp or maxhp <= 0 then return end
 
-    local pct = (maxhp and maxhp > 0) and (dealt / maxhp * 100) or 0
+    local pct = dealt / maxhp * 100
 
     -- Tagged it. Checkmarks only, no sound: the threshold ding already fired when
     -- it crossed the threshold, and a second cue on every kill would be noise.
-    if auto or pct >= db.threshold then
+    if pct >= db.threshold then
         local raw = EstimateXP(guid)
         local label, r, g, b
         local shown   -- scaled estimate; stays nil when either level was unknown
@@ -2053,10 +2052,10 @@ local function OnCombatLog()
         -- Nothing is at stake on a worthless mob, so neither the scolding nor the
         -- marker clutter is worth it.
         if not worthless then
-            if state.tapOwner[destGUID] == "carry" then
-                -- Not a theft on an auto-tagged mob: the tagger keeps credit
-                -- whoever hit it first, so there was nothing to take.
-                if not IsAutoTagged(destGUID) then WarnTagStolen() end
+            -- TapLost rather than tapOwner: on an auto-tagged mob there was
+            -- nothing to take, so scolding for taking it is just wrong.
+            if TapLost(destGUID) then
+                WarnTagStolen()
             elseif state.tapOwner[destGUID] == "tagger" then
                 SafeCall(MarkTaggedMob, destGUID)
                 -- Being grouped is about the pull, not about who tapped it, so it
@@ -2098,7 +2097,7 @@ local function OnCombatLog()
             -- tagger: crossing the threshold earns them nothing in either state,
             -- so a ding would be a false promise. Same reasoning as the grouped
             -- early return in HandleDeath.
-            if state.tapOwner[destGUID] ~= "carry" and not state.groupTagged[destGUID] then
+            if not TapLost(destGUID) and not state.groupTagged[destGUID] then
                 PlayThresholdSound()
                 if unit then SafeCall(SpawnPlateStamp, unit) end
             end

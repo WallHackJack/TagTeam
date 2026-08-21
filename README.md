@@ -106,7 +106,7 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag xp` | Session totals, estimated and actual |
 | `/tag macro` | Copyable target/follow/focus macro |
 | `/tag ban <mob>` | Ignore a mob by name entirely |
-| `/tag autotag <mob>` | Mobs your tagger is credited with automatically — shown tagged on sight, never a miss |
+| `/tag autotag <mob>` | Mobs your tagger keeps credit on without tapping first — no stolen-tag warning |
 | `/tag audio` | Mute all cues |
 | `/tag reset` (`/tag clear`) | Clear all roles |
 | `/tag pvp` | Track PvP-flagged mobs instead of ignoring them (ignored by default) |
