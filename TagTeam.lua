@@ -720,7 +720,18 @@ C.BANNED_DEFAULT = {
     ["netherweb victim"]  = "Netherweb Victim",
     ["darkness released"] = "Darkness Released",
     ["foul purge"]        = "Foul Purge",
+    -- Auto-tagged, so the threshold never applied to him anyway - but he pays no
+    -- XP either, so there is nothing to report and banning outright is simpler
+    -- than putting him on the auto-tag list.
+    ["aggonis"]           = "Aggonis",
 }
+
+-- Mobs the tagger is credited with whatever anyone else does - the threshold
+-- never applies. Empty by default: this is the list you add to as you find them.
+-- Members are shown as already tagged, are never reported as a miss, and the
+-- carry tapping one is not a theft, because there was nothing to steal. XP still
+-- counts, which is the whole reason they are not simply banned.
+C.AUTOTAG_DEFAULT = {}
 
 -- db.banlist holds only what the user changed, which is why it is tri-state:
 --
@@ -730,14 +741,28 @@ C.BANNED_DEFAULT = {
 --
 -- Without the `false` case an unban would last until the next login and then
 -- quietly undo itself.
-local function IsBanned(guid)
-    local name = state.mobName[guid]
-    if not name or not db then return false end
-
+-- Shared by both named-mob lists. `saved` is the user's delta, `defaults` the
+-- table shipped in code.
+local function ListHas(saved, defaults, name)
+    if not name then return false end
     local key = strlower(name)
-    local user = db.banlist and db.banlist[key]
+    local user = saved and saved[key]
     if user ~= nil then return user ~= false end
-    return C.BANNED_DEFAULT[key] ~= nil
+    return defaults[key] ~= nil
+end
+
+local function IsBanned(guid)
+    if not db then return false end
+    return ListHas(db.banlist, C.BANNED_DEFAULT, state.mobName[guid])
+end
+
+-- Mobs the tagger gets credit for whatever anyone else does. The threshold is
+-- not merely met on these, it never applied - so a percentage, a miss and a
+-- stolen-tag warning would each be describing a rule that isn't in play. Unlike
+-- a banned mob they still pay XP, so everything on the success side stays.
+local function IsAutoTagged(guid)
+    if not db then return false end
+    return ListHas(db.autotag, C.AUTOTAG_DEFAULT, state.mobName[guid])
 end
 
 -- Far enough below the lowest tagger to be beneath the point of the session.
@@ -920,6 +945,22 @@ local function UpdatePlate(unit)
             and UnitHealth(unit) >= live then
             state.groupTagged[guid] = nil
         end
+    end
+
+    -- Auto-tagged: credit is the tagger's whatever anyone else does, so the only
+    -- honest thing to show is that it's safe - and to show it before they have
+    -- touched it, which is the point of knowing.
+    --
+    -- Above the carry-tap X deliberately. That X means "the tag is gone", and on
+    -- one of these it never could be.
+    if db.enabled and not Suspended() and HasTaggers() and IsAutoTagged(guid) then
+        local badge = GetBadge(unit, true)
+        if badge then
+            badge.text:Hide()
+            badge.deny:Hide()
+            badge.check:Show()
+        end
+        return
     end
 
     -- Nothing the tagger does here can earn credit: either the carry owns the tag,
@@ -1777,10 +1818,15 @@ end
 local function HandleDeath(guid, name)
     if not db.enabled or not HasTaggers() then return end
 
+    local auto = IsAutoTagged(guid)
+
     -- The carry owned the tag, so the tagger earned nothing regardless of damage
     -- done. Reporting a tag or banking XP here would be a lie, and the steal
     -- warning already fired when it happened.
-    if state.tapOwner[guid] == "carry" then return end
+    --
+    -- Not so on an auto-tagged mob: credit there does not follow the first hit,
+    -- so the carry tapping it costs the tagger nothing.
+    if state.tapOwner[guid] == "carry" and not auto then return end
 
     -- Grouped with the tagger, so the two-player rule computed this mob's XP from
     -- the CARRY's level and split it: what they actually banked is a rounding
@@ -1807,15 +1853,17 @@ local function HandleDeath(guid, name)
     if not dealt or dealt <= 0 then return end
 
     -- No cached max health means we never had eyes on this mob, so we have no
-    -- honest denominator - stay quiet rather than guess either way.
+    -- honest denominator - stay quiet rather than guess either way. An auto-tagged
+    -- mob needs none: the share was never what decided it, so a missing
+    -- denominator costs nothing but the percentage in the chat line.
     local maxhp = state.maxHealth[guid]
-    if not maxhp or maxhp <= 0 then return end
+    if not auto and (not maxhp or maxhp <= 0) then return end
 
-    local pct = dealt / maxhp * 100
+    local pct = (maxhp and maxhp > 0) and (dealt / maxhp * 100) or 0
 
     -- Tagged it. Checkmarks only, no sound: the threshold ding already fired when
     -- it crossed the threshold, and a second cue on every kill would be noise.
-    if pct >= db.threshold then
+    if auto or pct >= db.threshold then
         local raw = EstimateXP(guid)
         local label, r, g, b
         local shown   -- scaled estimate; stays nil when either level was unknown
@@ -2006,7 +2054,9 @@ local function OnCombatLog()
         -- marker clutter is worth it.
         if not worthless then
             if state.tapOwner[destGUID] == "carry" then
-                WarnTagStolen()
+                -- Not a theft on an auto-tagged mob: the tagger keeps credit
+                -- whoever hit it first, so there was nothing to take.
+                if not IsAutoTagged(destGUID) then WarnTagStolen() end
             elseif state.tapOwner[destGUID] == "tagger" then
                 SafeCall(MarkTaggedMob, destGUID)
                 -- Being grouped is about the pull, not about who tapped it, so it
@@ -2621,6 +2671,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         db.banlist = db.banlist or {}
         db.banlistMigrated = true
+        db.autotag = db.autotag or {}
         db.banlistSeed = nil   -- retired with the scheme that used it
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end

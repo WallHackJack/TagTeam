@@ -26,6 +26,14 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
+- **New:** `/tag autotag <mob>` — a list of mobs your tagger is credited with
+  whatever anyone else does, so the threshold never applies to them. They show a
+  checkmark on sight rather than a percentage, are never reported as a miss, and
+  **you hitting one first is not a theft**, so no `TAGGED` warning and no standing
+  X. XP still counts, which is the whole reason they aren't simply banned. Run it
+  again on the same name to turn one off; bare `/tag autotag` lists them.
+- **New:** Aggonis is ignored by default. He is auto-tagged, but pays no XP
+  either, so there is nothing to report and banning outright is simpler.
 - **Fixed:** cues fired on mobs the addon had already decided were worthless —
   a `TAGGED` warning on a level 1 Hellfire scorpion being the case that found it.
   Every worthless test needs the mob's level or classification, and those only

@@ -217,6 +217,7 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag, decimals ok; set it from either client, both follow")
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
+        Print("|cffffff00/tag autotag <mob>|r - mobs your tagger is credited with without reaching the threshold")
     Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
     Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
     Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
@@ -325,6 +326,48 @@ commands["ban"] = function(rest, cmd)
     end
 end
 commands["unban"], commands["banlist"] = commands["ban"], commands["ban"]
+
+-- Mobs the tagger is credited with whatever anyone else does, so the threshold
+-- never applies to them. Same storage shape as the banlist - defaults in code,
+-- saved data holding only the delta, `false` meaning one of ours turned off -
+-- but one command rather than three, because there is no list of defaults to
+-- speak of yet and a toggle reads better than ban/unban/list.
+commands["autotag"] = function(rest, cmd)
+    local name = strtrim(rest or "")
+
+    if name ~= "" then
+        local key = strlower(name)
+        local on = db.autotag[key] or (C.AUTOTAG_DEFAULT[key] and db.autotag[key] ~= false)
+        if on then
+            if C.AUTOTAG_DEFAULT[key] then db.autotag[key] = false else db.autotag[key] = nil end
+            Print(format("|cff00ff00%s|r is no longer auto-tagged - the threshold applies again.",
+                name))
+        else
+            db.autotag[key] = name
+            Print(format("|cffffff00%s|r is auto-tagged - shown as tagged on sight, "
+                .. "never reported as a miss, and safe for you to hit first.", name))
+        end
+        ResetAll(); UpdateAllPlates()
+        return
+    end
+
+    local list = {}
+    for key, display in pairs(C.AUTOTAG_DEFAULT) do
+        if db.autotag[key] ~= false then list[#list + 1] = display .. " |cff808080(default)|r" end
+    end
+    for key, display in pairs(db.autotag) do
+        if display and not C.AUTOTAG_DEFAULT[key] then list[#list + 1] = display end
+    end
+    sort(list)
+    if #list == 0 then
+        Print("no auto-tagged mobs. |cffffff00/tag autotag <mob name>|r")
+        Print("For mobs your tagger gets credit for without reaching the threshold.")
+    else
+        Print(format("auto-tagged (%d): |cffffff00%s|r", #list, table.concat(list, ", ")))
+        Print("|cffffff00/tag autotag <name>|r again to turn one off.")
+    end
+end
+commands["auto"] = commands["autotag"]
 
 commands["carry"] = function(rest, cmd)
     local name = strtrim(rest or "")
