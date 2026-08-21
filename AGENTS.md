@@ -140,8 +140,25 @@ same way — `Pets`.
   non-tags. PvP-flagged NPCs are a **preference**: they do pay, but hitting one
   flags the tagger. Both token checks are blind past nameplate range, which is
   also the only range where the addon would have displayed anything.
-- Worthless mobs — grey, `UnitClassification == "minus"`, critters, and banned
-  names — get no ding, float, XP, marker or steal warning; only a plain checkmark.
+- Worthless mobs — grey, `UnitClassification == "minus"`, critters, more than
+  `C.IGNORE_LEVEL_GAP` levels below the lowest tagger, and banned names — get no
+  ding, float, XP, marker or steal warning; only a plain checkmark. `IsGrey` and
+  `IsFarBelowTagger` are kept apart on purpose: the first is Blizzard's zero-XP
+  formula, the second is a preference about what the session is for.
+- **Every worthless test needs a unit token first.** They all read a level or a
+  classification, and those only exist once `CacheMobInfo` has had a token — so a
+  mob nobody ever got a token for reads as *worth something* and collects cues.
+  Nameplates were the only source, which missed two cases badly: critters usually
+  have no nameplate at all, so the critter check never ran for the mobs it exists
+  to catch, and the first hit routinely lands before the plate registers, which
+  is exactly when `tapOwner` is decided and `TAGGED` is said. The damage path
+  falls back to `target` then `mouseover`, into a **separate** variable from the
+  nameplate `unit` — `UpdatePlate` and `SpawnPlateStamp` anchor to plate frames
+  and must never be handed one of these.
+- `UnitCreatureType` returns a **localized** string and there is no id-based
+  equivalent on this client, so the critter test is best-effort (`C.CRITTER`
+  prefers a client constant, falls back to the English word). The level gap is
+  what actually carries that case.
 - **Defaults live in code; saved data holds only the delta.** `C.BANNED_DEFAULT`
   is the shipped ignore list, and `db.banlist` is tri-state: a string means the
   user banned that name, `false` means they turned one of ours off, `nil` means

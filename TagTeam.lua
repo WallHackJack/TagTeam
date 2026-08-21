@@ -77,6 +77,16 @@ C.TAG_MARKERS = { 8, 7, 6 }
 -- recently - otherwise every mob you kill while questing alone would scold you.
 C.NEAR_SECONDS = 60
 
+-- Mobs this far below the lowest tagger get no cues at all. Grey already covers
+-- "pays nothing"; this covers "pays something, but nobody is here for it" - the
+-- level 1 critters that share a zone with the mobs you are actually grinding.
+C.IGNORE_LEVEL_GAP = 10
+
+-- Feature-detected rather than assumed: if this client exposes a localized name
+-- for the critter creature type, use it; otherwise the English word, which is
+-- what the comparison used before and works on an English client.
+C.CRITTER = _G.CREATURE_TYPE_CRITTER or "Critter"
+
 -- A tagged kill and the tagger's XP report are two separate events on two
 -- separate clients: we see the death, their client reads the real gain off UnitXP
 -- and whispers it over a moment later. Kills wait in a queue to be paired with
@@ -730,12 +740,32 @@ local function IsBanned(guid)
     return C.BANNED_DEFAULT[key] ~= nil
 end
 
+-- Far enough below the lowest tagger to be beneath the point of the session.
+--
+-- Deliberately separate from IsGrey, which answers "does this pay literally
+-- zero" and is a Blizzard formula. This one is a preference: Hellfire's level 1
+-- scorpions are not grey to a level 20 tagger and do pay a few XP, but nobody is
+-- out there farming them, and every cue spent on one is noise. The two are OR'd,
+-- so whichever fires first wins.
+local function IsFarBelowTagger(guid)
+    local pl = LowestTaggerLevel()
+    local ml = state.mobLevel[guid]
+    if not pl or not ml or pl <= 0 or ml <= 0 then return false end
+    return (pl - ml) >= C.IGNORE_LEVEL_GAP
+end
+
 -- Grey mobs, trivial minions and banned names pay nothing, so they get no
 -- threshold ding, no death float and no XP. They still get a checkmark the
 -- instant the tagger touches one: at zero XP the only question is whether they
 -- have it at all, so a climbing percentage would be noise.
+--
+-- Every test here needs the mob's LEVEL or classification, which only exists
+-- once CacheMobInfo has had a unit token for it. A mob we never got a token for
+-- reads as worth something by default - see the token fallback in the damage
+-- path, which is what stops that being the common case.
 local function IsWorthless(guid)
-    return IsBanned(guid) or state.mobTrivial[guid] or IsGrey(guid)
+    return IsBanned(guid) or state.mobTrivial[guid]
+        or IsGrey(guid) or IsFarBelowTagger(guid)
 end
 
 --------------------------------------------------------------------------------
@@ -1278,7 +1308,14 @@ local function CacheMobInfo(unit, guid)
 
     -- "minus" is Blizzard's own flag for trivial minions - the low-health adds
     -- that pay nothing. Critters are the same story.
-    state.mobTrivial[guid] = (class == "minus") or (UnitCreatureType(unit) == "Critter")
+    --
+    -- UnitCreatureType returns a LOCALIZED string, so comparing it to "Critter"
+    -- is only correct on an English client and there is no id-based equivalent
+    -- here. C.CRITTER prefers the client's own localized constant where one
+    -- exists and falls back to the English word, which is no worse than before.
+    -- Either way this is best-effort: the level gap is what actually carries the
+    -- case, since a critter is level 1 and any tagger past level 11 clears it.
+    state.mobTrivial[guid] = (class == "minus") or (UnitCreatureType(unit) == C.CRITTER)
 end
 
 local function GroupedWithTagger()
@@ -1918,12 +1955,38 @@ local function OnCombatLog()
 
     local unit = state.guidToUnit[destGUID]
 
+    -- Nameplates are the usual source of a unit token, and for most mobs they are
+    -- enough. Two cases they miss, and both end with cues on things nobody wanted
+    -- tracked, because every worthless test needs a level or a classification and
+    -- gets neither without a token:
+    --
+    --   critters       usually have no nameplate at all, so the critter check
+    --                  never ran for the very mobs it exists to catch
+    --   the first hit  lands before the plate registers, and the first hit is
+    --                  exactly when tapOwner is decided and TAGGED is said
+    --
+    -- Target and mouseover cost two API calls and only when the plate is missing.
+    -- Whatever you just hit is usually the thing you had targeted.
+    --
+    -- Kept in a SEPARATE name from `unit`: that one stays strictly a nameplate
+    -- token, because everything downstream of it anchors to a nameplate frame.
+    -- Handing UpdatePlate or SpawnPlateStamp a "target" token would be asking
+    -- for a restricted-region error on a frame that isn't there.
+    local info = unit
+    if not info then
+        if UnitGUID("target") == destGUID then
+            info = "target"
+        elseif UnitGUID("mouseover") == destGUID then
+            info = "mouseover"
+        end
+    end
+
     -- Cached before any tag decision runs, because worthless mobs are excluded
     -- from most of them and that verdict needs the mob's level and classification.
-    if unit then
-        local live = UnitHealthMax(unit)
+    if info then
+        local live = UnitHealthMax(info)
         if live and live > 0 then state.maxHealth[destGUID] = live end
-        CacheMobInfo(unit, destGUID)
+        CacheMobInfo(info, destGUID)
     end
 
     local worthless = IsWorthless(destGUID)

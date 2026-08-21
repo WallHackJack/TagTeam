@@ -26,6 +26,22 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
+- **Fixed:** cues fired on mobs the addon had already decided were worthless —
+  a `TAGGED` warning on a level 1 Hellfire scorpion being the case that found it.
+  Every worthless test needs the mob's level or classification, and those only
+  existed once a **nameplate** had appeared for it. Critters generally never get
+  one, so the critter check never ran for the mobs it exists to catch; and the
+  first hit routinely lands before the plate registers, which is exactly the
+  moment the tag owner is decided and `TAGGED` is said. The addon now falls back
+  to your target and mouseover, which is almost always the thing you just hit.
+- **New:** mobs 10 or more levels below your lowest tagger are ignored outright.
+  Grey mobs were already ignored, but grey means "pays literally zero" and at
+  higher levels that gap is 17 levels wide — plenty of room for mobs nobody is
+  there to kill. They get no ding, float, marker, steal warning or session XP.
+- **Fixed:** the critter check compared against the English word "Critter", so it
+  never matched on a non-English client. It now prefers the client's own constant
+  where there is one. Best-effort either way — the level rule above is what
+  actually catches critters, since they're level 1.
 - **Changed:** every percentage in chat now carries one decimal — `taggers dealt
   43.3%`, `died at 36.8%, needed 37.5%`. The numbers were always measured that
   precisely and were being truncated on the way out, which made a threshold sat
