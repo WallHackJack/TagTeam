@@ -13,3 +13,4 @@
 ## X-License: MIT
 
 TagTeam.lua
+SlashCommands.lua

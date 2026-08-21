@@ -26,6 +26,18 @@
   changes; the constants stay where their explanatory comments are.
 - **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
   same table names, which is a leak waiting to happen. Both now iterate one list.
+- **Internal:** `/tag` moved to its own file, `SlashCommands.lua`, and its 575-line
+  `if/elseif` chain became a command table — one function per command, aliases as
+  assignments. That was the function pinned to Lua's 60-upvalue-per-function
+  ceiling, which three separate comments in the codebase existed to apologise
+  for; the worst function there now uses 12. All 53 commands behave as before.
+- **Fixed:** the automatic out-of-range invite and `/tag inv` picked their target
+  with two copies of the same code, and a comment claiming they were identical —
+  which they weren't. `/tag inv` fell back to your primary tagger when no focus
+  had been held and the automatic path didn't. Both behaviours were right and
+  are kept, but they now come from one function that says why they differ: a
+  command you typed should reach someone, a five-second ticker should not whisper
+  a person you never focused.
 
 ## 0.3.0
 

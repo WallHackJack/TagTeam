@@ -1,8 +1,24 @@
 # TagTeam — agent instructions
 
-TagTeam is a single-file Lua 5.1 addon for the WoW TBC Anniversary client. The
+TagTeam is a two-file Lua 5.1 addon for the WoW TBC Anniversary client. The
 checked-out repository is also the user's live addon directory, so source files
 must remain directly loadable by the game.
+
+| File | Holds |
+|---|---|
+| `TagTeam.lua` | Everything: tracking, nameplates, XP, comms, party logistics, events. |
+| `SlashCommands.lua` | `/tag` and nothing else. |
+
+`SlashCommands.lua` is a **leaf** — it reads from the core, the core never reads
+from it, and the entire boundary is the export block at the bottom of
+`TagTeam.lua`. Keep it that way: anything the core needs back belongs in the
+core. The TOC load order is what makes the exports available, so a new file must
+be added there.
+
+`db` is deliberately **not** exported at load — it does not exist until
+`ADDON_LOADED`, so exporting it then would hand the slash file a nil forever.
+The event handler assigns `ns.db` where it binds `db`, and `HandleSlash` re-reads
+it per dispatch. Same trap applies to anything else assigned after load.
 
 For the user-facing overview see [README.md](README.md). For the TBC experience
 formulas the XP estimate is built on, see [XP_RULES.md](XP_RULES.md).
@@ -65,11 +81,18 @@ These were each learned by breaking them in-game. Do not re-litigate them.
   top (`isClassicEra`, `HAS_FOCUS`), never scattered inline checks. **Classic Era
   has no focus unit**; everything focus-based is skipped there.
 
-## Architecture (single file, ordered by dependency)
+## Architecture (ordered by dependency)
 
 Load order inside `TagTeam.lua` matters — functions are locals and must be defined
 before use. Where that was impossible, a single forward-declared upvalue is used
 rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
+
+**`/tag` is a command table**, `commands["name"] = function(rest, cmd)`, not an
+`if/elseif` chain. Aliases are assignments (`commands["rem"] = commands["remove"]`).
+Handlers get `cmd` because three of them serve more than one name. Adding a
+command means adding a table entry and a line to the help text in `commands[""]` —
+there is no dispatch to edit. The chain it replaced was 575 lines and was what
+pinned the file to the 60-upvalue ceiling; each handler now uses about six.
 
 **Two names hold what used to be 64 file-level locals**, because the main chunk
 is itself a function and every file-level `local` spends one of Lua 5.1's 200
