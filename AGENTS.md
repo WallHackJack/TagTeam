@@ -71,8 +71,24 @@ Load order inside `TagTeam.lua` matters — functions are locals and must be def
 before use. Where that was impossible, a single forward-declared upvalue is used
 rather than reordering: `ReportTaggedKill`, `SendAddon`, `linked`.
 
-1. Constants and tunables (thresholds, textures, animation timings, markers).
-2. Runtime state tables, all keyed by mob GUID and cleared in `Forget`/`ResetAll`.
+**Two names hold what used to be 64 file-level locals**, because the main chunk
+is itself a function and every file-level `local` spends one of Lua 5.1's 200
+register slots — see the ceiling note under Working checks.
+
+- **`C`** — constants and tunables, fixed at load. UPPER_CASE fields.
+- **`state`** — per-pull scratch, cleared by `Forget`/`ResetAll`. lowercase fields.
+
+Both stay **declared where their explanations are** (`C.LOOT_ATTEMPTS` sits with
+the loot-method comment, not hauled up into one block); the comment above a
+constant is usually why it has that value. Add new constants and state as fields
+on these rather than as new file-level locals. Subsystems get their own table the
+same way — `Pets`.
+
+1. Constants and tunables on `C` (thresholds, textures, animation timings, markers).
+2. Runtime state on `state`, keyed by mob GUID and cleared in `Forget`/`ResetAll`.
+   `C.PER_MOB` is the single list both of those iterate, so they cannot drift;
+   `petOwner` is keyed by pet and `isTracked`/`isCarryGuid` by damage source, so
+   none of the three is in it.
 3. Identity layer — `HasTaggers`, `TaggerKeyOf`, `MatchesTracked`, `MatchesCarry`,
    `ReassignMarkers`. Everything reads identities through here.
 4. Mob worth — `IsGrey`, `IsBanned`, `IsWorthless`. Pure predicates over cached
@@ -340,10 +356,25 @@ No automated test suite. For every change:
   cp TagTeam.lua /tmp/t.lua && for i in $(seq 1 8); do echo "local zz$i" >> /tmp/t.lua; luac -p /tmp/t.lua || { echo "headroom $((i-1))"; break; }; done
   ```
 
-  Two ways to spend less: put helpers in a `do ... end` block, which releases
-  their slots at the end of it, and hang a subsystem off one table rather than a
-  local per function — `Pets` does both, and the table also costs its callers one
-  upvalue instead of one per entry point.
+  Three ways to spend less, all of them in use: fields on `C` and `state` instead
+  of a local per constant or table; a `do ... end` block, which releases its
+  locals' slots at the end of it; and a subsystem behind one table (`Pets`).
+  Tables also cost their callers **one upvalue instead of one per entry point**,
+  which is why folding these took `HandleSlash` from 61 upvalues to 53 and
+  `OnCombatLog` from 50 to 40 at the same time.
+
+  **Verifying a mechanical rewrite like that.** `luac -p` proves nothing here — a
+  reference the rewrite missed becomes a *global* read, which compiles fine and
+  is nil at runtime. Dump what the file reads from `_ENV` and diff it against the
+  previous version; the sets must be identical:
+
+  ```
+  luac -p -l -l TagTeam.lua | grep -o '_ENV "[A-Za-z_][A-Za-z0-9_]*"' | sed 's/_ENV "//;s/"//' | sort -u
+  ```
+
+  And check the string literals separately. A blind whole-word substitution also
+  rewrites names inside user-facing text — `"pet damage "` became
+  `"pet state.damage "` in four places, none of which any compiler would object to.
 - Reload in-game and exercise the affected path.
 - `/tag` for full status, `/tag diag` for the runtime picture including the last
   captured cosmetic error (cleared on read, so a second run shows whether it

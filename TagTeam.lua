@@ -24,102 +24,117 @@
 
 local ADDON_NAME = ...
 
-local THRESHOLD_DEFAULT = 38   -- damage share needed to tag a mob
+-- Constants and tunables, and runtime state, each behind one name.
+--
+-- Not a style preference: the main chunk of a Lua file IS a function, so every
+-- file-level `local` spends one of the 200 register slots Lua 5.1 allows per
+-- function. This file had 199 of them and would not compile if it grew. Table
+-- fields cost nothing against that ceiling, and folding these two groups gave
+-- back ~60 slots. The convention the file already used is kept: UPPER_CASE for
+-- things fixed at load, lowercase for things that change.
+--
+-- They stay declared where their explanations are rather than being hauled up
+-- into one block - the comment above a constant is usually why it has the value
+-- it has, and that is worth more than seeing them all in one place.
+local C = {}       -- constants and tunables, set once at load
+local state = {}   -- per-pull scratch, all cleared by Forget/ResetAll
+
+C.THRESHOLD_DEFAULT = 38   -- damage share needed to tag a mob
 -- Anyone whose saved threshold is still an old default gets moved to the current
 -- one at load. A saved 36 can't be told apart from a deliberate 36, so the cost
 -- of being wrong is one `/tag threshold 36` for whoever meant it. Every
 -- superseded default stays listed rather than only the most recent: someone who
 -- skipped a release is still sitting on the one before it.
-local LEGACY_THRESHOLDS = { [31] = true, [36] = true }
+C.LEGACY_THRESHOLDS = { [31] = true, [36] = true }
 
 -- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
 -- in: it's WA's asset, not Blizzard's, so it isn't in SOUNDKIT and can't be
 -- played by id. PlaySoundFile reports whether it actually played, so if WA is
 -- ever uninstalled we fall back to a built-in instead of going silent.
-local DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
+C.DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
 -- A tone rather than a voice clip: voice clips grate fast when you hear them
 -- dozens of times a session, which is exactly what a miss cue does.
-local DEFAULT_MISS_FILE  = [[Interface\AddOns\WeakAuras\Media\Sounds\ErrorBeep.ogg]]
-local LEGACY_MISS_FILE   = [[Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg]]
+C.DEFAULT_MISS_FILE  = [[Interface\AddOns\WeakAuras\Media\Sounds\ErrorBeep.ogg]]
+C.LEGACY_MISS_FILE   = [[Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg]]
 
 -- "SFX" rather than "Master": Master ignores your sound sliders entirely and
 -- plays at full volume, which is why these were blasting. SFX rides the Sound
 -- Effects slider like the rest of the game.
-local SOUND_CHANNEL = "SFX"
+C.SOUND_CHANNEL = "SFX"
 
-local STALE_SECONDS     = 60    -- forget mobs we haven't seen damaged in this long
-local SWEEP_INTERVAL    = 5
-local REFRESH_INTERVAL  = 0.25  -- catches max-health changes; CLEU drives instant updates
+C.STALE_SECONDS     = 60    -- forget mobs we haven't seen damaged in this long
+C.SWEEP_INTERVAL    = 5
+C.REFRESH_INTERVAL  = 0.25  -- catches max-health changes; CLEU drives instant updates
 
-local X_TEXTURE     = "Interface\\RaidFrame\\ReadyCheck-NotReady"
-local CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready"
+C.X_TEXTURE     = "Interface\\RaidFrame\\ReadyCheck-NotReady"
+C.CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready"
 
 -- Skull, cross, square. Deliberately only three: more markers than you can hold
 -- in your head at a glance is just clutter. The rotation resets out of combat.
-local TAG_MARKERS = { 8, 7, 6 }
+C.TAG_MARKERS = { 8, 7, 6 }
 
 -- Only warn about stealing a tag if the tagger has actually been doing something
 -- recently - otherwise every mob you kill while questing alone would scold you.
-local NEAR_SECONDS = 60
+C.NEAR_SECONDS = 60
 
 -- A tagged kill and the tagger's XP report are two separate events on two
 -- separate clients: we see the death, their client reads the real gain off UnitXP
 -- and whispers it over a moment later. Kills wait in a queue to be paired with
 -- their report, which is what lets the carry print expected against actual.
-local XP_MATCH_WINDOW = 20  -- seconds a kill waits before it's written off
-local XP_MATCH_MAX    = 12  -- queue cap, so unreported kills can't grow it forever
+C.XP_MATCH_WINDOW = 20  -- seconds a kill waits before it's written off
+C.XP_MATCH_MAX    = 12  -- queue cap, so unreported kills can't grow it forever
 -- A miss and the XP report it draws describe the same kill, so they print as one
 -- line. The report is a whisper from the other client and lands a beat later, so
 -- the chat line has to wait for it. The sound and the X burst still fire the
 -- instant the mob dies - only the log line resolves late.
-local MISS_LOG_DELAY  = 2   -- seconds a miss line waits for the XP report
+C.MISS_LOG_DELAY  = 2   -- seconds a miss line waits for the XP report
 
 -- Client differences in one place, the way WhoDoesWhat's ClientFeatures does it,
 -- so version checks don't get scattered through the logic. Focus arrived in TBC;
 -- the 1.x client has no focus unit at all, so everything built on it is skipped
 -- there and the timer fallback carries the load instead.
 local isClassicEra = WOW_PROJECT_ID == WOW_PROJECT_CLASSIC
-local HAS_FOCUS    = not isClassicEra
+C.HAS_FOCUS    = not isClassicEra
 
 -- Triangle, diamond, orange circle, in that order. Three slots, so a fourth
 -- tagger has nowhere to go - adding one prompts you to drop an old one. Mob tags
 -- use 8/7/6, so the two sets can never collide.
-local TAGGER_MARKERS = { 4, 3, 2 }
-local MARKER_NAMES   = { [4] = "triangle", [3] = "diamond", [2] = "orange" }
+C.TAGGER_MARKERS = { 4, 3, 2 }
+C.MARKER_NAMES   = { [4] = "triangle", [3] = "diamond", [2] = "orange" }
 
-local INVITE_MESSAGE     = "inv"
-local OUT_OF_RANGE_AFTER = 30   -- fallback only, where focus isn't available
-local WHISPER_COOLDOWN   = 60   -- floor between whispers, whatever else happens
-local INVITE_FALLBACK    = 8    -- wait for a direct invite before whispering
-local FOCUS_NAG_INTERVAL = 60   -- between "you have no focus set" reminders
-local GROUPED_WARN_INTERVAL = 15 -- between grouped-in-combat warnings
-local LEAVE_GRACE = 3           -- settle time after joining before auto-leaving
+C.INVITE_MESSAGE     = "inv"
+C.OUT_OF_RANGE_AFTER = 30   -- fallback only, where focus isn't available
+C.WHISPER_COOLDOWN   = 60   -- floor between whispers, whatever else happens
+C.INVITE_FALLBACK    = 8    -- wait for a direct invite before whispering
+C.FOCUS_NAG_INTERVAL = 60   -- between "you have no focus set" reminders
+C.GROUPED_WARN_INTERVAL = 15 -- between grouped-in-combat warnings
+C.LEAVE_GRACE = 3           -- settle time after joining before auto-leaving
 -- UnitHealth can still report the pre-hit value on the frame the combat log
 -- delivers a hit, so a mob would look "full" the instant we damaged it. Requiring
 -- a quiet gap first means only a real evade-reset clears the grouped mark.
-local RESET_GRACE = 2           -- quiet seconds before full health reads as a reset
+C.RESET_GRACE = 2           -- quiet seconds before full health reads as a reset
 
 -- The burst is drawn at a fixed spot on screen rather than over the mob. It has
 -- to be: nameplate frames and everything parented to them are restricted regions
 -- that cannot be measured while you are in combat, so their screen position is
 -- simply not knowable at the moment a mob dies. Centre screen, raised clear of
 -- the character, sized to be read at a glance instead of squinted at.
-local MARK_SIZE = 44
-local MARK_RISE = 180
+C.MARK_SIZE = 44
+C.MARK_RISE = 180
 
 -- Threshold stamp: a hard collapse from oversized that punches past true size,
 -- then springs back out to it. About a fifth of a second end to end - the
 -- undershoot and the snap back are what give it the impact.
-local STAMP_IN_DURATION   = 0.12
-local STAMP_BACK_DURATION = 0.09
-local STAMP_FROM          = 3.0
-local STAMP_UNDERSHOOT    = 0.78
+C.STAMP_IN_DURATION   = 0.12
+C.STAMP_BACK_DURATION = 0.09
+C.STAMP_FROM          = 3.0
+C.STAMP_UNDERSHOOT    = 0.78
 
 -- Death float: one mark that rises and fades on the cadence of the Classic XP
 -- gain text. Hits and misses share it, differing only in texture and label.
-local FLOAT_RISE       = 70
-local FLOAT_DURATION   = 1.8
-local FLOAT_FADE_DELAY = 0.7
+C.FLOAT_RISE       = 70
+C.FLOAT_DURATION   = 1.8
+C.FLOAT_FADE_DELAY = 0.7
 
 -- Reactive damage: it fires because the mob attacked us, not because we chose to
 -- engage it. Thorns, Retribution Aura, Lightning Shield, the Imp's Fire Shield
@@ -127,14 +142,14 @@ local FLOAT_FADE_DELAY = 0.7
 -- redirected onto us. Neither is a deliberate tag, so neither is allowed to claim
 -- one - though the damage itself still counts toward the tagger's threshold,
 -- which matters for an enhancement shaman running Lightning Shield.
-local REACTIVE_EVENTS = {
+C.REACTIVE_EVENTS = {
     DAMAGE_SHIELD = true,
     DAMAGE_SPLIT  = true,
 }
 
 -- Damage subevents carrying a SPELL-style prefix (spellId, spellName, spellSchool
 -- occupy args 12-14, so amount/overkill land at 15/16).
-local SPELL_DAMAGE_EVENTS = {
+C.SPELL_DAMAGE_EVENTS = {
     SPELL_DAMAGE          = true,
     SPELL_PERIODIC_DAMAGE = true,
     SPELL_BUILDING_DAMAGE = true,
@@ -144,22 +159,22 @@ local SPELL_DAMAGE_EVENTS = {
 }
 
 -- Runtime state (never saved; all of it is per-pull scratch)
-local damage    = {}  -- [destGUID]  = accumulated damage from the tagger
-local alerted   = {}  -- [destGUID]  = true once we've played the threshold sound
-local lastSeen  = {}  -- [destGUID]  = GetTime() of last accumulation
-local maxHealth = {}  -- [destGUID]  = cached UnitHealthMax, so we can score off-screen mobs
-local tapOwner  = {}  -- [destGUID]  = "carry" | "tagger" | "other", by first damage
-local marked    = {}  -- [destGUID]  = true once we've put a raid marker on it
-local groupTagged = {} -- [destGUID] = true once tagger damage landed while grouped
-local mobLevel  = {}  -- [destGUID]  = cached UnitLevel, for the XP estimate
-local mobElite  = {}  -- [destGUID]  = true if elite/rare-elite/boss (double XP)
-local mobTrivial = {} -- [destGUID]  = true for critters and "minus" minions
-local mobName   = {}  -- [destGUID]  = name, for the banlist
-local petOwner  = {}  -- [petGUID]   = ownerGUID, learned from SPELL_SUMMON
-local isTracked = {}  -- [guid]      = tagger key once a GUID is confirmed as one
-local isCarryGuid = {} -- [guid]     = true once a GUID is confirmed as the carry
-local plates    = {}  -- [unitToken] = { guid = , badge = }
-local guidToUnit = {} -- [guid]      = unitToken, for instant nameplate updates
+state.damage      = {}  -- [destGUID]  = accumulated damage from the tagger
+state.alerted     = {}  -- [destGUID]  = true once we've played the threshold sound
+state.lastSeen    = {}  -- [destGUID]  = GetTime() of last accumulation
+state.maxHealth   = {}  -- [destGUID]  = cached UnitHealthMax, to score off-screen mobs
+state.tapOwner    = {}  -- [destGUID]  = "carry" | "tagger" | "other", by first damage
+state.marked      = {}  -- [destGUID]  = true once we've put a raid marker on it
+state.groupTagged = {}  -- [destGUID]  = true once tagger damage landed while grouped
+state.mobLevel    = {}  -- [destGUID]  = cached UnitLevel, for the XP estimate
+state.mobElite    = {}  -- [destGUID]  = true if elite/rare-elite/boss (double XP)
+state.mobTrivial  = {}  -- [destGUID]  = true for critters and "minus" minions
+state.mobName     = {}  -- [destGUID]  = name, for the banlist
+state.petOwner    = {}  -- [petGUID]   = ownerGUID, learned from SPELL_SUMMON
+state.isTracked   = {}  -- [guid]      = tagger key once a GUID is confirmed as one
+state.isCarryGuid = {}  -- [guid]      = true once a GUID is confirmed as the carry
+state.plates      = {}  -- [unitToken] = { guid = , badge = }
+state.guidToUnit  = {}  -- [guid]      = unitToken, for instant nameplate updates
 
 -- db.taggers = { [normalisedName] = { name = "Display", level = n, pet = "Name" } }
 -- Their damage is pooled: the threshold is measured against the sum, which is
@@ -514,7 +529,7 @@ local function ReassignMarkers()
     end)
 
     for i = 1, #list do
-        list[i].marker = TAGGER_MARKERS[i]   -- nil past the third: no slot left
+        list[i].marker = C.TAGGER_MARKERS[i]   -- nil past the third: no slot left
     end
 end
 
@@ -522,7 +537,7 @@ end
 local function PrimaryTaggerKey()
     if not db or not db.taggers then return nil end
     for key, info in pairs(db.taggers) do
-        if info.marker == TAGGER_MARKERS[1] then return key end
+        if info.marker == C.TAGGER_MARKERS[1] then return key end
     end
     return nil
 end
@@ -531,9 +546,9 @@ end
 local function TaggersByPriority()
     local list = {}
     if not db or not db.taggers then return list end
-    for i = 1, #TAGGER_MARKERS do
+    for i = 1, #C.TAGGER_MARKERS do
         for _, info in pairs(db.taggers) do
-            if info.marker == TAGGER_MARKERS[i] then list[#list + 1] = info end
+            if info.marker == C.TAGGER_MARKERS[i] then list[#list + 1] = info end
         end
     end
     for _, info in pairs(db.taggers) do
@@ -627,24 +642,26 @@ local function LowestTaggerLevel()
     return lowest
 end
 
+-- Every table keyed by a MOB's GUID, in one list so Forget and ResetAll cannot
+-- drift apart. They were two hand-maintained sequences of the same names, and a
+-- table added to one but not the other leaks for the whole session.
+--
+-- petOwner is deliberately absent: it is keyed by pet, outlives any single mob,
+-- and is cleared only by a loading screen. So are isTracked and isCarryGuid,
+-- which are keyed by the SOURCE of damage - a mob dying says nothing about who
+-- the tagger is - and so belong to ResetAll alone.
+C.PER_MOB = {
+    "damage", "alerted", "lastSeen", "maxHealth", "mobLevel", "mobElite",
+    "mobTrivial", "mobName", "tapOwner", "marked", "groupTagged",
+}
+
 local function Forget(guid)
-    damage[guid]    = nil
-    alerted[guid]   = nil
-    lastSeen[guid]  = nil
-    maxHealth[guid] = nil
-    mobLevel[guid]  = nil
-    mobElite[guid]  = nil
-    mobTrivial[guid] = nil
-    mobName[guid]   = nil
-    tapOwner[guid]  = nil
-    marked[guid]    = nil
-    groupTagged[guid] = nil
+    for i = 1, #C.PER_MOB do state[C.PER_MOB[i]][guid] = nil end
 end
 
 local function ResetAll()
-    wipe(damage); wipe(alerted); wipe(lastSeen); wipe(maxHealth); wipe(isTracked)
-    wipe(mobLevel); wipe(mobElite); wipe(mobTrivial); wipe(mobName)
-    wipe(tapOwner); wipe(marked); wipe(isCarryGuid); wipe(groupTagged)
+    for i = 1, #C.PER_MOB do wipe(state[C.PER_MOB[i]]) end
+    wipe(state.isTracked); wipe(state.isCarryGuid)
 end
 
 --------------------------------------------------------------------------------
@@ -675,7 +692,7 @@ end
 
 local function IsGrey(guid)
     local pl = LowestTaggerLevel()
-    local ml = mobLevel[guid]
+    local ml = state.mobLevel[guid]
     if not pl or not ml or pl <= 0 or ml <= 0 then return false end
     return (pl - ml) >= ZeroDiff(pl)
 end
@@ -684,7 +701,7 @@ end
 -- ship banned: they're the cocoon spawns in Terokkar, and they clutter a grind
 -- with tags nobody wants.
 local function IsBanned(guid)
-    local name = mobName[guid]
+    local name = state.mobName[guid]
     if not name or not db or not db.banlist then return false end
     return db.banlist[strlower(name)] ~= nil
 end
@@ -694,7 +711,7 @@ end
 -- instant the tagger touches one: at zero XP the only question is whether they
 -- have it at all, so a climbing percentage would be noise.
 local function IsWorthless(guid)
-    return IsBanned(guid) or mobTrivial[guid] or IsGrey(guid)
+    return IsBanned(guid) or state.mobTrivial[guid] or IsGrey(guid)
 end
 
 --------------------------------------------------------------------------------
@@ -707,18 +724,18 @@ end
 -- Horizontal anchors are pulled inward: the Blizzard base plate frame is wider
 -- than the health bar most nameplate addons actually draw, so anchoring flush to
 -- its edge leaves the badge floating well clear of the visible plate.
-local BADGE_SIDE_INSET = 12
+C.BADGE_SIDE_INSET = 12
 
 -- badge point, plate point, x, y
-local BADGE_ANCHORS = {
+C.BADGE_ANCHORS = {
     above = { "BOTTOM", "TOP",     0,                    4 },
     below = { "TOP",    "BOTTOM",  0,                   -4 },
-    left  = { "RIGHT",  "LEFT",    BADGE_SIDE_INSET,     0 },
-    right = { "LEFT",   "RIGHT",  -BADGE_SIDE_INSET,     0 },
+    left  = { "RIGHT",  "LEFT",    C.BADGE_SIDE_INSET,     0 },
+    right = { "LEFT",   "RIGHT",  -C.BADGE_SIDE_INSET,     0 },
 }
 
 local function ApplyBadgeAnchor(badge, plateFrame)
-    local a = BADGE_ANCHORS[db.badgePos] or BADGE_ANCHORS.above
+    local a = C.BADGE_ANCHORS[db.badgePos] or C.BADGE_ANCHORS.above
     badge:ClearAllPoints()
     badge:SetPoint(a[1], plateFrame, a[2], a[3], a[4])
     badge.anchorMode = db.badgePos   -- so GetBadge can spot a changed setting
@@ -731,14 +748,14 @@ local function CreateBadge(plateFrame)
     ApplyBadgeAnchor(badge, plateFrame)
 
     badge.check = badge:CreateTexture(nil, "OVERLAY")
-    badge.check:SetTexture(CHECK_TEXTURE)
+    badge.check:SetTexture(C.CHECK_TEXTURE)
     badge.check:SetAllPoints(badge)
     badge.check:Hide()
 
     -- Shown on mobs we tapped ourselves: the tagger can never get credit for
     -- these, so the percentage is meaningless and the X is permanent.
     badge.deny = badge:CreateTexture(nil, "OVERLAY")
-    badge.deny:SetTexture(X_TEXTURE)
+    badge.deny:SetTexture(C.X_TEXTURE)
     badge.deny:SetAllPoints(badge)
     badge.deny:Hide()
 
@@ -790,26 +807,26 @@ local function SpawnPlateStamp(unit)
         -- together, so the fade rides along with this phase.
         local punch = badge.stamp:CreateAnimation("Scale")
         punch:SetOrder(1)
-        punch:SetDuration(STAMP_IN_DURATION)
+        punch:SetDuration(C.STAMP_IN_DURATION)
         punch:SetSmoothing("OUT")
         punch:SetOrigin("CENTER", 0, 0)
-        punch:SetScaleFrom(STAMP_FROM, STAMP_FROM)
-        punch:SetScaleTo(STAMP_UNDERSHOOT, STAMP_UNDERSHOOT)
+        punch:SetScaleFrom(C.STAMP_FROM, C.STAMP_FROM)
+        punch:SetScaleTo(C.STAMP_UNDERSHOOT, C.STAMP_UNDERSHOOT)
 
         -- Opaque before the slam lands, so it reads as an impact and not a fade.
         local fadeIn = badge.stamp:CreateAnimation("Alpha")
         fadeIn:SetOrder(1)
-        fadeIn:SetDuration(STAMP_IN_DURATION * 0.5)
+        fadeIn:SetDuration(C.STAMP_IN_DURATION * 0.5)
         fadeIn:SetFromAlpha(0)
         fadeIn:SetToAlpha(1)
 
         -- Phase two: spring back out to true size.
         local settle = badge.stamp:CreateAnimation("Scale")
         settle:SetOrder(2)
-        settle:SetDuration(STAMP_BACK_DURATION)
+        settle:SetDuration(C.STAMP_BACK_DURATION)
         settle:SetSmoothing("IN_OUT")
         settle:SetOrigin("CENTER", 0, 0)
-        settle:SetScaleFrom(STAMP_UNDERSHOOT, STAMP_UNDERSHOOT)
+        settle:SetScaleFrom(C.STAMP_UNDERSHOOT, C.STAMP_UNDERSHOOT)
         settle:SetScaleTo(1, 1)
     end
 
@@ -823,20 +840,20 @@ local function SpawnPlateStamp(unit)
 end
 
 local function UpdatePlate(unit)
-    local p = plates[unit]
+    local p = state.plates[unit]
     if not p then return end
 
     local guid = p.guid
-    local dealt = guid and damage[guid]
+    local dealt = guid and state.damage[guid]
 
     -- Only cache max health for mobs the tagger has actually hit -
     -- caching every plate we ever see would grow unbounded, since the sweep
     -- only walks mobs with damage recorded.
-    local maxhp = maxHealth[guid]
+    local maxhp = state.maxHealth[guid]
     if dealt then
         local live = UnitHealthMax(unit)
         if live and live > 0 then
-            maxHealth[guid] = live
+            state.maxHealth[guid] = live
             maxhp = live
         end
 
@@ -844,10 +861,10 @@ local function UpdatePlate(unit)
         -- That's a fresh mob as far as the next pull is concerned, so the grouped
         -- mark comes off - otherwise one bad pull would brand it until it died.
         -- The quiet gap is what makes this safe to read; see RESET_GRACE.
-        local quiet = (GetTime() - (lastSeen[guid] or 0)) >= RESET_GRACE
-        if groupTagged[guid] and quiet and live and live > 0
+        local quiet = (GetTime() - (state.lastSeen[guid] or 0)) >= C.RESET_GRACE
+        if state.groupTagged[guid] and quiet and live and live > 0
             and UnitHealth(unit) >= live then
-            groupTagged[guid] = nil
+            state.groupTagged[guid] = nil
         end
     end
 
@@ -860,7 +877,7 @@ local function UpdatePlate(unit)
     -- mid-pull does not quietly turn the X back into a promising number. It clears
     -- when the mob dies (Forget) or resets to full, above.
     if db.enabled and not Suspended() and HasTaggers()
-        and (tapOwner[guid] == "carry" or groupTagged[guid]) then
+        and (state.tapOwner[guid] == "carry" or state.groupTagged[guid]) then
         local badge = GetBadge(unit, true)
         if badge then
             badge.text:Hide()
@@ -911,7 +928,7 @@ local function UpdatePlate(unit)
 end
 
 local function UpdateAllPlates()
-    for unit in pairs(plates) do
+    for unit in pairs(state.plates) do
         UpdatePlate(unit)
     end
 end
@@ -941,7 +958,7 @@ local function AcquireMark()
     if f then return f end
 
     f = CreateFrame("Frame", nil, UIParent)
-    f:SetSize(MARK_SIZE, MARK_SIZE)
+    f:SetSize(C.MARK_SIZE, C.MARK_SIZE)
     f:SetFrameStrata("HIGH")
     f:Hide()
 
@@ -956,10 +973,10 @@ local function AcquireMark()
 
     f.anim = f:CreateAnimationGroup()
     f.move = f.anim:CreateAnimation("Translation")
-    f.move:SetDuration(FLOAT_DURATION)
+    f.move:SetDuration(C.FLOAT_DURATION)
     f.move:SetSmoothing("OUT")
     f.fade = f.anim:CreateAnimation("Alpha")
-    f.fade:SetDuration(FLOAT_DURATION)
+    f.fade:SetDuration(C.FLOAT_DURATION)
     f.fade:SetFromAlpha(1)
     f.fade:SetToAlpha(0)
     f.anim:SetScript("OnFinished", ReleaseMark)
@@ -983,15 +1000,15 @@ local function SpawnBurst(texture, label, r, g, b)
 
     f:ClearAllPoints()
     f:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
-        UIParent:GetWidth() / 2, UIParent:GetHeight() / 2 + MARK_RISE)
+        UIParent:GetWidth() / 2, UIParent:GetHeight() / 2 + C.MARK_RISE)
     f:SetAlpha(1)
 
-    f.move:SetOffset(0, FLOAT_RISE)
-    f.move:SetDuration(FLOAT_DURATION)
+    f.move:SetOffset(0, C.FLOAT_RISE)
+    f.move:SetDuration(C.FLOAT_DURATION)
     -- Holding opacity before the fade is what makes it read as the XP text
     -- rather than something merely disappearing.
-    f.fade:SetStartDelay(FLOAT_FADE_DELAY)
-    f.fade:SetDuration(FLOAT_DURATION - FLOAT_FADE_DELAY)
+    f.fade:SetStartDelay(C.FLOAT_FADE_DELAY)
+    f.fade:SetDuration(C.FLOAT_DURATION - C.FLOAT_FADE_DELAY)
 
     f:Show()
     f.anim:Play()
@@ -1009,17 +1026,17 @@ local function MatchesCarry(guid, name)
         -- Our own pet needs no summon and no name: the client will tell us its
         -- GUID outright. petOwner stays as the fallback for the frame or two
         -- before UNIT_PET has been round.
-        return guid == Pets.myGUID or petOwner[guid] == playerGUID
+        return guid == Pets.myGUID or state.petOwner[guid] == playerGUID
     end
 
-    if isCarryGuid[guid] then return true end
+    if state.isCarryGuid[guid] then return true end
     if name and NormalizeName(name) == db.carryKey then
-        isCarryGuid[guid] = true
+        state.isCarryGuid[guid] = true
         return true
     end
     if db.includePets then
-        local owner = petOwner[guid]
-        if owner and isCarryGuid[owner] then return true end
+        local owner = state.petOwner[guid]
+        if owner and state.isCarryGuid[owner] then return true end
         if db.carryPetKey and Pets.IsPetGuid(guid)
             and NormalizeName(name) == db.carryPetKey then
             return true
@@ -1032,17 +1049,17 @@ end
 -- only care whether it matched still read naturally.
 local function MatchesTracked(guid, name)
     if not guid or not HasTaggers() then return nil end
-    if isTracked[guid] then return isTracked[guid] end
+    if state.isTracked[guid] then return state.isTracked[guid] end
 
     local key = TaggerKeyOf(name)
     if key then
-        isTracked[guid] = key   -- CLEU always pairs name with GUID, so learn it once
+        state.isTracked[guid] = key   -- CLEU always pairs name with GUID, so learn it once
         return key
     end
 
     if db.includePets then
-        local owner = petOwner[guid]
-        if owner and isTracked[owner] then return isTracked[owner] end
+        local owner = state.petOwner[guid]
+        if owner and state.isTracked[owner] then return state.isTracked[owner] end
         -- Deliberately not cached into isTracked: that table means "this GUID is
         -- the tagger themselves", and SampleTrackedLevel reads it to decide whose
         -- level it just saw. A pet in there would write the pet's level onto its
@@ -1060,8 +1077,8 @@ local function PlayCue(file, id)
     -- can accidentally bypass it.
     if not db.audio then return end
 
-    if file and PlaySoundFile(file, SOUND_CHANNEL) then return end
-    PlaySound(id, SOUND_CHANNEL)
+    if file and PlaySoundFile(file, C.SOUND_CHANNEL) then return end
+    PlaySound(id, C.SOUND_CHANNEL)
 end
 
 local function PlayAlertSound()
@@ -1086,22 +1103,22 @@ end
 --------------------------------------------------------------------------------
 
 -- Retail's uiMapIDs for Outland and its zones.
-local OUTLAND_MAP_ID = 101
+C.OUTLAND_MAP_ID = 101
 -- Outland's zone uiMapIDs cluster in this range. Checked as well as the parent
 -- chain, because a zone whose parent lookup fails still identifies itself.
-local OUTLAND_MAP_MIN, OUTLAND_MAP_MAX = 100, 111
+C.OUTLAND_MAP_MIN, C.OUTLAND_MAP_MAX = 100, 111
 -- This client numbers its maps from a different block, which is why auto-detect
 -- called Nagrand (1951) "Azeroth" and under-paid every Outland estimate by the
 -- gap between the two base constants. Only the continent itself is matched here:
 -- the zones around it interleave with the Azeroth ones the Burning Crusade added
 -- (Eversong, Ghostlands, Azuremyst, Bloodmyst, Silvermoon, the Exodar), so a
 -- range over this block would call those Outland too.
-local OUTLAND_MAP_ID_CLASSIC = 1945
+C.OUTLAND_MAP_ID_CLASSIC = 1945
 -- Map.dbc id for the Outland world. uiMapIDs get renumbered from client to
 -- client; this one has meant Outland since the Burning Crusade shipped, so it's
 -- the signal we trust first. Instances inside Outland report their own id and
 -- fall through to the map walk below.
-local OUTLAND_INSTANCE_ID = 530
+C.OUTLAND_INSTANCE_ID = 530
 
 local currentMapID, currentInstanceID   -- surfaced by /tag diag
 
@@ -1114,15 +1131,15 @@ local function RefreshContinent()
     -- Asked first because it answers even when the map system isn't ready yet,
     -- and because it can't be thrown off by a client renumbering its uiMaps.
     currentInstanceID = GetInstanceInfo and select(8, GetInstanceInfo()) or nil
-    if currentInstanceID == OUTLAND_INSTANCE_ID then
+    if currentInstanceID == C.OUTLAND_INSTANCE_ID then
         inOutland = true
         return
     end
 
     local guard = 0
     while id and guard < 12 do
-        if id == OUTLAND_MAP_ID or id == OUTLAND_MAP_ID_CLASSIC
-            or (id >= OUTLAND_MAP_MIN and id <= OUTLAND_MAP_MAX) then
+        if id == C.OUTLAND_MAP_ID or id == C.OUTLAND_MAP_ID_CLASSIC
+            or (id >= C.OUTLAND_MAP_MIN and id <= C.OUTLAND_MAP_MAX) then
             inOutland = true
             return
         end
@@ -1152,7 +1169,7 @@ end
 -- Returns estimated XP, 0 for a grey mob, or nil when either level is unknown.
 local function EstimateXP(guid)
     local pl = LowestTaggerLevel()
-    local ml = mobLevel[guid]
+    local ml = state.mobLevel[guid]
     if not pl or not ml or pl <= 0 or ml <= 0 then return nil end
 
     -- Resolved per kill rather than trusted from a zone event: at login the map
@@ -1172,7 +1189,7 @@ local function EstimateXP(guid)
         xp = base * (1 - gap / zd)
     end
 
-    if mobElite[guid] then xp = xp * 2 end
+    if state.mobElite[guid] then xp = xp * 2 end
     return floor(xp + 0.5)
 end
 
@@ -1189,7 +1206,7 @@ local function QueueKillForReport(name, pct, est, missed)
     pendingKills[#pendingKills + 1] = kill
     -- Reports that never arrive - comms off, an unlinked tagger, a kill outside
     -- their client's range - would otherwise pile up. Oldest goes first.
-    while #pendingKills > XP_MATCH_MAX do tremove(pendingKills, 1) end
+    while #pendingKills > C.XP_MATCH_MAX do tremove(pendingKills, 1) end
     return kill
 end
 
@@ -1208,7 +1225,7 @@ end
 -- the same kill, not the one before it.
 local function ClaimKillForReport(key)
     local now = GetTime()
-    while pendingKills[1] and now - pendingKills[1].at > XP_MATCH_WINDOW do
+    while pendingKills[1] and now - pendingKills[1].at > C.XP_MATCH_WINDOW do
         tremove(pendingKills, 1)
     end
     for i = 1, #pendingKills do
@@ -1228,17 +1245,17 @@ local function MultiplierText(mult)
 end
 
 local function CacheMobInfo(unit, guid)
-    if not mobName[guid] then mobName[guid] = UnitName(unit) end
+    if not state.mobName[guid] then state.mobName[guid] = UnitName(unit) end
 
     local lvl = UnitLevel(unit)
-    if lvl and lvl > 0 then mobLevel[guid] = lvl end   -- -1 means unreadable (skull)
+    if lvl and lvl > 0 then state.mobLevel[guid] = lvl end   -- -1 means unreadable (skull)
 
     local class = UnitClassification(unit)
-    mobElite[guid] = (class == "elite" or class == "rareelite" or class == "worldboss")
+    state.mobElite[guid] = (class == "elite" or class == "rareelite" or class == "worldboss")
 
     -- "minus" is Blizzard's own flag for trivial minions - the low-health adds
     -- that pay nothing. Critters are the same story.
-    mobTrivial[guid] = (class == "minus") or (UnitCreatureType(unit) == "Critter")
+    state.mobTrivial[guid] = (class == "minus") or (UnitCreatureType(unit) == "Critter")
 end
 
 local function GroupedWithTagger()
@@ -1301,7 +1318,7 @@ local function ConfirmTagger(key, how)
     ReassignMarkers()
     UpdateMacroButton()
     Print(format("|cff00ff00%s|r confirmed (%s)%s.", info.name, how,
-        info.marker and (" - " .. MARKER_NAMES[info.marker]) or ""))
+        info.marker and (" - " .. C.MARKER_NAMES[info.marker]) or ""))
 end
 
 local function AmGroupLeader()
@@ -1333,7 +1350,7 @@ end
 -- second or two: leadership arrives WITH the roster, so an immediate check sees
 -- us as a non-leader, and SetLootMethod itself gets swallowed if it lands during
 -- that window. So we verify the result and try again rather than assume.
-local LOOT_ATTEMPTS = 6
+C.LOOT_ATTEMPTS = 6
 
 local function CheckLootMethod(attempt)
     attempt = attempt or 1
@@ -1347,7 +1364,7 @@ local function CheckLootMethod(attempt)
             if not InTagPairGroup() then return end
             if GetLootMethod and GetLootMethod() == "freeforall" then
                 Print("two-person tag group - loot set to |cffffff00free for all|r.")
-            elseif attempt < LOOT_ATTEMPTS then
+            elseif attempt < C.LOOT_ATTEMPTS then
                 CheckLootMethod(attempt + 1)
             end
         end)
@@ -1355,7 +1372,7 @@ local function CheckLootMethod(attempt)
     end
 
     -- Not leader yet, or not leader at all. Either way, look again shortly.
-    if attempt < LOOT_ATTEMPTS then
+    if attempt < C.LOOT_ATTEMPTS then
         C_Timer.After(1.5, function() CheckLootMethod(attempt + 1) end)
     end
 end
@@ -1380,7 +1397,7 @@ end
 -- chat box instead stole the edit box on every tick. So focus is only ever
 -- OBSERVED here - press the keybind or run the macro, and this notices.
 local function NoticeFocus()
-    if not HAS_FOCUS then return end
+    if not C.HAS_FOCUS then return end
     if UnitExists("focus") and TaggerKeyOf(UnitName("focus")) then
         -- Remembered by name: this is the only player we'll ask for an invite.
         focusTaggerName = UnitName("focus")
@@ -1407,9 +1424,9 @@ local function SampleTrackedLevel(unit)
     end
 
     local guid = UnitGUID(unit)
-    local key = guid and isTracked[guid] or TaggerKeyOf(UnitName(unit))
+    local key = guid and state.isTracked[guid] or TaggerKeyOf(UnitName(unit))
     if not key then return end
-    if guid then isTracked[guid] = key end
+    if guid then state.isTracked[guid] = key end
 
     -- Seeing them on any unit token counts as contact, same as seeing them fight.
     trackedActiveAt = GetTime()
@@ -1434,7 +1451,7 @@ end
 -- one while powerlevelling: you target the mob, the mob is hitting them, so they
 -- sit in your target's target slot for most of the pull. A level that goes stale
 -- by one silently applies a level penalty that isn't real - a ~6% error per kill.
-local SCAN_TOKENS = {
+C.SCAN_TOKENS = {
     "target", "targettarget", "mouseover", "focus",
     "party1", "party2", "party3", "party4",
 }
@@ -1443,8 +1460,8 @@ local function ScanForTracked()
     if Suspended() then return end
     if not HasTaggers() then return end
     NoticeFocus()
-    for i = 1, #SCAN_TOKENS do
-        SampleTrackedLevel(SCAN_TOKENS[i])
+    for i = 1, #C.SCAN_TOKENS do
+        SampleTrackedLevel(C.SCAN_TOKENS[i])
     end
 end
 
@@ -1460,8 +1477,8 @@ local function TaggerUnit()
         return "focus"
     end
 
-    for guid, unit in pairs(guidToUnit) do
-        if isTracked[guid] and UnitExists(unit) then return unit end
+    for guid, unit in pairs(state.guidToUnit) do
+        if state.isTracked[guid] and UnitExists(unit) then return unit end
     end
     return nil
 end
@@ -1479,7 +1496,7 @@ end
 -- focus can't answer - no focus client, never established, or the user has
 -- pointed it at something of their own, which we don't fight over.
 local function TaggerFocusLost()
-    if not HAS_FOCUS or not db.autoFocus or not focusEverSet then return nil end
+    if not C.HAS_FOCUS or not db.autoFocus or not focusEverSet then return nil end
 
     if not UnitExists("focus") then return true end
     if not TaggerKeyOf(UnitName("focus")) then return nil end
@@ -1494,12 +1511,12 @@ local function WarnGroupedCombat()
     -- the nameplate and this warning can never disagree about whether the pull
     -- is wasted.
     if not db.groupWarning or not TagIsWasted() then return end
-    if (GetTime() - lastGroupWarnAt) < GROUPED_WARN_INTERVAL then return end
+    if (GetTime() - lastGroupWarnAt) < C.GROUPED_WARN_INTERVAL then return end
 
     lastGroupWarnAt = GetTime()
     Print("|cffff2020GROUPED WITH YOUR TAGGER|r - this kill earns them almost nothing. "
         .. "|cffffff00/tag leave|r to drop the party.")
-    SafeCall(SpawnBurst, X_TEXTURE, "GROUPED", 1, 0.2, 0.2)
+    SafeCall(SpawnBurst, C.X_TEXTURE, "GROUPED", 1, 0.2, 0.2)
 end
 
 local function LeaveTaggerParty()
@@ -1518,7 +1535,7 @@ local function CheckAutoLeave()
     if InTaggerMode() then return end   -- our party IS the tagger group
     if not db.autoLeave or InCombatLockdown() then return end
     if not GroupedWithTagger() then return end
-    if (GetTime() - groupedAt) < LEAVE_GRACE then return end
+    if (GetTime() - groupedAt) < C.LEAVE_GRACE then return end
 
     local unit = TaggerPartyUnit()
     if not unit then return end
@@ -1557,17 +1574,17 @@ local function AskForInvite(target, why)
         Print(format("%sasked |cff00ff00%s|r to invite you |cff808080(addon link)|r.",
             why or "", target))
 
-        C_Timer.After(INVITE_FALLBACK, function()
+        C_Timer.After(C.INVITE_FALLBACK, function()
             if IsInGroup() or IsInRaid() then return end
             if groupedAt >= sentAt then return end   -- it worked; we have been and gone
-            SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+            SendChatMessage(C.INVITE_MESSAGE, "WHISPER", nil, target)
             Print(format("no invite from %s - whispered \"%s\" instead.",
-                target, INVITE_MESSAGE))
+                target, C.INVITE_MESSAGE))
         end)
     else
-        SendChatMessage(INVITE_MESSAGE, "WHISPER", nil, target)
+        SendChatMessage(C.INVITE_MESSAGE, "WHISPER", nil, target)
         Print(format("%swhispered \"%s\" to |cff00ff00%s|r.",
-            why or "", INVITE_MESSAGE, target))
+            why or "", C.INVITE_MESSAGE, target))
     end
 end
 
@@ -1577,13 +1594,13 @@ end
 local function CheckFocusNag()
     if Suspended() then return end
     if InTaggerMode() then return end
-    if not HAS_FOCUS or not db.focusWarning or not db.autoFocus then return end
+    if not C.HAS_FOCUS or not db.focusWarning or not db.autoFocus then return end
     if not HasTaggers() or UnitExists("focus") then return end
     if IsInGroup() or IsInRaid() then return end
 
     -- Only while actually levelling: the tagger has done something recently.
-    if trackedActiveAt == 0 or (GetTime() - trackedActiveAt) > NEAR_SECONDS then return end
-    if (GetTime() - lastFocusNagAt) < FOCUS_NAG_INTERVAL then return end
+    if trackedActiveAt == 0 or (GetTime() - trackedActiveAt) > C.NEAR_SECONDS then return end
+    if (GetTime() - lastFocusNagAt) < C.FOCUS_NAG_INTERVAL then return end
 
     lastFocusNagAt = GetTime()
     Print("|cffff8080No focus set.|r Press your TagTeam keybind, or /focus a tagger - "
@@ -1622,18 +1639,18 @@ local function CheckContact()
             askedForInvite = false
             return
         end
-        if inRange == nil and (GetTime() - trackedActiveAt) < OUT_OF_RANGE_AFTER then
+        if inRange == nil and (GetTime() - trackedActiveAt) < C.OUT_OF_RANGE_AFTER then
             askedForInvite = false
             return
         end
     end
 
-    if askedForInvite or (GetTime() - lastWhisperAt) < WHISPER_COOLDOWN then return end
+    if askedForInvite or (GetTime() - lastWhisperAt) < C.WHISPER_COOLDOWN then return end
 
     -- Only the player we actually held focus on and lost. Asking every tagger
     -- meant names that were typo'd, offline or simply elsewhere got whispered too.
     local target = focusTaggerName
-    if not target and not HAS_FOCUS then
+    if not target and not C.HAS_FOCUS then
         -- No focus on this client at all, so fall back to the primary tagger.
         local list = TaggersByPriority()
         target = list[1] and list[1].name
@@ -1646,15 +1663,15 @@ end
 -- Put one of the three markers on a mob the tagger has tagged. Marking is not a
 -- protected action, so this works solo and in combat.
 local function MarkTaggedMob(guid)
-    if not db.markers or marked[guid] then return end
+    if not db.markers or state.marked[guid] then return end
 
-    local unit = guidToUnit[guid]
+    local unit = state.guidToUnit[guid]
     if not unit then return end   -- retried from OnNameplateAdded
 
-    SetRaidTarget(unit, TAG_MARKERS[markerSlot])
-    marked[guid] = true
+    SetRaidTarget(unit, C.TAG_MARKERS[markerSlot])
+    state.marked[guid] = true
     markerSlot = markerSlot + 1
-    if markerSlot > #TAG_MARKERS then markerSlot = 1 end
+    if markerSlot > #C.TAG_MARKERS then markerSlot = 1 end
 end
 
 -- The carry just took a mob out from under the tagger. Only fires when the tagger
@@ -1677,8 +1694,8 @@ local function WarnTagStolen()
     if TagIsWasted() then return WarnGroupedCombat() end
 
     if not db.stealWarning then return end
-    if GetTime() - trackedActiveAt > NEAR_SECONDS then return end
-    SafeCall(SpawnBurst, X_TEXTURE, "TAGGED", 1, 0.55, 0.1)
+    if GetTime() - trackedActiveAt > C.NEAR_SECONDS then return end
+    SafeCall(SpawnBurst, C.X_TEXTURE, "TAGGED", 1, 0.55, 0.1)
 end
 
 -- Fires only for mobs the tagger actually damaged. A mob they never
@@ -1690,7 +1707,7 @@ local function HandleDeath(guid, name)
     -- The carry owned the tag, so the tagger earned nothing regardless of damage
     -- done. Reporting a tag or banking XP here would be a lie, and the steal
     -- warning already fired when it happened.
-    if tapOwner[guid] == "carry" then return end
+    if state.tapOwner[guid] == "carry" then return end
 
     -- Grouped with the tagger, so the two-player rule computed this mob's XP from
     -- the CARRY's level and split it: what they actually banked is a rounding
@@ -1707,18 +1724,18 @@ local function HandleDeath(guid, name)
     -- killing blow came from the carry, so no tagger damage event refreshed it;
     -- the live check catches joining a group part-way through a pull that started
     -- clean. Either one means the X was standing on its plate.
-    if groupTagged[guid] or TagIsWasted() then return end
+    if state.groupTagged[guid] or TagIsWasted() then return end
 
     -- Greys and trivial minions pay nothing: no float, no sound, no session
     -- count. Counting them would quietly inflate the XP total with zeroes.
     if IsWorthless(guid) then return end
 
-    local dealt = damage[guid]
+    local dealt = state.damage[guid]
     if not dealt or dealt <= 0 then return end
 
     -- No cached max health means we never had eyes on this mob, so we have no
     -- honest denominator - stay quiet rather than guess either way.
-    local maxhp = maxHealth[guid]
+    local maxhp = state.maxHealth[guid]
     if not maxhp or maxhp <= 0 then return end
 
     local pct = dealt / maxhp * 100
@@ -1740,7 +1757,7 @@ local function HandleDeath(guid, name)
             -- Held unscaled so /tag calibrate can solve for the scale directly.
             lastRawXP = raw
             lastXPInfo = format("%s, mob %d vs their %d",
-                name or "target", mobLevel[guid] or 0, LowestTaggerLevel() or 0)
+                name or "target", state.mobLevel[guid] or 0, LowestTaggerLevel() or 0)
         end
         sessionTags = sessionTags + 1
 
@@ -1753,7 +1770,7 @@ local function HandleDeath(guid, name)
 
         if ReportTaggedKill then ReportTaggedKill() end
 
-        SafeCall(SpawnBurst, CHECK_TEXTURE, label, r, g, b)
+        SafeCall(SpawnBurst, C.CHECK_TEXTURE, label, r, g, b)
         return
     end
 
@@ -1781,7 +1798,7 @@ local function HandleDeath(guid, name)
     -- no partner has ever talked to us, or when no report is coming at all.
     if db.announce then
         if kill.at and next(linked) then
-            C_Timer.After(MISS_LOG_DELAY, function() LogMiss(kill) end)
+            C_Timer.After(C.MISS_LOG_DELAY, function() LogMiss(kill) end)
         else
             LogMiss(kill)
         end
@@ -1792,7 +1809,7 @@ local function HandleDeath(guid, name)
     -- happened to reach decides nothing and is worth nothing to read. The buzz
     -- is the part that carries: that one got away. The exact percentage is still
     -- in the chat line for the misses that were real attempts.
-    SafeCall(SpawnBurst, X_TEXTURE, nil, 1, 0.35, 0.35)
+    SafeCall(SpawnBurst, C.X_TEXTURE, nil, 1, 0.35, 0.35)
 end
 
 
@@ -1818,7 +1835,7 @@ local function IgnoredUnit(guid)
     local prefix = strsub(guid, 1, 4)
     if prefix == "Play" or prefix == "Pet-" then return true end
 
-    local unit = guidToUnit[guid]
+    local unit = state.guidToUnit[guid]
     if not unit then return false end
     if UnitPlayerControlled and UnitPlayerControlled(unit) then return true end
     if db.ignorePvP and UnitIsPVP and UnitIsPVP(unit) then return true end
@@ -1841,7 +1858,7 @@ local function OnCombatLog()
     -- Gated on a Pet- destination so a warlock's Infernal, a guardian with an
     -- ordinary Creature- GUID, can't overwrite the felhunter that does the work.
     if subevent == "SPELL_SUMMON" then
-        petOwner[destGUID] = sourceGUID
+        state.petOwner[destGUID] = sourceGUID
         if Pets.IsPetGuid(destGUID) then Pets.Learn(sourceName, destName) end
         return
     end
@@ -1851,7 +1868,7 @@ local function OnCombatLog()
     local amount, overkill
     if subevent == "SWING_DAMAGE" then
         amount, overkill = p12, p13
-    elseif SPELL_DAMAGE_EVENTS[subevent] then
+    elseif C.SPELL_DAMAGE_EVENTS[subevent] then
         amount, overkill = p15, p16
     else
         return
@@ -1861,15 +1878,15 @@ local function OnCombatLog()
     if IgnoredUnit(destGUID) then return end
 
     -- Recorded before the worthless check, which the banlist feeds into.
-    if destName and not mobName[destGUID] then mobName[destGUID] = destName end
+    if destName and not state.mobName[destGUID] then state.mobName[destGUID] = destName end
 
-    local unit = guidToUnit[destGUID]
+    local unit = state.guidToUnit[destGUID]
 
     -- Cached before any tag decision runs, because worthless mobs are excluded
     -- from most of them and that verdict needs the mob's level and classification.
     if unit then
         local live = UnitHealthMax(unit)
-        if live and live > 0 then maxHealth[destGUID] = live end
+        if live and live > 0 then state.maxHealth[destGUID] = live end
         CacheMobInfo(unit, destGUID)
     end
 
@@ -1880,18 +1897,18 @@ local function OnCombatLog()
 
     -- Whoever lands the first hit owns the tag. Recorded for every source, not
     -- just the tagger, because spotting that the carry took it is the whole point.
-    if not tapOwner[destGUID] and not REACTIVE_EVENTS[subevent] then
+    if not state.tapOwner[destGUID] and not C.REACTIVE_EVENTS[subevent] then
         local fromCarry = MatchesCarry(sourceGUID, sourceName)
 
-        tapOwner[destGUID] = fromCarry and "carry"
+        state.tapOwner[destGUID] = fromCarry and "carry"
             or (fromTracked and "tagger" or "other")
 
         -- Nothing is at stake on a worthless mob, so neither the scolding nor the
         -- marker clutter is worth it.
         if not worthless then
-            if tapOwner[destGUID] == "carry" then
+            if state.tapOwner[destGUID] == "carry" then
                 WarnTagStolen()
-            elseif tapOwner[destGUID] == "tagger" then
+            elseif state.tapOwner[destGUID] == "tagger" then
                 SafeCall(MarkTaggedMob, destGUID)
                 -- Being grouped is about the pull, not about who tapped it, so it
                 -- has to be said on this side too - WarnTagStolen only covers the
@@ -1913,26 +1930,26 @@ local function OnCombatLog()
         if amount <= 0 then return end
     end
 
-    local before = damage[destGUID] or 0
+    local before = state.damage[destGUID] or 0
     local after  = before + amount
-    damage[destGUID]   = after
-    lastSeen[destGUID] = GetTime()
+    state.damage[destGUID]   = after
+    state.lastSeen[destGUID] = GetTime()
 
     -- Latched the moment tagger damage lands while grouped, and deliberately not
     -- re-read afterwards: leaving the party does not retroactively make this mob
     -- worth tagging, so the X has to outlive the group. Cleared by the mob dying
     -- or resetting to full - see UpdatePlate.
-    if TagIsWasted() then groupTagged[destGUID] = true end
+    if TagIsWasted() then state.groupTagged[destGUID] = true end
 
-    if not alerted[destGUID] and not worthless then
-        local maxhp = maxHealth[destGUID]
+    if not state.alerted[destGUID] and not worthless then
+        local maxhp = state.maxHealth[destGUID]
         if maxhp and maxhp > 0 and (after / maxhp * 100) >= db.threshold then
-            alerted[destGUID] = true
+            state.alerted[destGUID] = true
             -- Silent on mobs the carry tapped, and silent while grouped with the
             -- tagger: crossing the threshold earns them nothing in either state,
             -- so a ding would be a false promise. Same reasoning as the grouped
             -- early return in HandleDeath.
-            if tapOwner[destGUID] ~= "carry" and not groupTagged[destGUID] then
+            if state.tapOwner[destGUID] ~= "carry" and not state.groupTagged[destGUID] then
                 PlayThresholdSound()
                 if unit then SafeCall(SpawnPlateStamp, unit) end
             end
@@ -1954,7 +1971,7 @@ end
 --              the carry's estimate outright: no rested guesswork, no formula.
 --------------------------------------------------------------------------------
 
-local ADDON_PREFIX = "TagTeam"
+C.ADDON_PREFIX = "TagTeam"
 
 local reportedXP = 0    -- real XP relayed by taggers this session
 local reportedKills = 0 -- kills relayed, including zero-XP ones
@@ -1971,9 +1988,9 @@ end
 SendAddon = function(msg, target)
     if not db.comms or not target then return end
     if C_ChatInfo and C_ChatInfo.SendAddonMessage then
-        C_ChatInfo.SendAddonMessage(ADDON_PREFIX, msg, "WHISPER", target)
+        C_ChatInfo.SendAddonMessage(C.ADDON_PREFIX, msg, "WHISPER", target)
     elseif SendAddonMessage then
-        SendAddonMessage(ADDON_PREFIX, msg, "WHISPER", target)
+        SendAddonMessage(C.ADDON_PREFIX, msg, "WHISPER", target)
     end
 end
 
@@ -2124,7 +2141,7 @@ StaticPopupDialogs["TAGTEAM_PAIR"] = {
 -- dinged under the old number can ding again under the new one.
 local function ApplyThreshold(pct)
     db.threshold = pct
-    wipe(alerted)
+    wipe(state.alerted)
     UpdateAllPlates()
 end
 
@@ -2334,14 +2351,14 @@ end
 local function OnNameplateAdded(unit)
     local guid = UnitGUID(unit)
     if not guid then return end
-    plates[unit] = { guid = guid }
-    guidToUnit[guid] = unit
+    state.plates[unit] = { guid = guid }
+    state.guidToUnit[guid] = unit
     -- Only for mobs we're already tracking: caching level for every plate we ever
     -- see would grow unbounded, since the sweep only walks mobs with damage.
-    if damage[guid] then CacheMobInfo(unit, guid) end
+    if state.damage[guid] then CacheMobInfo(unit, guid) end
     -- The tag may have been recorded before this plate existed, so marking gets
     -- a second chance here.
-    if tapOwner[guid] == "tagger" then SafeCall(MarkTaggedMob, guid) end
+    if state.tapOwner[guid] == "tagger" then SafeCall(MarkTaggedMob, guid) end
     UpdatePlate(unit)   -- mob may already have damage banked from outside plate range
 end
 
@@ -2353,17 +2370,17 @@ local function OnNameplateRemoved(unit)
         badge.deny:Hide()
     end
 
-    local p = plates[unit]
-    if p and p.guid and guidToUnit[p.guid] == unit then
-        guidToUnit[p.guid] = nil
+    local p = state.plates[unit]
+    if p and p.guid and state.guidToUnit[p.guid] == unit then
+        state.guidToUnit[p.guid] = nil
     end
-    plates[unit] = nil
+    state.plates[unit] = nil
 end
 
 local function Sweep()
-    local cutoff = GetTime() - STALE_SECONDS
-    for guid, t in pairs(lastSeen) do
-        if t < cutoff and not guidToUnit[guid] then
+    local cutoff = GetTime() - C.STALE_SECONDS
+    for guid, t in pairs(state.lastSeen) do
+        if t < cutoff and not state.guidToUnit[guid] then
             Forget(guid)
         end
     end
@@ -2396,7 +2413,7 @@ frame:RegisterEvent("UNIT_PET")
 --   the nameplate pair    bookkeeping only. Dropping these would leave `plates`
 --                         holding units that no longer exist, and UpdatePlate
 --                         hides the badge itself while suspended anyway
-local SUSPEND_EXEMPT = {
+C.SUSPEND_EXEMPT = {
     PLAYER_ENTERING_WORLD   = true,
     ZONE_CHANGED_NEW_AREA   = true,
     ADDON_LOADED            = true,
@@ -2406,12 +2423,12 @@ local SUSPEND_EXEMPT = {
 }
 
 frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
-    if not SUSPEND_EXEMPT[event] and Suspended() then return end
+    if not C.SUSPEND_EXEMPT[event] and Suspended() then return end
 
     if event == "COMBAT_LOG_EVENT_UNFILTERED" then
         OnCombatLog()
     elseif event == "CHAT_MSG_ADDON" then
-        if arg1 == ADDON_PREFIX then OnAddonMessage(arg2, arg4) end
+        if arg1 == C.ADDON_PREFIX then OnAddonMessage(arg2, arg4) end
     elseif event == "PLAYER_XP_UPDATE" then
         ReportXPGain()
     elseif event == "UNIT_PET" then
@@ -2452,7 +2469,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
             Print(format("accepted party invite from |cff00ff00%s|r.", arg1))
         end
     elseif event == "PLAYER_ENTERING_WORLD" then
-        wipe(petOwner)   -- pet GUIDs don't survive a zone anyway
+        wipe(state.petOwner)   -- pet GUIDs don't survive a zone anyway
         ResetAll()
         RefreshContinent()
         playerGUID = UnitGUID("player")
@@ -2478,7 +2495,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.autoInvite   == nil then db.autoInvite   = true end
         if db.autoAccept   == nil then db.autoAccept   = true end
         if db.taggerMarker == nil then db.taggerMarker = true end
-        if db.autoFocus    == nil then db.autoFocus    = HAS_FOCUS end
+        if db.autoFocus    == nil then db.autoFocus    = C.HAS_FOCUS end
         if db.focusWarning == nil then db.focusWarning = true end
         if db.groupWarning == nil then db.groupWarning = true end
         if db.autoLeave    == nil then db.autoLeave    = true end
@@ -2488,7 +2505,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
-        db.badgePos = BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"
+        db.badgePos = C.BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"
 
         -- Rebind the runtime table onto the saved one: who has the addon is a
         -- stable fact about a character pair, and losing it on /reload silently
@@ -2497,19 +2514,19 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         linked = db.linked
 
         if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
-            C_ChatInfo.RegisterAddonMessagePrefix(ADDON_PREFIX)
+            C_ChatInfo.RegisterAddonMessagePrefix(C.ADDON_PREFIX)
         elseif RegisterAddonMessagePrefix then
-            RegisterAddonMessagePrefix(ADDON_PREFIX)
+            RegisterAddonMessagePrefix(C.ADDON_PREFIX)
         end
         lastXP, lastXPMax = UnitXP("player"), UnitXPMax("player")
-        db.threshold = db.threshold or THRESHOLD_DEFAULT
+        db.threshold = db.threshold or C.THRESHOLD_DEFAULT
         db.soundId   = db.soundId or (SOUNDKIT and SOUNDKIT.LEVELUP) or 888
         db.missId    = db.missId or (SOUNDKIT and SOUNDKIT.IG_QUEST_FAILED) or 847
-        if db.soundFile == nil then db.soundFile = DEFAULT_SOUND_FILE end
-        if db.missFile  == nil then db.missFile  = DEFAULT_MISS_FILE end
+        if db.soundFile == nil then db.soundFile = C.DEFAULT_SOUND_FILE end
+        if db.missFile  == nil then db.missFile  = C.DEFAULT_MISS_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
-        if db.missFile == LEGACY_MISS_FILE then db.missFile = DEFAULT_MISS_FILE end
-        if LEGACY_THRESHOLDS[db.threshold] then db.threshold = THRESHOLD_DEFAULT end
+        if db.missFile == C.LEGACY_MISS_FILE then db.missFile = C.DEFAULT_MISS_FILE end
+        if C.LEGACY_THRESHOLDS[db.threshold] then db.threshold = C.THRESHOLD_DEFAULT end
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
         if db.name then
@@ -2528,8 +2545,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         ReassignMarkers()
 
-        C_Timer.NewTicker(REFRESH_INTERVAL, UpdateAllPlates)
-        C_Timer.NewTicker(SWEEP_INTERVAL, Sweep)
+        C_Timer.NewTicker(C.REFRESH_INTERVAL, UpdateAllPlates)
+        C_Timer.NewTicker(C.SWEEP_INTERVAL, Sweep)
         C_Timer.NewTicker(2, ScanForTracked)
         C_Timer.NewTicker(5, CheckContact)
         C_Timer.NewTicker(5, CheckFocusNag)
@@ -2620,7 +2637,7 @@ local function Status()
             local info = TaggerInfo(NormalizeName(names[i]))
             Print(format("  |cff00ff00%s|r  level %s  %s  %s%s", names[i],
                 (info and info.level) or "|cffff8080?|r",
-                (info and info.marker) and MARKER_NAMES[info.marker]
+                (info and info.marker) and C.MARKER_NAMES[info.marker]
                     or "|cffff8080no marker|r",
                 (info and info.confirmed) and "|cff00ff00confirmed|r"
                     or "|cff808080unverified|r",
@@ -2645,7 +2662,7 @@ local function Status()
         db.autoInvite and "on" or "off",
         db.autoAccept and "on" or "off",
         db.taggerMarker and "on" or "off",
-        HAS_FOCUS and (db.autoFocus and "on" or "off") or "n/a",
+        C.HAS_FOCUS and (db.autoFocus and "on" or "off") or "n/a",
         IsInGroup() and (GroupedWithTagger() and "|cffff2020with tagger|r" or "yes")
             or "no"))
     Print(format("auto-leave: %s | group warning: %s | focus reminder: %s",
@@ -2673,7 +2690,7 @@ local function ConfigureCue(label, rest, file, id, enabled)
     end
 
     if rest ~= "" then
-        if PlaySoundFile(rest, SOUND_CHANNEL) then
+        if PlaySoundFile(rest, C.SOUND_CHANNEL) then
             Print(format("%s sound set to %s", label, rest))
             return rest, id, enabled
         end
@@ -2849,7 +2866,7 @@ local function HandleSlash(input)
 
         if info.marker then
             Print(format("added |cff00ff00%s|r (%s). Taggers: %s",
-                info.name, MARKER_NAMES[info.marker], table.concat(TaggerNames(), ", ")))
+                info.name, C.MARKER_NAMES[info.marker], table.concat(TaggerNames(), ", ")))
             Print("|cffffff00/tag macro|r for an updated target/follow/focus macro.")
         else
             Print(format("added |cff00ff00%s|r, but |cffff8080all three markers are taken|r.",
@@ -2858,7 +2875,7 @@ local function HandleSlash(input)
             for _, n in ipairs(TaggerNames()) do
                 local other = TaggerInfo(NormalizeName(n))
                 if other and other.marker then
-                    Print(format("  %s - %s", n, MARKER_NAMES[other.marker]))
+                    Print(format("  %s - %s", n, C.MARKER_NAMES[other.marker]))
                 end
             end
         end
@@ -3048,7 +3065,7 @@ local function HandleSlash(input)
 
     if cmd == "pos" or cmd == "position" then
         local mode = strlower(strtrim(rest or ""))
-        if not BADGE_ANCHORS[mode] then
+        if not C.BADGE_ANCHORS[mode] then
             Print(format("badge position: |cffffff00%s|r", db.badgePos))
             Print("|cffffff00/tag pos above|below|left|right|r")
             return
@@ -3142,7 +3159,7 @@ local function HandleSlash(input)
     end
 
     if cmd == "focus" then
-        if not HAS_FOCUS then
+        if not C.HAS_FOCUS then
             Print("|cffff8080This client has no focus unit|r - out-of-range falls back to a timer.")
             return
         end
@@ -3218,9 +3235,9 @@ local function HandleSlash(input)
             Print("tagged-kill preview.")
         end
         if miss then
-            SafeCall(SpawnBurst, X_TEXTURE, nil, 1, 0.35, 0.35)
+            SafeCall(SpawnBurst, C.X_TEXTURE, nil, 1, 0.35, 0.35)
         else
-            SafeCall(SpawnBurst, CHECK_TEXTURE, "+142 XP", 1, 0.86, 0.3)
+            SafeCall(SpawnBurst, C.CHECK_TEXTURE, "+142 XP", 1, 0.86, 0.3)
         end
         return
     end

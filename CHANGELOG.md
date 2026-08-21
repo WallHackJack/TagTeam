@@ -18,6 +18,14 @@
 - The backup whisper no longer checks `/tag autoinvite` when it fires. It
   completes a request already made, and the check meant a hand-typed `/tag inv`
   had no backup at all when auto-invite was switched off.
+- **Internal:** the 48 constants and 16 per-pull state tables are now fields on
+  two tables rather than 64 file-level locals. A Lua file's top level is itself a
+  function, and Lua 5.1 allows 200 locals per function — this file had reached
+  197 and was three away from not compiling at all, which would have shown up as
+  the addon silently failing to load. There are now 66 slots free. No behaviour
+  changes; the constants stay where their explanatory comments are.
+- **Internal:** `Forget` and `ResetAll` were two hand-maintained lists of the
+  same table names, which is a leak waiting to happen. Both now iterate one list.
 
 ## 0.3.0
 
