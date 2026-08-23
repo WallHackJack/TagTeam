@@ -15,7 +15,12 @@ Type `/tag` for all options.
 ## What it does
 
 - **Live percentage on every nameplate.** Watch a mob climb toward the threshold
-  and hold off until it's there.
+  and hold off until it's there. The number is graded against two marks: below
+  34% it wears a warning icon and sits orange, because the kill is a write-off
+  however it ends; above that the warning comes off and it climbs orange to green
+  as it reaches your threshold, where it becomes a checkmark. The kill line in
+  chat and the death float use the same three verdicts, and a kill that lands
+  between the two gets its own sound rather than the miss beep.
 - **A sound and a stamped checkmark at 38%**, so you never have to stare at
   numbers mid-pull.
 - **Real XP reporting, checked against the estimate.** When both sides run
@@ -33,13 +38,18 @@ Type `/tag` for all options.
 - **A buzz and a red X when a mob dies short.** Most misses are incidental — your
   tagger clipped something you were killing anyway — so the cue is deliberately
   just "that one got away", with no number to read mid-pull. The exact share it
-  reached is in the chat line.
+  reached is in the chat line. A kill that got past 34% but not to your threshold
+  is a near miss instead: a softer sound and a warning icon, because it still
+  banked most of its XP and an X over that would be a lie.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
   first and the threshold ding suppressed, because nothing can be earned there.
+  The mob still gets the failure sound when it dies — the warning at tap time
+  says stop, this one says that one is gone.
 - **The same standing X on anything tagged while you're grouped with your tagger.**
   Grouping computes the mob's XP from *your* level and splits it, so the tag is
-  worth a rounding error — the X says so, and every other cue stays quiet rather
-  than promising XP nobody earned. It sticks until the mob dies or resets, even
+  worth a rounding error — the X says so, and every cue that would promise XP
+  stays quiet rather than lying about it. The failure sound still plays on death,
+  since the mob got away either way. It sticks until the mob dies or resets, even
   if you drop the party mid-fight.
 - **Pets count, without being asked.** A hunter's or warlock's pet does a large
   share of a tagger's damage. Linked clients tell each other their pet by name,
@@ -102,12 +112,13 @@ out of range, and it can't set focus for you — that action is protected.
 | `/tag` | Full status and command list |
 | `/tag add <name>` / `/tag remove <name>` | Manage taggers |
 | `/tag carry <name>` | Run on a tagger's client |
-| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients. Decimals allowed (`37.5`) |
+| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients. Decimals allowed (`37.5`). Bare, it explains what your threshold costs you in XP |
 | `/tag xp` | Session totals, estimated and actual |
 | `/tag macro` | Copyable target/follow/focus macro |
 | `/tag ban <mob>` | Ignore a mob by name entirely |
 | `/tag autotag <mob>` | Mobs your tagger keeps credit on without tapping first — no stolen-tag warning |
 | `/tag audio` | Mute all cues |
+| `/tag near <id|path>` (`/tag testnear`) | The near-miss cue, for a kill past 34% that still missed your threshold. `/tag miss` silences near misses and misses together |
 | `/tag reset` (`/tag clear`) | Clear all roles |
 | `/tag pvp` | Track PvP-flagged mobs instead of ignoring them (ignored by default) |
 | `/tag instance` | Stop the addon entirely inside dungeons and raids (on by default) |
@@ -116,5 +127,6 @@ out of range, and it can't set focus for you — that action is protected.
 ## Requirements
 
 TBC Anniversary or Classic Era. Focus-based features need TBC; on Classic Era
-they fall back to a timer. The default alert sounds come from WeakAuras if you
-have it, and fall back to built-in sounds if you don't.
+they fall back to a timer. The miss cue ships with the addon; the tag and
+near-miss cues come from WeakAuras if you have it, and fall back to built-in
+sounds if you don't.

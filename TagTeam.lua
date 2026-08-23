@@ -18,6 +18,11 @@
 -- gets a checkmark. Below the threshold it shows a running percentage, so you
 -- can see a mob sitting at 20% and hold off instead of guessing.
 --
+-- There are two thresholds, and the percentage is graded between them. Under
+-- SHARE_MIN the share is a write-off however the kill ends, so it wears a warning
+-- icon and sits at orange; from there it climbs through to green at db.threshold,
+-- where the number gives way to the checkmark.
+--
 -- If a mob the tagger was working on dies before it hits the threshold,
 -- a burst of red Xs fades out where the checkmark should have been, with its own
 -- sound and a chat line.
@@ -47,15 +52,58 @@ C.THRESHOLD_DEFAULT = 38   -- damage share needed to tag a mob
 -- skipped a release is still sitting on the one before it.
 C.LEGACY_THRESHOLDS = { [31] = true, [36] = true }
 
+-- The share below which a kill is simply a failure, whatever the threshold is
+-- set to. Not the same knob as db.threshold: the threshold is where YOU decide a
+-- kill counts, the minimum is where the kill stops being worth the pull at all.
+-- The two together are what makes a share readable at a glance: under the
+-- minimum it wears a warning icon, between them it is a number climbing towards
+-- green, at the threshold it becomes a checkmark.
+--
+-- Fixed, with no slash command, on purpose - it is a statement about the game's
+-- XP curve rather than a preference, and it should mean the same thing on every
+-- client before anyone is invited to move it.
+C.SHARE_MIN = 34
+
+-- XP paid against damage share, measured on live kills rather than derived.
+-- Ascending by share; at and above the last sample the mob pays in full.
+--
+-- Sampled rather than fitted to a line, because the curve steepens towards the
+-- top and the top is the only part anyone is choosing between: a straight line
+-- through these points is wrong by several points exactly where the threshold
+-- actually gets set.
+C.XP_CURVE = {
+    { 31.4, 0.48 }, { 33.9, 0.61 }, { 36.2, 0.74 }, { 37.2, 0.80 },
+    { 38.2, 0.87 }, { 38.7, 0.91 }, { 39.8, 0.98 }, { 40.0, 1.00 },
+}
+
+-- Where full XP starts, read off the curve rather than written down twice: add a
+-- sample past 40 and the advice moves with it.
+C.FULL_XP_SHARE = C.XP_CURVE[#C.XP_CURVE][1]
+
+-- The bottom of what /tag threshold suggests. Not a limit - anything is allowed -
+-- but below this a kill pays under three quarters, and the point of a threshold
+-- is to stop before that, not to record that it happened. Comfortably above
+-- SHARE_MIN, so the graded band between them has somewhere to live.
+C.SUGGEST_LOW = 36.5
+
 -- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
 -- in: it's WA's asset, not Blizzard's, so it isn't in SOUNDKIT and can't be
 -- played by id. PlaySoundFile reports whether it actually played, so if WA is
 -- ever uninstalled we fall back to a built-in instead of going silent.
 C.DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
--- A tone rather than a voice clip: voice clips grate fast when you hear them
--- dozens of times a session, which is exactly what a miss cue does.
-C.DEFAULT_MISS_FILE  = [[Interface\AddOns\WeakAuras\Media\Sounds\ErrorBeep.ogg]]
-C.LEGACY_MISS_FILE   = [[Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg]]
+-- Shipped with the addon rather than borrowed from WeakAuras: the cue you hear
+-- most often is the one that must not be able to go missing.
+C.DEFAULT_MISS_FILE  = [[Interface\AddOns\TagTeam\meepmerp.mp3]]
+-- The near miss, between the fanfare and the error beep and sounding like
+-- neither: a kill that fell short of the threshold but cleared SHARE_MIN paid
+-- most of its XP, so scolding it with the miss beep overstates what happened.
+C.DEFAULT_SHORT_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Glass.mp3]]
+-- Superseded defaults, all of them kept: someone who skipped a release is still
+-- sitting on the one before it. Same rule as LEGACY_THRESHOLDS.
+C.LEGACY_MISS_FILES = {
+    [ [[Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg]] ]      = true,
+    [ [[Interface\AddOns\WeakAuras\Media\Sounds\ErrorBeep.ogg]] ] = true,
+}
 
 -- "SFX" rather than "Master": Master ignores your sound sliders entirely and
 -- plays at full volume, which is why these were blasting. SFX rides the Sound
@@ -68,6 +116,14 @@ C.REFRESH_INTERVAL  = 0.25  -- catches max-health changes; CLEU drives instant u
 
 C.X_TEXTURE     = "Interface\\RaidFrame\\ReadyCheck-NotReady"
 C.CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready"
+
+-- The third verdict, between the other two: a share that fell short of the
+-- threshold but cleared SHARE_MIN, so the kill paid most of what it should have.
+-- Deliberately not the X - an X on a kill that banked three quarters of its XP
+-- reads as a failure, and this is the band where it is worth telling the two
+-- apart. Borrowed from WhoDoesWhat, which uses the same icon to mean "look at
+-- this" rather than "this is broken".
+C.WARN_TEXTURE  = "Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew"
 
 -- The XP colour inside a quest float. A FontString honours |cAARRGGBB runs
 -- regardless of what SetTextColor set, which is the only way to get three colours
@@ -84,8 +140,11 @@ C.HEX_XP = "ffbf5fff"
 -- the doubling folded in, so a 1.00x beside it is the estimate being right.
 C.HEX_RESTED = "ff66ccff"
 
--- The damage share on a miss. White so it reads as its own fact rather than as
--- part of the red X's alarm - the X is the verdict, the share is the evidence.
+-- The damage share on a miss FLOAT. White so it reads as its own fact rather than
+-- as part of the red X's alarm - there the X is the verdict and the share is the
+-- evidence, so grading it too would be the same judgement twice.
+--
+-- The chat line and the badge grade their share by colour instead; see ShareColor.
 C.HEX_SHARE = "ffffffff"
 
 -- The kill line's "N% xp" runs red below RATIO_FLOOR and climbs through yellow to
@@ -99,7 +158,8 @@ C.RATIO_FLOOR = 0.70
 -- The miss mark on the kill line is the X TEXTURE, not a letter: it is the same
 -- mark the float draws, so the two read as one thing seen twice. ":0" sizes the
 -- icon to the line's font rather than to a guessed pixel height.
-C.X_ICON = "|T" .. C.X_TEXTURE .. ":0|t"
+C.X_ICON    = "|T" .. C.X_TEXTURE .. ":0|t"
+C.WARN_ICON = "|T" .. C.WARN_TEXTURE .. ":0|t"
 
 -- The tagger claims its OWN kills to print the same line the carry does. Claims
 -- are keyed per tagger, so this needs a key no character can normalize to - and a
@@ -225,8 +285,22 @@ C.FLOAT_FADE_DELAY = 1.5
 C.QUEST_FLOAT_RISE = C.MARK_RISE + C.MARK_SIZE + 24
 -- Two objectives can tick in the same instant. Staggering by about a line height
 -- is what keeps them two readable notices instead of one smeared one.
+--
+-- Five rows rather than three: at three, the fourth notice inside one float's
+-- lifetime landed back on the first and the pile-up it was meant to prevent
+-- happened anyway. A quest hand-in that ticks four objectives at once is normal.
 C.QUEST_FLOAT_STEP = 26
-C.QUEST_FLOAT_ROWS = 3
+C.QUEST_FLOAT_ROWS = 5
+
+-- Every float starts somewhere inside this radius of its anchor instead of exactly
+-- on it. Kills arrive faster than a float lives, and two marks launched from the
+-- same pixel read as one smeared mark rather than as two kills - the scatter is
+-- what lets a fast pull be counted at a glance.
+--
+-- Squashed vertically by JITTER_SQUASH, because the quest rows are stacked on the
+-- Y axis and a full-radius vertical wobble would blur the rows back together.
+C.FLOAT_JITTER = 26
+C.FLOAT_JITTER_SQUASH = 0.45
 
 -- How long a MISS float waits for the tagger's real number before it gives up and
 -- shows just the damage share. Only misses use this: a linked kill has no timeout
@@ -899,6 +973,94 @@ local function IsWorthless(guid)
 end
 
 --------------------------------------------------------------------------------
+-- Damage share, graded
+--
+-- One place decides what a share is worth and what colour it earns, so the
+-- nameplate badge and the kill line can't end up disagreeing about the same
+-- number. Both read from here.
+--------------------------------------------------------------------------------
+
+-- What a share should pay, interpolated across the measured curve. Full XP at
+-- and above the top sample; below the bottom one the first segment's slope
+-- carries on, which is a guess, but a better one than a cliff.
+--
+-- An ESTIMATE, and every caller says so out loud: the samples came off real
+-- kills, which drag rested, level gaps and rounding along with them.
+local function ExpectedXP(pct)
+    local c = C.XP_CURVE
+    if pct >= c[#c][1] then return 1 end
+
+    local lo, hi
+    for i = 2, #c do
+        if pct <= c[i][1] then lo, hi = c[i - 1], c[i]; break end
+    end
+
+    local v = lo[2] + (pct - lo[1]) / (hi[1] - lo[1]) * (hi[2] - lo[2])
+    return v < 0 and 0 or v
+end
+
+-- Which of the three bands a share landed in. One function, so the badge, the
+-- chat line, the death float and the cue cannot end up disagreeing about what
+-- "close" means:
+--
+--   "tagged"  at or above the threshold. The kill counts and pays in full.
+--   "short"   cleared SHARE_MIN but not the threshold. It still paid most of its
+--             XP, which is why it gets its own icon and its own sound instead of
+--             being lumped in with a write-off.
+--   "failed"  under SHARE_MIN. Whatever the threshold is set to, this one was
+--             not worth the pull.
+--
+-- `need` is the threshold to grade against. Callers holding a kill pass the one
+-- pinned when it died, so nothing disagrees after someone retunes mid-pull.
+local function ShareBand(pct, need)
+    if pct >= (need or db.threshold) then return "tagged" end
+    if pct >= C.SHARE_MIN then return "short" end
+    return "failed"
+end
+
+-- The colour a share has earned: flat orange up to SHARE_MIN, then climbing
+-- through yellow to green at the threshold. Both legs hold one channel at full,
+-- which is what makes the middle read as bright yellow rather than as mud - the
+-- same trick RatioHex uses, from a different starting colour.
+--
+-- Nothing under SHARE_MIN is redder than anything else under it: below the
+-- minimum the kill is a write-off either way, and the warning icon beside the
+-- number is what says so. The gradient is for the part you can still act on.
+local function ShareColor(pct, need)
+    if ShareBand(pct, need) == "tagged" then return 0, 1, 0 end
+
+    local span = (need or db.threshold) - C.SHARE_MIN
+    if span <= 0 then return 1, 0.5, 0 end   -- threshold set under the minimum
+
+    local t = (pct - C.SHARE_MIN) / span
+    if t < 0 then t = 0 end
+    if t < 0.5 then return 1, 0.5 + t, 0 end
+    return (1 - t) * 2, 1, 0
+end
+
+local function ShareHex(pct, need)
+    local r, g, b = ShareColor(pct, need)
+    return format("ff%02x%02x%02x",
+        floor(r * 255 + 0.5), floor(g * 255 + 0.5), floor(b * 255 + 0.5))
+end
+
+-- The OTHER grading: not how much of the mob the tagger hit, but how much of the
+-- XP came back for it. Red under RATIO_FLOOR, then through yellow to green at
+-- 100%. Red and green are both full-on at the midpoint, which is what makes the
+-- middle read as yellow rather than as muddy orange.
+--
+-- Lives up here beside ShareColor because the death float grades a miss with it
+-- and the float is defined long before the kill line is.
+local function RatioHex(ratio)
+    local t = (ratio - C.RATIO_FLOOR) / (1 - C.RATIO_FLOOR)
+    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+
+    local r, g
+    if t < 0.5 then r, g = 1, t * 2 else r, g = (1 - t) * 2, 1 end
+    return format("ff%02x%02x00", floor(r * 255 + 0.5), floor(g * 255 + 0.5))
+end
+
+--------------------------------------------------------------------------------
 -- Nameplate badges
 --------------------------------------------------------------------------------
 
@@ -1104,13 +1266,14 @@ local function UpdatePlate(unit)
         badge.check:Show()
     else
         badge.check:Hide()
-        badge.text:SetText(format("%d%%", pct))
-        -- Amber as it approaches, plain white early on.
-        if pct >= db.threshold * 0.75 then
-            badge.text:SetTextColor(1, 0.82, 0)
-        else
-            badge.text:SetTextColor(1, 1, 1)
-        end
+        -- Under the minimum the number wears the warning icon, because on its own
+        -- an orange 12% and an orange 35% look like the same kind of problem and
+        -- they are not. The icon comes off the moment the share is worth having,
+        -- and from there the colour alone carries it to the checkmark.
+        badge.text:SetText(ShareBand(pct) == "failed"
+            and format("%s%d%%", C.WARN_ICON, pct)
+            or format("%d%%", pct))
+        badge.text:SetTextColor(ShareColor(pct))
         badge.text:Show()
     end
 
@@ -1178,9 +1341,21 @@ end
 -- and it is shared precisely so the burst and the quest notice above it cannot
 -- drift into moving at different speeds.
 local function LaunchMark(f, rise)
+    -- math.cos and math.sin, NOT the bare globals: WoW defines cos and sin as
+    -- degree wrappers, so feeding them radians here would scatter marks in a
+    -- pattern that is nearly but not quite random and clumps at one edge.
+    --
+    -- sqrt on the radius is what keeps the scatter even. Without it the same
+    -- number of marks lands in the small middle of the disc as in the large
+    -- outside of it, and the pile-up this exists to break up comes back.
+    local angle = math.random() * 2 * math.pi
+    local dist  = C.FLOAT_JITTER * math.sqrt(math.random())
+
     f:ClearAllPoints()
     f:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
-        UIParent:GetWidth() / 2, UIParent:GetHeight() / 2 + rise)
+        UIParent:GetWidth() / 2 + math.cos(angle) * dist,
+        UIParent:GetHeight() / 2 + rise
+            + math.sin(angle) * dist * C.FLOAT_JITTER_SQUASH)
     f:SetAlpha(1)
 
     f.move:SetOffset(0, C.FLOAT_RISE)
@@ -1334,6 +1509,13 @@ end
 
 local function PlayMissSound()
     PlayCue(db.missFile, db.missId)
+end
+
+-- The near miss. Its own cue rather than a quieter miss beep, because the two
+-- mean opposite things about the next pull: one says stop doing that, this one
+-- says you were nearly there.
+local function PlayShortSound()
+    PlayCue(db.shortFile, db.shortId)
 end
 
 local function PlayThresholdSound()
@@ -1562,8 +1744,8 @@ local function FloatKill(kill, actual)
     -- misreports the session.
     --
     -- kill.awaited marks the one path that can arrive here without a report while
-    -- linked: a miss whose timer expired. It gets the share and no xp. A linked
-    -- KILL never arrives here at all without one - see FloatKillSoon.
+    -- linked: a miss whose timer expired. It gets the bare mark and no numbers at
+    -- all. A linked KILL never arrives here without one - see FloatKillSoon.
     local xp = actual or (not kill.awaited and kill.est) or nil
     local label
     if xp then
@@ -1577,21 +1759,27 @@ local function FloatKill(kill, actual)
         end
     end
 
-    if kill.missed then
-        -- The share, in its own colour because it is its own fact: the X is the
-        -- verdict, this is the evidence behind it.
-        --
-        -- One decimal only when it lands within a point of the threshold. "22%"
-        -- is the honest precision for a miss that was never close; the tenth is
-        -- worth its glyph only where the gap between 37.6 and 38 IS the story.
-        local need = kill.need
-        local near = need and kill.pct >= need - 1 and kill.pct <= need + 1
-        label = (label and label .. "  " or "")
-            .. format(near and "|c%s(%.1f%%)|r" or "|c%s(%.0f%%)|r", C.HEX_SHARE, kill.pct)
+    -- What the miss actually COST, which is the XP that came back and not the
+    -- damage share. The share is what the badge showed all pull and what the chat
+    -- line still prints; repeating it here says nothing the screen has not
+    -- already said, where the fraction of the XP recovered is the whole point.
+    --
+    -- Only ever from a confirmed number. Without a report the estimate would be
+    -- both halves of the ratio and would draw a confident 100% over a miss.
+    if kill.missed and actual and kill.est and kill.est > 0 then
+        local ratio = actual / kill.est
+        local got = format("|c%s%d%%|r", RatioHex(ratio), floor(ratio * 100 + 0.5))
+        label = label and (label .. " " .. got) or got
     end
 
-    if kill.missed then
+    -- Three verdicts, three marks. The middle one exists because an X over a
+    -- kill that banked three quarters of its XP is a lie about what happened:
+    -- that is a share worth tightening, not a pull worth regretting.
+    local band = ShareBand(kill.pct, kill.need)
+    if band == "failed" then
         SafeCall(SpawnBurst, C.X_TEXTURE, label, 1, 0.35, 0.35)
+    elseif band == "short" then
+        SafeCall(SpawnBurst, C.WARN_TEXTURE, label, 1, 0.62, 0.1)
     else
         SafeCall(SpawnBurst, C.CHECK_TEXTURE, label, 1, 0.86, 0.3)
     end
@@ -1676,18 +1864,6 @@ local function MultiplierText(mult)
         (mult >= 0.95 and mult <= 1.05) and "00ff00" or "ffff00", mult)
 end
 
--- Red under RATIO_FLOOR, then through yellow to green at 100%. Red and green are
--- both full-on at the midpoint, which is what makes the middle read as yellow
--- rather than as muddy orange.
-local function RatioHex(ratio)
-    local t = (ratio - C.RATIO_FLOOR) / (1 - C.RATIO_FLOOR)
-    if t < 0 then t = 0 elseif t > 1 then t = 1 end
-
-    local r, g
-    if t < 0.5 then r, g = 1, t * 2 else r, g = (1 - t) * 2, 1 end
-    return format("ff%02x%02x00", floor(r * 255 + 0.5), floor(g * 255 + 0.5))
-end
-
 -- ONE kill line, printed by both ends from the same code. The carry builds it
 -- from the tagger's report, the tagger from its own flush; sharing the function
 -- is what stops the two describing the same kill differently.
@@ -1695,8 +1871,9 @@ end
 -- `nameTag` arrives already coloured, because that is the only part that differs:
 -- the tagger's class colour on the carry, a green "You" on the tagger.
 --
--- Everything on the line is a fact, not a judgement, except the ratio's colour -
--- which is the judgement, so it is the only thing that changes colour.
+-- Everything on the line is a fact, not a judgement, except the two colours: the
+-- share is graded against the floor and the threshold, the ratio against what the
+-- kill should have paid. Nothing else on the line changes colour.
 local function PrintKillLine(nameTag, kill, amount)
     -- /tag announce. This line IS the per-kill chat announcement now - it took
     -- over from the MISSED alert that the toggle used to gate - so the toggle
@@ -1704,16 +1881,21 @@ local function PrintKillLine(nameTag, kill, amount)
     if not db.announce then return end
 
     local rested = kill.rested and format(" |c%s(x2)|r", C.HEX_RESTED) or ""
-    -- The X marks the threshold going unmet, and it is THE miss notice - there is
-    -- no separate MISSED line any more. The xp still landed, since the tap decides
-    -- that and not the share, so it reads as a footnote rather than a verdict.
-    local flag = kill.missed and (" " .. C.X_ICON) or ""
+    -- The mark IS the miss notice - there is no separate MISSED line any more.
+    -- WHICH mark depends on how far short it fell: the X is for a kill that was
+    -- never worth having, the warning for one that paid most of its XP and only
+    -- missed the threshold. Either way the xp still landed, since the tap decides
+    -- that and not the share, so both read as a footnote rather than a verdict.
+    local band = ShareBand(kill.pct, kill.need)
+    local flag = (band == "failed" and " " .. C.X_ICON)
+        or (band == "short" and " " .. C.WARN_ICON) or ""
 
     if not kill.est or kill.est <= 0 then
         -- A level was unknown when it died, so there is nothing to measure the
         -- gain against. The share was still measured and is still worth saying.
         Print(format("%s gained |c%s%d XP|r%s, |c%s%.1f%%|r damage%s",
-            nameTag, C.HEX_XP, amount, rested, C.HEX_SHARE, kill.pct, flag))
+            nameTag, C.HEX_XP, amount, rested,
+            ShareHex(kill.pct, kill.need), kill.pct, flag))
         return
     end
 
@@ -1721,7 +1903,8 @@ local function PrintKillLine(nameTag, kill, amount)
     Print(format("%s gained |c%s%d|r of |c%s%d XP|r%s, |c%s%.1f%%|r damage = "
         .. "|c%s%d%%|r XP%s",
         nameTag, C.HEX_XP, amount, C.HEX_XP, kill.est, rested,
-        C.HEX_SHARE, kill.pct, RatioHex(ratio), floor(ratio * 100 + 0.5), flag))
+        ShareHex(kill.pct, kill.need), kill.pct,
+        RatioHex(ratio), floor(ratio * 100 + 0.5), flag))
 end
 
 -- The tagger's own copy of the line, and its own float. Both ends see the same
@@ -2241,31 +2424,38 @@ end
 local function HandleDeath(guid, name)
     if not db.enabled or not HasTaggers() then return end
 
-    -- The carry owned the tag, so the tagger earned nothing regardless of damage
-    -- done. Reporting a tag or banking XP here would be a lie, and the steal
-    -- warning already fired when it happened.
+    -- Nothing here could have earned the tagger a thing, and both halves say so
+    -- for their own reason.
     --
-    -- Not so on an auto-tagged mob, which is the whole point of that list: credit
-    -- there does not follow the first hit. The threshold still decides, though -
-    -- these pay XP, so falling short of it is a real miss and gets the real cue.
-    if TapLost(guid) then return end
-
-    -- Grouped with the tagger, so the two-player rule computed this mob's XP from
-    -- the CARRY's level and split it: what they actually banked is a rounding
-    -- error, and the threshold no longer decides anything. Every cue this function
-    -- has is a lie in that state - the float would claim XP they never earned, the
-    -- miss alert would scold them for missing a share that was worthless anyway,
-    -- and sessionXP would quietly inflate with numbers nobody got.
+    -- The carry owns the tap, so credit does not follow the damage however much
+    -- of it landed. Not so on an auto-tagged mob, which is the whole point of
+    -- that list: credit there does not follow the first hit, so those fall
+    -- through to the threshold like any other kill.
     --
-    -- Silence is the honest answer, and it is also the only cue that fits: the
-    -- pull already fired the GROUPED warning, and on a fast kill a second burst
-    -- lands on top of it. One warning per pull, not one warning plus a lie.
+    -- Or we are grouped with the tagger, so the two-player rule computed this
+    -- mob's XP from the CARRY's level and split it: what they banked is a
+    -- rounding error and the threshold decides nothing. Both halves of that test
+    -- are needed - the latch catches a mob tagged while grouped whose killing
+    -- blow came from the carry, so no tagger damage event refreshed it, and the
+    -- live check catches joining a party part-way through a clean pull.
     --
-    -- Both halves are needed. The latch catches a mob tagged while grouped whose
-    -- killing blow came from the carry, so no tagger damage event refreshed it;
-    -- the live check catches joining a group part-way through a pull that started
-    -- clean. Either one means the X was standing on its plate.
-    if state.groupTagged[guid] or TagIsWasted() then return end
+    -- Either way the accounting is skipped: a float would claim XP nobody got and
+    -- sessionXP would inflate with numbers that were never banked. But the mob
+    -- still got away, so it still gets the failure cue. That is not a repeat of
+    -- the warning this fired at tap time - that one says stop, this one says that
+    -- one is gone, and on a long fight they are twenty seconds apart.
+    if TapLost(guid) or state.groupTagged[guid] or TagIsWasted() then
+        -- Gated on damage the tagger actually dealt, NOT on the state alone:
+        -- TagIsWasted() is a live "are we in a party with a tagger" check that is
+        -- true for every death in the zone, so without this the cue would fire on
+        -- mobs neither of you ever touched. Greys are out for the usual reason -
+        -- nothing was ever on offer, so nothing was lost.
+        local dealt = state.damage[guid]
+        if db.missAlert and dealt and dealt > 0 and not IsWorthless(guid) then
+            PlayMissSound()
+        end
+        return
+    end
 
     -- Greys and trivial minions pay nothing: no float, no sound, no session
     -- count. Counting them would quietly inflate the XP total with zeroes.
@@ -2347,11 +2537,14 @@ local function HandleDeath(guid, name)
         kill = { name = name, pct = pct, need = db.threshold, missed = true }
     end
 
-    -- There is no separate MISSED line: the kill line carries the X and IS the
+    -- There is no separate MISSED line: the kill line carries the mark and IS the
     -- notice, so a miss says nothing in chat until the report that prices it
     -- arrives. The SOUND is the alert itself and fires now, which is the part
     -- that has to be immediate.
-    PlayMissSound()
+    --
+    -- Both cues sit under db.missAlert. They are the same notice graded two ways,
+    -- and someone who turned miss cues off did not mean "except the near ones".
+    if ShareBand(pct) == "short" then PlayShortSound() else PlayMissSound() end
     if kill.at then FloatKillSoon(kill) else FloatKill(kill) end
 end
 
@@ -3606,10 +3799,12 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         db.threshold = db.threshold or C.THRESHOLD_DEFAULT
         db.soundId   = db.soundId or (SOUNDKIT and SOUNDKIT.LEVELUP) or 888
         db.missId    = db.missId or (SOUNDKIT and SOUNDKIT.IG_QUEST_FAILED) or 847
+        db.shortId   = db.shortId or (SOUNDKIT and SOUNDKIT.IG_MAINMENU_OPTION) or 851
         if db.soundFile == nil then db.soundFile = C.DEFAULT_SOUND_FILE end
         if db.missFile  == nil then db.missFile  = C.DEFAULT_MISS_FILE end
+        if db.shortFile == nil then db.shortFile = C.DEFAULT_SHORT_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
-        if db.missFile == C.LEGACY_MISS_FILE then db.missFile = C.DEFAULT_MISS_FILE end
+        if C.LEGACY_MISS_FILES[db.missFile] then db.missFile = C.DEFAULT_MISS_FILE end
         if C.LEGACY_THRESHOLDS[db.threshold] then db.threshold = C.THRESHOLD_DEFAULT end
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
@@ -3683,6 +3878,7 @@ ns.TaggerUnit, ns.TaggerInRange = TaggerUnit, TaggerInRange
 ns.GroupedWithTagger            = GroupedWithTagger
 ns.Suspended                    = Suspended
 ns.MultiplierText               = MultiplierText
+ns.ExpectedXP                   = ExpectedXP
 ns.LeaveTaggerParty             = LeaveTaggerParty
 ns.CheckLootMethod              = CheckLootMethod
 ns.AskForInvite                 = AskForInvite
@@ -3692,4 +3888,5 @@ ns.PushThreshold                = PushThreshold
 ns.PlayCue                      = PlayCue
 ns.PlayAlertSound               = PlayAlertSound
 ns.PlayMissSound                = PlayMissSound
+ns.PlayShortSound               = PlayShortSound
 ns.SpawnBurst                   = SpawnBurst

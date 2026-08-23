@@ -50,6 +50,7 @@ local TaggerInRange             = ns.TaggerInRange
 local GroupedWithTagger         = ns.GroupedWithTagger
 local Suspended                 = ns.Suspended
 local MultiplierText            = ns.MultiplierText
+local ExpectedXP                = ns.ExpectedXP
 local LeaveTaggerParty          = ns.LeaveTaggerParty
 local CheckLootMethod           = ns.CheckLootMethod
 local AskForInvite              = ns.AskForInvite
@@ -58,6 +59,7 @@ local PushThreshold             = ns.PushThreshold
 local PlayCue                   = ns.PlayCue
 local PlayAlertSound            = ns.PlayAlertSound
 local PlayMissSound             = ns.PlayMissSound
+local PlayShortSound            = ns.PlayShortSound
 local SpawnBurst                = ns.SpawnBurst
 
 local db            -- refreshed from ns.db on every dispatch
@@ -194,7 +196,12 @@ local function ConfigureCue(label, rest, file, id, enabled)
     end
 
     if rest ~= "" then
-        if PlaySoundFile(rest, C.SOUND_CHANNEL) then
+        -- Played to validate the path - it is the only thing that answers whether
+        -- this client has the file - then cut short while muted, so /tag audio
+        -- really does cover every noise this addon can make.
+        local willPlay, handle = PlaySoundFile(rest, C.SOUND_CHANNEL)
+        if willPlay then
+            if not db.audio and handle then StopSound(handle) end
             Print(format("%s sound set to %s", label, rest))
             return rest, id, enabled
         end
@@ -221,7 +228,7 @@ local commands = {}
 commands[""] = function(rest, cmd)
     Status()
     Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")
-    Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag, decimals ok; set it from either client, both follow")
+    Print("|cffffff00/tag threshold <1-100>|r - damage share needed to tag; bare for what it costs you in XP")
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag ban <mob>|r  |cffffff00/tag unban <mob>|r  |cffffff00/tag banlist|r - mobs to ignore entirely")
         Print("|cffffff00/tag autotag <mob>|r - mobs your tagger keeps credit on without tapping first")
@@ -231,7 +238,8 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
     Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
     Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
-    Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
+    Print("|cffffff00/tag near <id|path>|r |cffffff00/tag testnear|r - cue for a kill that cleared the minimum but missed the threshold")
+    Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmark")
     Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
     Print("|cffffff00/tag autoinvite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
     Print("|cffffff00/tag leave|r  |cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
@@ -658,7 +666,7 @@ commands["position"] = commands["pos"]
 commands["audio"] = function(rest, cmd)
     db.audio = not db.audio
     if db.audio then
-        Print("audio |cff00ff00on|r - tag and miss cues will play.")
+        Print("audio |cff00ff00on|r - tag, near-miss, miss and quest cues will play.")
     else
         Print("audio |cffff2020off|r - all cues silenced, visuals unaffected.")
     end
@@ -814,21 +822,24 @@ commands["testsound"] = function(rest, cmd)
     Print("played " .. (db.soundFile or ("sound id " .. db.soundId)) .. ".")
 end
 
+-- One preview per verdict, and they have to stay in step with FloatKill: this is
+-- where anyone checks what a cue sounds like before trusting it mid-pull.
 commands["testmiss"] = function(rest, cmd)
-    local miss = (cmd == "testmiss")
-    if miss then
+    if cmd == "testnear" then
+        Print("near-miss preview: "
+            .. (db.shortFile or ("sound id " .. tostring(db.shortId))))
+        PlayShortSound()
+        SafeCall(SpawnBurst, C.WARN_TEXTURE, "+118 XP", 1, 0.62, 0.1)
+    elseif cmd == "testmiss" then
         Print("miss preview: " .. (db.missFile or ("sound id " .. db.missId)))
         PlayMissSound()
-    else
-        Print("tagged-kill preview.")
-    end
-    if miss then
         SafeCall(SpawnBurst, C.X_TEXTURE, nil, 1, 0.35, 0.35)
     else
+        Print("tagged-kill preview.")
         SafeCall(SpawnBurst, C.CHECK_TEXTURE, "+142 XP", 1, 0.86, 0.3)
     end
 end
-commands["testkill"] = commands["testmiss"]
+commands["testkill"], commands["testnear"] = commands["testmiss"], commands["testmiss"]
 
 -- Both cues configure identically: a bare command toggles, a number sets a
 -- SOUNDKIT id, anything else is treated as a file path.
@@ -842,15 +853,53 @@ commands["miss"] = function(rest, cmd)
         ConfigureCue("miss", rest, db.missFile, db.missId, db.missAlert)
 end
 
+-- The near-miss cue: a kill that cleared the minimum but missed the threshold.
+--
+-- It has no on/off of its own, so the bare form reports instead of toggling.
+-- db.missAlert governs both cues - they are one notice graded two ways, and
+-- someone who silenced misses did not mean "except the near ones" - which makes
+-- /tag miss the switch and this the sound picker.
+commands["near"] = function(rest, cmd)
+    if strtrim(rest or "") == "" then
+        Print(format("near-miss cue: |cffffff00%s|r. |cffffff00/tag near <file or id>|r "
+            .. "to change it, |cffffff00/tag miss|r to silence near misses and misses "
+            .. "together.", db.shortFile or ("id " .. tostring(db.shortId))))
+        return
+    end
+    db.shortFile, db.shortId = ConfigureCue("near miss", rest,
+        db.shortFile, db.shortId, db.missAlert)
+end
+
 -- Runs from either end: the tagger watching its own damage climb is usually
 -- the one who knows the number is wrong, and both clients have to agree on
 -- it or they disagree about what counts as tagged.
+--
+-- The bare form explains rather than reports. The number on its own says almost
+-- nothing: XP climbs with the damage share instead of switching on at a line, so
+-- what a threshold actually costs you is only legible next to the curve. Every
+-- figure it quotes is an ESTIMATE and says so - they come off measured kills, and
+-- rested, level gaps and rounding all ride along in the samples.
 commands["threshold"] = function(rest, cmd)
     local pct = tonumber(strtrim(rest or ""))
     if not pct or pct <= 0 or pct > 100 then
-        Print(format("threshold is |cffffff00%.1f%%|r of max health - "
-            .. "|cffffff00/tag threshold <1-100>|r to change it, decimals allowed.",
-            db.threshold))
+        Print(format("threshold is |cffffff00%.1f%%|r of max health - the damage "
+            .. "share your tagger needs before a kill counts as tagged.", db.threshold))
+        Print(format("XP does not switch on there. It climbs with the share, so the "
+            .. "threshold is you picking what a kill has to pay: at |cffffff00%.1f%%|r, "
+            .. "roughly |cffffff00%d%%|r of the mob's XP |cff808080(estimate)|r.",
+            db.threshold, floor(ExpectedXP(db.threshold) * 100 + 0.5)))
+        Print(format("Suggested |cffffff00%.1f-%.0f|r - about %d%% XP up to full. "
+            .. "Higher than %.0f%% is allowed, it just asks for damage the XP stopped "
+            .. "paying for.", C.SUGGEST_LOW, C.FULL_XP_SHARE,
+            floor(ExpectedXP(C.SUGGEST_LOW) * 100 + 0.5), C.FULL_XP_SHARE))
+        Print(format("Under |cffff8000%.0f%%|r a kill is a failure whatever you set "
+            .. "here - |cffff8000%d%%|r XP and falling fast. Those carry a warning icon "
+            .. "on the nameplate and stay orange until they clear it.", C.SHARE_MIN,
+            floor(ExpectedXP(C.SHARE_MIN) * 100 + 0.5)))
+        Print("Between the two the warning comes off and the number climbs orange to "
+            .. "green. A kill that lands in there has its own sound, not the miss beep.")
+        Print("|cffffff00/tag threshold <1-100>|r to change it, decimals allowed - "
+            .. "set it from either client and both follow.")
         return
     end
 
@@ -860,9 +909,19 @@ commands["threshold"] = function(rest, cmd)
     pct = floor(pct * 10 + 0.5) / 10
 
     local sent = PushThreshold(pct)
-    Print(format("threshold set to %.1f%% of max health%s.", pct,
-        sent > 0 and format(" |cff808080(sent to %d linked client%s)|r",
-            sent, sent == 1 and "" or "s") or ""))
+    Print(format("threshold set to %.1f%% of max health%s - expect around "
+        .. "|cffffff00%d%%|r of a mob's XP per tagged kill |cff808080(estimate)|r.",
+        pct, sent > 0 and format(" |cff808080(sent to %d linked client%s)|r",
+            sent, sent == 1 and "" or "s") or "",
+        floor(ExpectedXP(pct) * 100 + 0.5)))
+
+    if pct < C.SHARE_MIN then
+        Print(format("|cffff8000That is under the %.0f%% minimum|r - a kill that only "
+            .. "just clears this threshold has already failed.", C.SHARE_MIN))
+    elseif pct > C.FULL_XP_SHARE then
+        Print(format("|cff808080Past %.0f%% the XP is already full; the extra share "
+            .. "buys nothing but a longer wait.|r", C.FULL_XP_SHARE))
+    end
 end
 commands["thresh"] = commands["threshold"]
 
