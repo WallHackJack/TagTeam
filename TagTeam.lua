@@ -2088,6 +2088,14 @@ end
 -- agreed to anything. Classic Era has no focus unit at all, so there the
 -- automatic path has nothing else to go on and falls back too.
 local function InviteTarget(fallback)
+    -- A remembered focus outlives the tagger it pointed at: /tag remove, /tag
+    -- clear and the carry-mode switch all wipe the list without touching it, and
+    -- the stale name then beat the new tagger to every ask.
+    if state.focusTaggerName and not TaggerKeyOf(state.focusTaggerName) then
+        state.focusTaggerName = nil
+        state.focusEverSet = false   -- nobody current has been focused yet
+    end
+
     local target = state.focusTaggerName
     if not target and (fallback or not C.HAS_FOCUS) then
         local list = TaggersByPriority()
