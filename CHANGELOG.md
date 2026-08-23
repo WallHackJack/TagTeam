@@ -1,7 +1,252 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — the link actually talks
 
+The two clients barely spoke before this. The tagger sent XP and nothing else, so
+the carry guessed at everything around it — and guessed wrong often enough to be
+noticed.
+
+Now the link carries the tagger's **quest log** (accepted, abandoned, objectives
+ticking over, hand-ins with the XP they paid), their **level-ups**, and their
+**rested pool**, each with its own sound and screen pop-up. The XP reporting
+underneath was largely rebuilt: multi-kill ticks, quest and discovery XP, and
+rested doubling were all being mislabelled or misattributed, and the carry now
+prefers the tagger's confirmed number over its own estimate everywhere it has
+one. The kill line is rewritten and both ends print the same one.
+
+- **Changed:** the kill line is rewritten, and the tagger now prints it too:
+
+  `Wallhackmage gained 860 of 1070 XP (x2), 37.2% damage = 80% XP` + the X icon
+
+  Both ends build it from the same code, so they can't drift into describing the
+  same mob differently. The carry sees the tagger's name in their class colour;
+  the tagger sees a green "You". Both XP figures are purple, the damage share
+  white, and the X shows only when the threshold went unmet — the XP still
+  landed, since the tap decides that and not the share, so it's a footnote rather
+  than a verdict. It's the same X the pop-up draws, sized to your chat font.
+
+  The `= 80% XP` is the only thing on the line that changes colour, because it's
+  the only judgement: red at 70% or below, through yellow, to green at 100%. It
+  replaces the old `0.80x` multiplier, which said the same thing in a form you
+  had to stop and read.
+
+  `/tag announce` toggles it.
+- **Removed:** the separate `MISSED` chat line — the kill line above is the miss
+  notice now.
+
+  Worth knowing what that costs: a miss says nothing in chat until the report
+  that prices it arrives, and with nobody linked it says nothing at all. The buzz
+  still fires the instant the mob dies, and the pop-up still shows the X with the
+  damage share — only the chat line waits.
+- **Fixed:** a tagger's own client priced its rested kills as if they weren't
+  rested, because it was waiting for a message about a rested pool that was
+  sitting on its own machine. It reads it directly now, so both ends agree.
+- **Changed:** the miss pop-up reads `+545 XP  (22%)`. Three tweaks: the damage
+  share is now parenthesised and white instead of taking the X's red — the X is
+  the verdict, the share is the evidence, and they separate better as two things;
+  the decimal is dropped unless the share lands within a point of your threshold,
+  where the difference between 37.6% and 38% is the whole story; and the blue
+  `(x2)` is gone from it, since on a miss the number that matters is how close
+  they came and a second parenthetical only competes with it.
+
+  Checkmarks keep their `(x2)`, and the chat line keeps its full decimal.
+- **Fixed:** a linked tagger's kill could put a blank checkmark on screen when
+  their report was slow — the timeout had nothing to draw and drew it anyway.
+  There is no timeout on a kill now: nothing appears until the report does, and
+  if it never comes, nothing appears. The chat line still says what happened. No
+  pop-up is a fine outcome; an empty one isn't.
+
+  Misses keep their timeout, because they have the damage share to show and that
+  number is measured on your end. Without it the X would vanish entirely on any
+  miss the tagger never tapped — no report is ever coming for those.
+- **Changed:** pop-ups stay up 0.8s longer and drift a little more slowly. The
+  extra time is all *readable* time — they hold fully opaque for 1.5s now instead
+  of 0.7s, and the fade itself is the same 1.1s it always was, so they linger
+  rather than sitting around half-transparent. The rise went 70px → 85px across
+  the longer flight, which nets out about 16% slower than before.
+- **New:** the pop-up on screen carries the blue `(x2)` too when the kill was
+  rested — `+1090 XP (x2)` — matching the chat line, and meaning the same thing:
+  the number in front of it already has the doubling in it.
+- **Changed:** once a linked tagger is reporting, the estimated session total
+  isn't shown at all. `/tag` and `/tag xp` print the confirmed number instead —
+  not alongside it, not in brackets. Two totals for one session only invites
+  reading the wrong one, and the estimate is the wrong one.
+
+  The estimate is still tracked behind the scenes; `/tag calibrate` and the
+  "expected N, actual M, 1.02x" line still need it. That line still shows both,
+  because contrasting them is its entire job — it's how a stale cached level gets
+  caught.
+- **Changed:** the number on screen follows the same rule. If a report was
+  expected and didn't arrive in time, the checkmark now comes up without a
+  number rather than falling back to the guess. A miss shows its damage share on
+  its own in that case, since the share is measured on your end and always known.
+  With nobody linked, the `~estimate` still appears as before.
+- **New:** accepting and completing a quest now float on screen as well, in the
+  same yellow that objective progress uses — `Wallhackmage completed "Force
+  Commander Danath" for 10000 XP`. Their name comes out in their class colour and
+  the reward in purple, so the three parts separate at a glance rather than
+  needing to be read.
+
+  The class is picked up for free the first time they pass through a unit you can
+  inspect, which in practice is immediately. Until then the name is just yellow —
+  no colour beats a guessed one.
+
+  The completion float ignores `/tag quests`, like its fanfare does: that toggle
+  is for the running commentary on their quest log, and a completion is an XP
+  event. The accept float follows the toggle.
+- **New:** when a tagger is linked, the number in the middle of the screen waits
+  for them. It used to be drawn the instant the mob died, which meant it could
+  only ever be the estimate — the real figure is a fraction of a second behind,
+  and the middle of the screen is the one place worth spending that on. A tilde
+  marks the difference: `~545 XP` is our guess, `+1090 XP` is what they actually
+  got. With nobody linked it draws immediately as before, since there'd be
+  nothing to wait for.
+- **New:** the red X now carries the numbers too — `+545 XP  22.4%` — so a miss
+  tells you what it paid anyway and how close they came, not just that one got
+  away. It was a bare X on purpose: most misses are incidental, the tagger
+  clipping something you were killing regardless, and on those the share decides
+  nothing. But the misses that were real attempts are the ones worth reading, and
+  you can't tell them apart without the number.
+
+  The miss buzz still fires the instant the mob dies. That one is the alert, and
+  it isn't waiting for anything.
+- **Fixed:** with `/tag comms` off, a missed kill's chat line still sat on a
+  two-second timer waiting for a report that could never arrive.
+- **New:** the tagger reports their rested XP, and the estimate stops pretending
+  not to know about it. A rested kill used to read `expected 545, 2.00x` — the
+  multiplier is there to show what the formula *can't* see, so a predictable
+  doubling sitting in it made the one useful number useless. Now:
+
+  `Wallhackmage gained 1090 XP on Ravager - expected 1090 (x2), 1.00x, taggers dealt 61.2%.`
+
+  The `(x2)` in light blue marks an expectation that already has rested folded
+  in, so a 1.00x beside it means the estimate was right — not that the bonus went
+  missing. Session totals and the floating `+XP` double too.
+
+  Any rested at all counts the whole kill as doubled. The pool can run dry
+  mid-kill and pay somewhere in between, but pricing that needs the pool size at
+  the instant the mob died, which is on the other client and a message behind.
+- **New:** the pool is reported as a percentage of their level — `Wallhackmage is
+  rested: 87.4% of a level` — when you pair, when they ding, and as it drains.
+  `/tag xp` shows the last figure. The raw number would mean nothing on your end
+  without knowing how big their level is, hence the percentage; it can exceed
+  100%, since rested caps at a level and a half.
+- **New:** when the rested pool runs out, the carry is told —
+  `Wallhackmage has used up their rested XP - kills are back to face value.` That
+  message goes out ahead of the kill reports it changes, so the estimates switch
+  over on the right kill.
+- **Fixed:** a quest hand-in could still be reported to the carry as a kill —
+  `gained 9000 XP (actual)` instead of naming the quest, and with no completion
+  sound. The previous attempt at this fixed the wrong half.
+
+  The turn-in and the experience bar update are separate events, and the turn-in
+  often arrives *first*. The tick was being wrapped up while the bar hadn't
+  moved yet, and the evidence was thrown away at that point — so when the XP
+  landed a moment later there was nothing left to say where it came from. Now
+  nothing is discarded until there's actually some XP to account for, and it's
+  only aged out if the XP never turns up at all.
+
+  Waiting longer never fixed this on its own, which is why the last attempt
+  didn't take: the wrap-up still happened before the XP arrived, just later.
+- **Fixed:** a turn-in is no longer judged by the size of the reward the client
+  reports alongside it. The turn-in happening is the evidence; if the reward
+  comes back empty and nothing died that tick, the gain was the quest's.
+- **New:** handing a quest in plays the completion fanfare on the carry, the
+  counterpart to the accept one. It rides the XP report rather than the quest
+  notices, so `/tag quests` off doesn't silence it.
+- **New:** `/tag xpdebug`, run on the tagger, prints each piece of evidence as it
+  arrives and every wrap-up with what it had. The ordering between those events
+  is what both of these bugs came down to and it can't be worked out after the
+  fact, so if XP is ever labelled wrongly again, this shows why in one hand-in.
+- **New:** the tagger's quest progress now floats on your screen as well as
+  printing to chat — yellow text that rises and fades exactly like the `+XP` you
+  already get, sitting a little above it so the two read as separate notices
+  rather than one pile.
+
+  It shares the same pooled frames and the same flight path as the XP burst, so
+  the two can't drift into moving at different speeds. Two objectives ticking in
+  the same instant stagger by a line instead of landing on the same pixel.
+
+  `/tag quests` turns it off with the rest of the quest notices.
+- **Fixed:** kills were being reported as "discovery" at random. The label was
+  inferred from the *absence* of a "X dies, you gain N experience" line in that
+  tick, and two things make that line absent on a perfectly ordinary kill: the
+  game sometimes sends the version with no mob name in it ("You gain N
+  experience."), and the line and the experience bar update are separate packets
+  that need not land in the same frame. Both are unpredictable from the outside,
+  which is why it looked random.
+
+  Nothing is labelled by elimination any more. A kill is identified by its line, a
+  quest by the turn-in, and a discovery by the "Discovered X" message it announces
+  itself with — and anything that doesn't identify itself is now reported as a
+  plain kill, which is what it did before any of the labelling existed. Every way
+  of being wrong now lands on the old, safe behaviour.
+
+  The per-mob split is unaffected and stays: that one reads lines that are
+  actually there, rather than drawing conclusions from ones that aren't.
+- **New:** `/tag quests` turns the tagger's quest notices on and off — accepted,
+  abandoned, and objective progress. Level-ups and XP reports are unaffected. It
+  gates what your own client prints, so it takes effect where you type it and
+  needs nothing from the other end.
+- **New:** quest objective progress reaches the carry — the yellow text that
+  flashes in the middle of the tagger's screen now prints on yours:
+  `Wallhackmage - Clefthoof Meat: 3/10`, `Wallhackmage - Slay the Ravagers
+  (Complete)`. Objective ticks, objective-complete and quest-failed all come
+  through; the text is forwarded exactly as their client wrote it.
+
+  This is the chattiest of the quest notices, since a tagger with a kill quest
+  for what you're pulling generates one line per mob. `/tag comms` off stops it,
+  along with everything else on the link.
+- **New:** abandoning a quest reaches the carry too — `Wallhackmage abandoned
+  "Force Commander Danath".` No sound on this one: dropping a quest isn't worth a
+  fanfare, and cueing both would make them indistinguishable by ear.
+
+  It lands about a second after the fact, which is not slowness but the only way
+  to be right: the game fires one event for handing a quest in and abandoning it,
+  says nothing about which, and can report the removal *before* the hand-in it
+  belongs to. So a removal waits a beat to see whether a hand-in claims it.
+- **New:** the tagger's dings reach the carry — `Wallhackmage is now level 62
+  (was 61).` with the level-up sound, at any distance and whether or not you are
+  grouped. It is a whisper under the hood, so range and party have nothing to do
+  with it.
+
+  This is more than a notification. The carry's copy of the tagger's level is
+  what every XP estimate is measured against, and until now it only moved when
+  the carry could physically see them — one level stale is a phantom ~6% penalty
+  on every kill. A ding out of range used to go unnoticed until they next walked
+  past; now it corrects itself immediately.
+
+  A ding inside a dungeon still goes unannounced, like everything else while the
+  addon is suspended in there. Nothing is lost but the notice: the level is
+  re-read the moment they're in sight again.
+- **New:** the carry sees quests as the tagger picks them up — `Wallhackmage
+  accepted "Force Commander Danath".` with the drums-and-horns accept fanfare.
+  So when they wander off mid-pull you know why, and you can read the objective
+  back to them without alt-tabbing.
+
+  Nothing rides on it and nothing is tallied; it prints and cues, and only from
+  your established partner. A quest whose name the client won't give up is not
+  announced at all — the name is the whole message.
+- **New:** reports now say where the XP came from. A tagger earns it three ways
+  and only one of them is a tag, but all three used to arrive looking like a
+  kill — so a quest handed in on the way to the pull was pinned to whichever mob
+  was waiting to be paired, and printed a nonsense multiplier against it. You now
+  get `gained 950 XP by completing "Force Commander Danath".` and
+  `gained 90 XP (discovery).`, neither of which claims a kill or moves the
+  session multiplier. `/tag xp` keeps a separate total for them, so the kill
+  numbers only ever count kills.
+
+  The quest name comes free where the client will give it up; where it won't, the
+  line says "by completing a quest".
+- **Fixed:** three mobs dying in the same tick were reported as one mob paying
+  three times its worth. The server batches the player's experience field, so the
+  event the tagger was reporting from fires *once* for the whole tick no matter
+  how many mobs died in it. The carry then hung that whole sum on a single kill —
+  "gained 1635 XP, expected 545, 3.00x" — while the other two kills sat unclaimed
+  until they expired. The chat log is not batched, so the tagger now splits the
+  tick across the "X dies, you gain N experience" lines and sends one report per
+  mob. The total still comes from the experience bar, so anything the chat line
+  words differently is still counted; the parts always add up to it.
 - **Fixed:** an invite that worked could still be followed by the visible "inv"
   whisper, and then the two of you bounced in and out of a party. The addon-link
   invite lands, the party forms, the auto-leave puts you back out of it because

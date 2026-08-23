@@ -141,13 +141,20 @@ local function Status()
                 (info and info.pet) and format("  pet |cff00ff00%s|r", info.pet) or ""))
         end
     end
-    Print(format("XP base: %s | session: %d tags, ~%d XP",
+    -- Once any report has arrived, the confirmed total replaces the estimate
+    -- rather than sitting beside it. Two totals for one session invites reading
+    -- the wrong one, and the estimate is the wrong one.
+    Print(format("XP base: %s | session: %d tags, %s",
         UsingOutlandBase() and "Outland" or "Azeroth",
-        state.sessionTags, state.sessionXP))
-    Print(format("pets: %s | pvp mobs: %s | announce: %s | markers: %s | steal warning: %s | enabled: %s",
+        state.sessionTags,
+        state.reportedKills > 0
+            and format("|cff00ff00%d|r XP confirmed", state.reportedXP)
+            or format("~%d XP estimated", state.sessionXP)))
+    Print(format("pets: %s | pvp mobs: %s | announce: %s | quests: %s | markers: %s | steal warning: %s | enabled: %s",
         db.includePets and "on" or "off",
         db.ignorePvP and "ignored" or "tracked",
         db.announce and "on" or "off",
+        db.questNotices and "on" or "off",
         db.markers and "on" or "off",
         db.stealWarning and "on" or "off",
         db.enabled and "on" or "off"))
@@ -221,7 +228,7 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
     Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
     Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
-    Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+    Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
     Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
     Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
     Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmarks")
@@ -520,23 +527,44 @@ end
 commands["continent"] = commands["zone"]
 
 commands["xp"] = function(rest, cmd)
-    Print(format("this session: |cffffff00%d|r tags, ~|cffffff00%s|r XP estimated.",
-        state.sessionTags,
-        BreakUpLargeNumbers and BreakUpLargeNumbers(state.sessionXP) or tostring(state.sessionXP)))
+    local Big = function(n)
+        return BreakUpLargeNumbers and BreakUpLargeNumbers(n) or tostring(n)
+    end
+
+    -- The estimate is not printed at all once reports are arriving. A linked
+    -- tagger's number is authoritative, and showing a guess beside it only
+    -- invites reading the guess. The pairing line below still contrasts the two,
+    -- which is a different job: that one is how you catch a stale level.
     if state.reportedKills > 0 then
-        Print(format("|cff00ff00%d|r kills reported by linked taggers, |cff00ff00%s|r XP actual%s.",
-            state.reportedKills,
-            BreakUpLargeNumbers and BreakUpLargeNumbers(state.reportedXP) or tostring(state.reportedXP),
+        Print(format("this session: |cffffff00%d|r tags, |cff00ff00%s|r XP "
+            .. "|cff00ff00confirmed|r over |cff00ff00%d|r reported kills%s.",
+            state.sessionTags, Big(state.reportedXP), state.reportedKills,
             state.saidMaxLevel and " |cff808080(tagger at max level)|r" or ""))
         if state.matchedEst > 0 then
             Print(format("paired against estimates: |cffffff00%s|r expected, "
                 .. "|cffffff00%s|r actual, %s overall.",
-                BreakUpLargeNumbers and BreakUpLargeNumbers(state.matchedEst) or tostring(state.matchedEst),
-                BreakUpLargeNumbers and BreakUpLargeNumbers(state.matchedXP) or tostring(state.matchedXP),
+                Big(state.matchedEst), Big(state.matchedXP),
                 MultiplierText(state.matchedXP / state.matchedEst)))
         end
     else
+        Print(format("this session: |cffffff00%d|r tags, ~|cffffff00%s|r XP estimated.",
+            state.sessionTags, Big(state.sessionXP)))
         Print("|cff808080Estimate only: doubles if they're rested, splits if grouped.|r")
+    end
+    -- Their own XP, earned away from the tag. Listed apart from everything above
+    -- rather than folded into it: it inflates no multiplier and tags no mob.
+    if state.offTagXP > 0 then
+        Print(format("|cff808080plus|r |cffffff00%s|r |cff808080XP of their own, from quests and discoveries.|r",
+            Big(state.offTagXP)))
+    end
+    -- Rested, as last reported. It drains as they kill and only crossings are
+    -- pushed, so this is "as of their last report", not live to the second.
+    for key, pct in pairs(state.taggerRested) do
+        if pct and pct > 0 then
+            local info = db.taggers[key]
+            Print(format("|cff66ccff%s|r had |cff66ccff%.1f%%|r of a level rested - "
+                .. "their kill estimates are doubled.", (info and info.name) or key, pct))
+        end
     end
 end
 
@@ -750,6 +778,35 @@ commands["dungeon"] = commands["instance"]
 commands["announce"] = function(rest, cmd)
     db.announce = not db.announce
     Print("chat announcements " .. (db.announce and "on." or "off."))
+end
+
+-- The tagger's quest log, relayed: accepted, abandoned, and objectives ticking
+-- over. On by default, but a tagger holding a kill quest for whatever you are
+-- pulling produces one line per mob, which is the case this exists for.
+--
+-- Local: it gates what THIS client prints, so it takes effect where it is typed
+-- and needs nothing from the other end. Their level-ups are not included - those
+-- are rare and they move the XP estimate.
+commands["quests"] = function(rest, cmd)
+    db.questNotices = not db.questNotices
+    if db.questNotices then
+        Print("quest notices |cff00ff00on|r - accepted, abandoned and objective progress.")
+    else
+        Print("quest notices |cffff2020off|r - level-ups and XP reports are unaffected.")
+    end
+end
+
+-- Run on the TAGGER. Prints each scrap of evidence as it lands and every flush
+-- with what it had in hand, because the ordering between them is what two
+-- separate misreports came down to and it is not inferable after the fact.
+-- Default off; nothing else reads db.xpDebug.
+commands["xpdebug"] = function(rest, cmd)
+    db.xpDebug = not db.xpDebug
+    if db.xpDebug then
+        Print("xp debug |cff00ff00on|r - run this on the tagger, then hand in a quest.")
+    else
+        Print("xp debug |cffff2020off|r.")
+    end
 end
 
 commands["testsound"] = function(rest, cmd)

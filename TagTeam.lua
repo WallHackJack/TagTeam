@@ -69,6 +69,43 @@ C.REFRESH_INTERVAL  = 0.25  -- catches max-health changes; CLEU drives instant u
 C.X_TEXTURE     = "Interface\\RaidFrame\\ReadyCheck-NotReady"
 C.CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready"
 
+-- The XP colour inside a quest float. A FontString honours |cAARRGGBB runs
+-- regardless of what SetTextColor set, which is the only way to get three colours
+-- into one float: the label is a single FontString, and |r reverts to the base
+-- yellow rather than to white, so only the runs that differ need escaping.
+--
+-- A brightened epic purple. The XP bar's own (0.58, 0, 0.55) is dark enough to
+-- vanish against a night sky, and plain epic (a335ee) still sits heavy against a
+-- dark chat frame. One constant, so it is one line to move again.
+C.HEX_XP = "ffbf5fff"
+
+-- The rested flair, on the chat line and the float alike. One constant because
+-- they mean the same thing in both places: the number in front of it already has
+-- the doubling folded in, so a 1.00x beside it is the estimate being right.
+C.HEX_RESTED = "ff66ccff"
+
+-- The damage share on a miss. White so it reads as its own fact rather than as
+-- part of the red X's alarm - the X is the verdict, the share is the evidence.
+C.HEX_SHARE = "ffffffff"
+
+-- The kill line's "N% xp" runs red below RATIO_FLOOR and climbs through yellow to
+-- green at 100%. A ratio is the one number on that line you want to judge without
+-- reading, so it gets a gradient rather than a fixed colour.
+--
+-- The floor is where "this is fine" stops. Below it everything is equally red -
+-- once a kill has paid half what it should, how far below does not change what
+-- you do about it.
+C.RATIO_FLOOR = 0.70
+-- The miss mark on the kill line is the X TEXTURE, not a letter: it is the same
+-- mark the float draws, so the two read as one thing seen twice. ":0" sizes the
+-- icon to the line's font rather than to a guessed pixel height.
+C.X_ICON = "|T" .. C.X_TEXTURE .. ":0|t"
+
+-- The tagger claims its OWN kills to print the same line the carry does. Claims
+-- are keyed per tagger, so this needs a key no character can normalize to - and a
+-- name cannot contain a control character.
+C.SELF_KEY = "\1self"
+
 -- Skull, cross, square. Deliberately only three: more markers than you can hold
 -- in your head at a glance is just clutter. The rotation resets out of combat.
 C.TAG_MARKERS = { 8, 7, 6 }
@@ -93,11 +130,37 @@ C.CRITTER = _G.CREATURE_TYPE_CRITTER or "Critter"
 -- their report, which is what lets the carry print expected against actual.
 C.XP_MATCH_WINDOW = 20  -- seconds a kill waits before it's written off
 C.XP_MATCH_MAX    = 12  -- queue cap, so unreported kills can't grow it forever
--- A miss and the XP report it draws describe the same kill, so they print as one
--- line. The report is a whisper from the other client and lands a beat later, so
--- the chat line has to wait for it. The sound and the X burst still fire the
--- instant the mob dies - only the log line resolves late.
-C.MISS_LOG_DELAY  = 2   -- seconds a miss line waits for the XP report
+
+-- One tick's xp arrives as SEVERAL separate events - the per-mob chat lines, the
+-- experience field update, and QUEST_TURNED_IN - and they do not reliably share a
+-- frame. A one-frame window was too tight twice over: a kill whose line landed
+-- late got reported unlabelled, and a turn-in that landed late got reported as a
+-- kill. This is how long the flush waits for the whole tick to arrive.
+--
+-- Merging two adjacent server ticks into one flush is harmless, which is what
+-- lets this be generous: the split is proportional to the per-mob amounts, and
+-- the field update covers every one of them, so the arithmetic holds either way.
+-- Short enough that the report still feels attached to the kill that caused it.
+C.XP_FLUSH_DELAY = 0.25
+
+-- Evidence can also arrive well AHEAD of the xp it explains - QUEST_TURNED_IN
+-- routinely beats the experience field by more than a flush window - so a flush
+-- that finds no gain keeps what it has rather than discarding it. This is how
+-- long it keeps it. It only matters when the xp never arrives at all: a turn-in
+-- at max level, say, which would otherwise sit there and claim the next kill.
+C.XP_EVIDENCE_TTL = 3
+
+-- The rested pool drains on every kill, so REST is not sent on every kill. It
+-- goes out when the pool crosses into or out of existence - which is what the
+-- estimate turns on, and what "they used it up" means - or when it has moved this
+-- many percentage points of a level since the last one was sent.
+C.REST_STEP = 10
+
+-- QUEST_REMOVED fires for a hand-in and an abandon alike, and can beat the
+-- QUEST_TURNED_IN that would have told them apart. This is how long a removal
+-- waits for a turn-in to claim it before it counts as abandoned. Questie, on this
+-- same client, waits one second for the same reason.
+C.ABANDON_GRACE = 1
 
 -- Client differences in one place, the way WhoDoesWhat's ClientFeatures does it,
 -- so version checks don't get scattered through the logic. Focus arrived in TBC;
@@ -142,9 +205,37 @@ C.STAMP_UNDERSHOOT    = 0.78
 
 -- Death float: one mark that rises and fades on the cadence of the Classic XP
 -- gain text. Hits and misses share it, differing only in texture and label.
-C.FLOAT_RISE       = 70
-C.FLOAT_DURATION   = 1.8
-C.FLOAT_FADE_DELAY = 0.7
+--
+-- The three are read together, so change them together. FADE_DELAY is the OPAQUE
+-- hold; the fade itself runs for DURATION - FADE_DELAY, which is what actually
+-- decides whether a float reads as lingering or as washed out. Lengthening the
+-- life means lengthening the hold and leaving the fade alone - stretching the
+-- fade instead just leaves the text half-there for longer.
+--
+-- RISE over DURATION is the drift speed, so raising DURATION on its own slows
+-- everything down whether you meant to or not. RISE is nudged up alongside it to
+-- keep that deliberate: 85/2.6 is about 33 px/s against the 39 px/s it was.
+C.FLOAT_RISE       = 85
+C.FLOAT_DURATION   = 2.6   -- 1.5s held, then 1.1s fading
+C.FLOAT_FADE_DELAY = 1.5
+
+-- Quest progress relayed by the tagger rides the same flight, starting clear of
+-- the burst rather than through it: the burst's icon is centred at MARK_RISE and
+-- its label hangs below that, so this begins a mark-height above the icon.
+C.QUEST_FLOAT_RISE = C.MARK_RISE + C.MARK_SIZE + 24
+-- Two objectives can tick in the same instant. Staggering by about a line height
+-- is what keeps them two readable notices instead of one smeared one.
+C.QUEST_FLOAT_STEP = 26
+C.QUEST_FLOAT_ROWS = 3
+
+-- How long a MISS float waits for the tagger's real number before it gives up and
+-- shows just the damage share. Only misses use this: a linked kill has no timeout
+-- at all, because there is nothing honest for one to draw. See FloatKillSoon.
+--
+-- Kept short because a number that appears a beat after the mob dies reads as
+-- broken, where a chat line arriving late just reads as a log. The report itself
+-- needs XP_FLUSH_DELAY plus one whisper.
+C.FLOAT_WAIT = 1.0
 
 -- Reactive damage: it fires because the mob attacked us, not because we chose to
 -- engage it. Thorns, Retribution Aura, Lightning Shield, the Imp's Fire Shield
@@ -208,6 +299,7 @@ state.focusEverSet = false  -- only then does losing focus mean anything
 state.focusTaggerName = nil     -- the one player we'll ask for an invite
 local ReportTaggedKill      -- assigned in the comms section, called from HandleDeath
 local SendAddon             -- ditto; the contact checker needs it before it's defined
+local ReportRested          -- ditto; the flush and the handshake both push it
 local linked = {}           -- [key] = true; rebound to db.linked so it survives /reload
 
 -- Labels for the Key Bindings panel. Bindings.xml declares the binding itself.
@@ -1081,23 +1173,14 @@ local function AcquireMark()
     return f
 end
 
-local function SpawnBurst(texture, label, r, g, b)
-    local f = AcquireMark()
-    f.anim:Stop()   -- a pooled frame may still be mid-flight; you cannot
-                    -- reconfigure an animation that is playing
-
-    f.tex:SetTexture(texture)
-    if label then
-        f.label:SetText(label)
-        f.label:SetTextColor(r or 1, g or 1, b or 1)
-        f.label:Show()
-    else
-        f.label:Hide()
-    end
-
+-- The flight itself, shared by everything that floats: rise, hold, then fade, on
+-- the cadence of the Classic XP gain text. Only the height it starts at differs,
+-- and it is shared precisely so the burst and the quest notice above it cannot
+-- drift into moving at different speeds.
+local function LaunchMark(f, rise)
     f:ClearAllPoints()
     f:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
-        UIParent:GetWidth() / 2, UIParent:GetHeight() / 2 + C.MARK_RISE)
+        UIParent:GetWidth() / 2, UIParent:GetHeight() / 2 + rise)
     f:SetAlpha(1)
 
     f.move:SetOffset(0, C.FLOAT_RISE)
@@ -1109,6 +1192,60 @@ local function SpawnBurst(texture, label, r, g, b)
 
     f:Show()
     f.anim:Play()
+end
+
+local function SpawnBurst(texture, label, r, g, b)
+    local f = AcquireMark()
+    f.anim:Stop()   -- a pooled frame may still be mid-flight; you cannot
+                    -- reconfigure an animation that is playing
+
+    f.tex:SetTexture(texture)
+    -- Re-anchored per spawn, not once at creation: the quest float shares this
+    -- pool and centres the same FontString on the frame instead.
+    f.label:ClearAllPoints()
+    f.label:SetPoint("TOP", f, "BOTTOM", 0, -2)
+    if label then
+        f.label:SetText(label)
+        f.label:SetTextColor(r or 1, g or 1, b or 1)
+        f.label:Show()
+    else
+        f.label:Hide()
+    end
+
+    LaunchMark(f, C.MARK_RISE)
+end
+
+-- Quest progress relayed by the tagger. Text only, no icon: the burst below it is
+-- the one carrying a texture, and two icons stacked up the screen read as clutter
+-- rather than as two separate notices.
+local SpawnQuestFloat
+do
+local lastAt, row = 0, 0   -- block-scoped: main-chunk slots are scarce
+
+SpawnQuestFloat = function(text)
+    if not text or text == "" then return end
+
+    local f = AcquireMark()
+    f.anim:Stop()
+
+    f.tex:SetTexture(nil)
+    f.label:ClearAllPoints()
+    f.label:SetPoint("CENTER", f, "CENTER")
+    f.label:SetText(text)
+    -- Pure yellow, deliberately NOT the XP text's gold: the two share a flight
+    -- path, and near-identical colours a line apart read as one notice.
+    f.label:SetTextColor(1, 1, 0)
+    f.label:Show()
+
+    -- The row resets once the previous one has cleared, so a steady trickle
+    -- always uses the first slot and only a genuine pile-up stacks.
+    local now = GetTime()
+    if now - lastAt > C.FLOAT_DURATION then row = 0 end
+    lastAt = now
+
+    LaunchMark(f, C.QUEST_FLOAT_RISE + row * C.QUEST_FLOAT_STEP)
+    row = (row + 1) % C.QUEST_FLOAT_ROWS
+end
 end
 
 --------------------------------------------------------------------------------
@@ -1174,8 +1311,21 @@ local function PlayCue(file, id)
     -- can accidentally bypass it.
     if not db.audio then return end
 
-    if file and PlaySoundFile(file, C.SOUND_CHANNEL) then return end
-    PlaySound(id, C.SOUND_CHANNEL)
+    if type(file) == "table" then
+        -- A list of candidate paths, for cues with no saved setting behind them.
+        -- The first one this client actually has wins; PlaySoundFile is what says
+        -- so, which is why a path that isn't here costs a return value and
+        -- nothing else.
+        for i = 1, #file do
+            if PlaySoundFile(file[i], C.SOUND_CHANNEL) then return end
+        end
+    elseif file and PlaySoundFile(file, C.SOUND_CHANNEL) then
+        return
+    end
+
+    -- Silent rather than wrong: a made-up id does not fail, it plays some
+    -- unrelated noise.
+    if id then PlaySound(id, C.SOUND_CHANNEL) end
 end
 
 local function PlayAlertSound()
@@ -1191,12 +1341,56 @@ local function PlayThresholdSound()
     PlayAlertSound()
 end
 
+-- Cues for the notices that arrive over the link rather than out of the pull.
+--
+-- LEVELUP is the client's own ding. It is also this addon's *fallback* threshold
+-- cue - but only the fallback: a file wins over an id in PlayCue, and db.soundFile
+-- defaults to WeakAuras' Brass, so the two only collide on a client with no
+-- WeakAuras installed.
+C.DING_CUE = SOUNDKIT and SOUNDKIT.LEVELUP
+
+-- Accepting a quest makes TWO sounds, and they are not interchangeable: the quest
+-- log's paper page-turn, and then the drums-and-horns fanfare. The fanfare is the
+-- one that means "quest accepted", and it is NOT what IG_QUEST_LIST_OPEN plays -
+-- that key is the page-turn, which is what this cue used to send.
+--
+-- No exposed SOUNDKIT key on this client is the fanfare; it is engine-side, so it
+-- has to come from the file. Tried as paths in order, and PlaySoundFile reports
+-- whether one landed, so a path this client does not have costs a return value
+-- and nothing else. Verify in game - it prints true or false:
+--   /run print(PlaySoundFile([[Sound\Interface\iQuestActivate.ogg]]))
+C.QUEST_FILES = {
+    [[Sound\Interface\iQuestActivate.ogg]],
+    [[Sound\Interface\iQuestActivate.wav]],
+}
+
+-- Last resort, and deliberately the page-turn: if you hear paper instead of
+-- horns, every path above missed and that is the thing to go fix.
+C.QUEST_CUE = SOUNDKIT and (SOUNDKIT.IG_QUEST_LIST_OPEN or SOUNDKIT.IG_QUEST_LOG_OPEN)
+
+-- Handing one in gets its own fanfare, and it is a different one. Same trick as
+-- above, and on firmer ground than that one was: the accept path is confirmed
+-- working in game, which proves this client resolves Sound\Interface paths and
+-- that this directory is where these live.
+--
+-- IG_QUEST_LIST_COMPLETE is the backstop rather than the page-turn, since a
+-- completion cue that lands on the wrong sound should at least be a completion
+-- sound. Verify the same way:
+--   /run print(PlaySoundFile([[Sound\Interface\iQuestComplete.ogg]]))
+C.QUEST_DONE_FILES = {
+    [[Sound\Interface\iQuestComplete.ogg]],
+    [[Sound\Interface\iQuestComplete.wav]],
+}
+C.QUEST_DONE_CUE = SOUNDKIT and (SOUNDKIT.IG_QUEST_LIST_COMPLETE or SOUNDKIT.IG_QUEST_LIST_OPEN)
+
 --------------------------------------------------------------------------------
 -- XP estimate
 --
 -- Classic/TBC mob XP is deterministic given both levels, so this is arithmetic
--- rather than guesswork. Two multipliers are invisible to us and are called out
--- where the number is shown: rested XP doubles it, and grouping splits it.
+-- rather than guesswork. Two multipliers sit on top of it. Rested doubles it and
+-- USED to be invisible - the tagger now reports the pool as REST, so it is folded
+-- into the estimate rather than left to show up as a 2.00x. Grouping splits it,
+-- and that one really is invisible, so the number stays labelled an estimate.
 --------------------------------------------------------------------------------
 
 -- Retail's uiMapIDs for Outland and its zones.
@@ -1262,6 +1456,33 @@ local function UsingOutlandBase()
     return state.inOutland
 end
 
+-- Rested doubles the xp off every kill, and only the tagger's client can see it,
+-- so it reaches us as REST and lands in state.taggerRested. Folding it into the
+-- estimate is what stops a perfectly ordinary rested kill reading as "2.00x" -
+-- the multiplier is meant to surface what we CANNOT see, and this we now can.
+--
+-- All-or-nothing per kill, deliberately. The pool can run dry mid-kill and pay
+-- somewhere between 1x and 2x, but pricing that needs the pool size at the
+-- instant the mob died, which is on the other client and a message behind.
+--
+-- Any rested tagger doubles it. Damage pools against one threshold but xp does
+-- not, so with several taggers this is a guess - the same simplification
+-- LowestTaggerLevel already makes for the level.
+local function RestedFactor()
+    -- In tagger mode the pool is OUR OWN and needs no message to reach us. Without
+    -- this the tagger would price its own kills undoubled while the carry priced
+    -- the same kills doubled, and the two ends would disagree on every rested
+    -- kill - which is the one thing sharing PrintKillLine is meant to prevent.
+    if InTaggerMode() then
+        return (GetXPExhaustion and (GetXPExhaustion() or 0) > 0) and 2 or 1
+    end
+
+    for _, pct in pairs(state.taggerRested) do
+        if pct and pct > 0 then return 2 end
+    end
+    return 1
+end
+
 -- Returns estimated XP, 0 for a grey mob, or nil when either level is unknown.
 local function EstimateXP(guid)
     local pl = LowestTaggerLevel()
@@ -1296,6 +1517,8 @@ end
 local function QueueKillForReport(name, pct, est, missed)
     local kill = {
         name = name, pct = pct, est = est, missed = missed,
+        rested = RestedFactor() > 1,   -- pinned like `need`: the pool can empty
+                                       -- before the report gets back to us
         need = db.threshold,   -- pinned: /tag threshold can move under a pending kill
         at = GetTime(), claimed = {},
     }
@@ -1306,13 +1529,126 @@ local function QueueKillForReport(name, pct, est, missed)
     return kill
 end
 
--- One chat line per kill, whoever gets there first. The XP report prints the
--- combined version when it lands; this prints the bare miss when it doesn't.
-local function LogMiss(kill)
-    if kill.logged then return end
-    kill.logged = true
-    Print(format("|cffff2020MISSED|r %s - died at |cffff8080%.1f%%|r, needed %.1f%%.",
-        kill.name or "target", kill.pct, kill.need))
+-- Is a report actually plausible? Comms off, or nobody who has ever talked to
+-- us, means nothing is coming - and then waiting for it only delays a guess.
+-- Both the chat line and the float hang their "wait or draw now" on this.
+local function ReportComing()
+    return db.comms and next(linked) ~= nil
+end
+
+-- One float per kill, drawn by whoever gets there first: the tagger's report if
+-- it beats the timer, our own estimate if it does not. kill.floated is the flag
+-- both the timer and the report check, so neither can draw over the other.
+--
+-- The number is what changed here. The float used to be drawn the instant the mob
+-- died, which meant it could only ever show the estimate; when a tagger is linked
+-- the real figure is a fraction of a second away, and the centre of the screen is
+-- the one place worth spending that fraction to get right. A "~" says the number
+-- is still ours rather than theirs.
+--
+-- The miss float carries the percentage as well. That reverses an earlier call to
+-- keep it a bare X - the reasoning then was that most misses are incidental, the
+-- tagger clipping something you were killing anyway, and the share they reached
+-- decides nothing. Which is true; it is also true that the ones that WERE real
+-- attempts are the ones you want to read, and they are indistinguishable without
+-- the number. The buzz is still the alert either way.
+local function FloatKill(kill, actual)
+    if kill.floated then return end
+    kill.floated = true
+
+    -- While a tagger is linked the screen shows CONFIRMED xp or no xp at all. The
+    -- estimate is not a consolation prize - it is the number the link exists to
+    -- replace, and the middle of the screen is read at a glance, so a guess there
+    -- misreports the session.
+    --
+    -- kill.awaited marks the one path that can arrive here without a report while
+    -- linked: a miss whose timer expired. It gets the share and no xp. A linked
+    -- KILL never arrives here at all without one - see FloatKillSoon.
+    local xp = actual or (not kill.awaited and kill.est) or nil
+    local label
+    if xp then
+        label = format(actual and "+%d XP" or "~%d XP", xp)
+        -- (x2) belongs to the CHECKMARK alone. It means the number in front of it
+        -- already has the doubling in it, which is a thing you want to know about
+        -- xp you earned; on an X the number that matters is how close they came,
+        -- and a second parenthetical only competes with it.
+        if kill.rested and not kill.missed then
+            label = label .. format(" |c%s(x2)|r", C.HEX_RESTED)
+        end
+    end
+
+    if kill.missed then
+        -- The share, in its own colour because it is its own fact: the X is the
+        -- verdict, this is the evidence behind it.
+        --
+        -- One decimal only when it lands within a point of the threshold. "22%"
+        -- is the honest precision for a miss that was never close; the tenth is
+        -- worth its glyph only where the gap between 37.6 and 38 IS the story.
+        local need = kill.need
+        local near = need and kill.pct >= need - 1 and kill.pct <= need + 1
+        label = (label and label .. "  " or "")
+            .. format(near and "|c%s(%.1f%%)|r" or "|c%s(%.0f%%)|r", C.HEX_SHARE, kill.pct)
+    end
+
+    if kill.missed then
+        SafeCall(SpawnBurst, C.X_TEXTURE, label, 1, 0.35, 0.35)
+    else
+        SafeCall(SpawnBurst, C.CHECK_TEXTURE, label, 1, 0.86, 0.3)
+    end
+end
+
+-- Draw it now, or wait for the tagger to say what it was worth.
+--
+-- Linked, a KILL has no timer at all. There are only two things a timeout could
+-- draw and both are wrong: the estimate is the number the link exists to
+-- replace, and a checkmark with nothing on it is worse than no checkmark. So
+-- nothing appears until the report does, and if the report never comes nothing
+-- appears - the chat line still says what happened. Be patient rather than
+-- guess.
+--
+-- A MISS keeps its timer, because it has something honest to put up without the
+-- report: the damage share, which is measured on our end. Dropping that would
+-- silently lose the X on every miss the tagger never tapped - no report is ever
+-- coming for those, so "wait for it" would mean "never show it".
+local function FloatKillSoon(kill)
+    if not ReportComing() then
+        FloatKill(kill)
+    elseif kill.missed then
+        kill.awaited = true   -- suppresses the estimate; the share still shows
+        C_Timer.After(C.FLOAT_WAIT, function() FloatKill(kill) end)
+    end
+end
+
+-- A tagger's name in their class colour, for dropping into a float. Returns it
+-- BARE when we have never had a unit token for them and so never learned the
+-- class: the float's own yellow is already the base colour, so an uncoloured
+-- name reads fine where a guessed one would just be wrong.
+local function TaggerName(key, fallbackName)
+    local info = key and db.taggers[key]
+    local name = (info and info.name) or fallbackName or key or "your tagger"
+
+    local colours = RAID_CLASS_COLORS
+    local c = info and info.class and colours and colours[info.class]
+    if not c then return name end
+
+    -- Floored, because %x on a non-integer is a coin toss across Lua versions.
+    -- colorStr is present on this client, so that branch is the one that runs.
+    local hex = c.colorStr or format("ff%02x%02x%02x",
+        floor((c.r or 1) * 255 + 0.5), floor((c.g or 1) * 255 + 0.5),
+        floor((c.b or 1) * 255 + 0.5))
+    return format("|c%s%s|r", hex, name)
+end
+
+-- <name> completed "<title>" for <n> XP - the name in their class colour, the
+-- reward in the XP purple, and everything between them in the float's own yellow,
+-- which is what |r reverts to. Goes to the same float the objective ticks use, so
+-- a quest's whole life reads in one place on screen.
+local function FloatQuest(key, who, verb, title, xp)
+    local text = format("%s %s \"%s\"", TaggerName(key, who), verb, title or "a quest")
+    if xp and xp > 0 then
+        text = text .. format(" for |c%s%d XP|r", C.HEX_XP, xp)
+    end
+    SpawnQuestFloat(text)
 end
 
 -- Hand one reporting tagger the oldest kill it has not already claimed. Claims
@@ -1338,6 +1674,64 @@ end
 local function MultiplierText(mult)
     return format("|cff%s%.2fx|r",
         (mult >= 0.95 and mult <= 1.05) and "00ff00" or "ffff00", mult)
+end
+
+-- Red under RATIO_FLOOR, then through yellow to green at 100%. Red and green are
+-- both full-on at the midpoint, which is what makes the middle read as yellow
+-- rather than as muddy orange.
+local function RatioHex(ratio)
+    local t = (ratio - C.RATIO_FLOOR) / (1 - C.RATIO_FLOOR)
+    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+
+    local r, g
+    if t < 0.5 then r, g = 1, t * 2 else r, g = (1 - t) * 2, 1 end
+    return format("ff%02x%02x00", floor(r * 255 + 0.5), floor(g * 255 + 0.5))
+end
+
+-- ONE kill line, printed by both ends from the same code. The carry builds it
+-- from the tagger's report, the tagger from its own flush; sharing the function
+-- is what stops the two describing the same kill differently.
+--
+-- `nameTag` arrives already coloured, because that is the only part that differs:
+-- the tagger's class colour on the carry, a green "You" on the tagger.
+--
+-- Everything on the line is a fact, not a judgement, except the ratio's colour -
+-- which is the judgement, so it is the only thing that changes colour.
+local function PrintKillLine(nameTag, kill, amount)
+    -- /tag announce. This line IS the per-kill chat announcement now - it took
+    -- over from the MISSED alert that the toggle used to gate - so the toggle
+    -- points here, or it would toggle nothing at all.
+    if not db.announce then return end
+
+    local rested = kill.rested and format(" |c%s(x2)|r", C.HEX_RESTED) or ""
+    -- The X marks the threshold going unmet, and it is THE miss notice - there is
+    -- no separate MISSED line any more. The xp still landed, since the tap decides
+    -- that and not the share, so it reads as a footnote rather than a verdict.
+    local flag = kill.missed and (" " .. C.X_ICON) or ""
+
+    if not kill.est or kill.est <= 0 then
+        -- A level was unknown when it died, so there is nothing to measure the
+        -- gain against. The share was still measured and is still worth saying.
+        Print(format("%s gained |c%s%d XP|r%s, |c%s%.1f%%|r damage%s",
+            nameTag, C.HEX_XP, amount, rested, C.HEX_SHARE, kill.pct, flag))
+        return
+    end
+
+    local ratio = amount / kill.est
+    Print(format("%s gained |c%s%d|r of |c%s%d XP|r%s, |c%s%.1f%%|r damage = "
+        .. "|c%s%d%%|r XP%s",
+        nameTag, C.HEX_XP, amount, C.HEX_XP, kill.est, rested,
+        C.HEX_SHARE, kill.pct, RatioHex(ratio), floor(ratio * 100 + 0.5), flag))
+end
+
+-- The tagger's own copy of the line, and its own float. Both ends see the same
+-- thing for the same kill; this side simply does not need the message to say it.
+local function ReportOwnKill(amount)
+    local kill = ClaimKillForReport(C.SELF_KEY)
+    if not kill then return end
+
+    PrintKillLine("|cff00ff00You|r", kill, amount)
+    FloatKill(kill, amount)
 end
 
 local function CacheMobInfo(unit, guid)
@@ -1512,9 +1906,30 @@ local function NoticeFocus()
     end
 end
 
--- Nothing pushes the tagger's level to us - they aren't in our group - so
--- sample it whenever they pass through a unit we can inspect. Targeting them once
--- is enough, and it re-samples as they level.
+-- The one place a tagger's cached level moves, because it feeds every XP estimate
+-- and a level stale by one quietly applies a penalty that is not real.
+--
+-- Two things move it, and only one of them works at range: seeing them on a unit
+-- token, and their own client saying so over the link. Returns whether the number
+-- actually changed, so a caller can tell a real ding from a confirmation.
+local function NoteTaggerLevel(key, lvl)
+    local info = key and db.taggers[key]
+    if not info or not lvl or lvl <= 0 or lvl == info.level then return false end
+
+    local was = info.level
+    info.level = lvl
+    if was then
+        Print(format("%s is now level |cffffff00%d|r (was %d).", info.name, lvl, was))
+    else
+        Print(format("%s is level |cffffff00%d|r - XP estimates are live.", info.name, lvl))
+    end
+    return true
+end
+
+-- An UNLINKED tagger pushes nothing - they aren't in our group - so sample them
+-- whenever they pass through a unit we can inspect. Targeting them once is enough,
+-- and it re-samples as they level. A linked one sends LEVEL the moment they ding,
+-- which is the only path that survives them being out of range.
 local function SampleTrackedLevel(unit)
     if not HasTaggers() or not UnitExists(unit) then return end
 
@@ -1536,18 +1951,16 @@ local function SampleTrackedLevel(unit)
     SafeCall(MarkTagger, unit, key)
 
     ConfirmTagger(key, "on sight")
-
+    -- Their class, learned once and saved: it is what colours their name in the
+    -- quest floats. Free here and nowhere else - this is the only place we ever
+    -- hold a unit token for them, and the class of a character never changes.
     local info = db.taggers[key]
-    local lvl = UnitLevel(unit)
-    if not info or not lvl or lvl <= 0 or lvl == info.level then return end
-
-    local was = info.level
-    info.level = lvl
-    if was then
-        Print(format("%s is now level |cffffff00%d|r (was %d).", info.name, lvl, was))
-    else
-        Print(format("%s is level |cffffff00%d|r - XP estimates are live.", info.name, lvl))
+    if info and not info.class then
+        local _, classFile = UnitClass(unit)
+        info.class = classFile
     end
+
+    NoteTaggerLevel(key, UnitLevel(unit))
 end
 
 -- Every unit token the tagger plausibly occupies. "targettarget" is the valuable
@@ -1864,20 +2277,22 @@ local function HandleDeath(guid, name)
     -- it crossed the threshold, and a second cue on every kill would be noise.
     if pct >= db.threshold then
         local raw = EstimateXP(guid)
-        local label, r, g, b
         local shown   -- scaled estimate; stays nil when either level was unknown
 
-        if raw == 0 then
-            label, r, g, b = "grey", 0.62, 0.62, 0.62
-        elseif raw then
-            shown = floor(raw * (db.xpScale or 1) + 0.5)
-            label, r, g, b = format("+%d XP", shown), 1, 0.86, 0.3
+        if raw and raw > 0 then
+            -- Rested is part of the ESTIMATE, not of the user-tunable scale, so it
+            -- goes in before it - which also keeps /tag calibrate honest, since
+            -- that solves against lastRawXP and would otherwise read a rested
+            -- kill as a scale of 2.
+            local base = raw * RestedFactor()
+            shown = floor(base * (db.xpScale or 1) + 0.5)
             state.sessionXP = state.sessionXP + shown
 
-            -- Held unscaled so /tag calibrate can solve for the scale directly.
-            state.lastRawXP = raw
-            state.lastXPInfo = format("%s, mob %d vs their %d",
-                name or "target", state.mobLevel[guid] or 0, LowestTaggerLevel() or 0)
+            -- Held before db.xpScale so /tag calibrate can solve for it directly.
+            state.lastRawXP = base
+            state.lastXPInfo = format("%s, mob %d vs their %d%s",
+                name or "target", state.mobLevel[guid] or 0, LowestTaggerLevel() or 0,
+                RestedFactor() > 1 and ", rested x2" or "")
         end
         state.sessionTags = state.sessionTags + 1
 
@@ -1886,11 +2301,18 @@ local function HandleDeath(guid, name)
         -- per-head breakdown. A grey pays nothing, so PLAYER_XP_UPDATE never fires
         -- on their end and no report is ever sent: queuing one would leave an
         -- entry to expire and mispair the next real kill.
-        if raw ~= 0 then QueueKillForReport(name, pct, shown) end
+        local kill
+        if raw ~= 0 then kill = QueueKillForReport(name, pct, shown) end
 
         if ReportTaggedKill then ReportTaggedKill() end
 
-        SafeCall(SpawnBurst, C.CHECK_TEXTURE, label, r, g, b)
+        if kill then
+            FloatKillSoon(kill)
+        else
+            -- A grey. It pays nothing and no report can ever come, so there is
+            -- nothing to wait for and nothing to put a number on.
+            SafeCall(SpawnBurst, C.CHECK_TEXTURE, "grey", 0.62, 0.62, 0.62)
+        end
         return
     end
 
@@ -1905,31 +2327,24 @@ local function HandleDeath(guid, name)
     -- pair with, and a queued entry would sit there for the next real report to
     -- claim by mistake.
     local raw = EstimateXP(guid)
-    local est = (raw and raw > 0) and floor(raw * (db.xpScale or 1) + 0.5) or nil
+    -- A missed mob still pays the tagger, so rested still applies to it.
+    local est = (raw and raw > 0)
+        and floor(raw * RestedFactor() * (db.xpScale or 1) + 0.5) or nil
     local kill
     if raw ~= 0 then
         kill = QueueKillForReport(name, pct, est, true)
     else
-        kill = { name = name, pct = pct, need = db.threshold }
+        -- A grey miss. Not queued, so no report can claim it - but it still needs
+        -- `missed` set, or the float would draw a checkmark over it.
+        kill = { name = name, pct = pct, need = db.threshold, missed = true }
     end
 
-    -- The chat line waits for the report so the two can print as one; the sound
-    -- and the burst are the alert itself and fire now. Nothing to wait for when
-    -- no partner has ever talked to us, or when no report is coming at all.
-    if db.announce then
-        if kill.at and next(linked) then
-            C_Timer.After(C.MISS_LOG_DELAY, function() LogMiss(kill) end)
-        else
-            LogMiss(kill)
-        end
-    end
+    -- There is no separate MISSED line: the kill line carries the X and IS the
+    -- notice, so a miss says nothing in chat until the report that prices it
+    -- arrives. The SOUND is the alert itself and fires now, which is the part
+    -- that has to be immediate.
     PlayMissSound()
-    -- A bare X, no number. Most misses are incidental - the tagger clipped
-    -- something the carry was killing anyway - and on those the share they
-    -- happened to reach decides nothing and is worth nothing to read. The buzz
-    -- is the part that carries: that one got away. The exact percentage is still
-    -- in the chat line for the misses that were real attempts.
-    SafeCall(SpawnBurst, C.X_TEXTURE, nil, 1, 0.35, 0.35)
+    if kill.at then FloatKillSoon(kill) else FloatKill(kill) end
 end
 
 
@@ -2122,7 +2537,9 @@ end
 C.ADDON_PREFIX = "TagTeam"
 
 state.reportedXP = 0    -- real XP relayed by taggers this session
+state.taggerRested = {} -- [key] = rested pool as a % of their level, from REST
 state.reportedKills = 0 -- kills relayed, including zero-XP ones
+state.offTagXP = 0      -- quest and discovery XP relayed, kept off the tag totals
 state.saidMaxLevel = false
 local lastXP, lastXPMax
 
@@ -2345,6 +2762,7 @@ local function OnAddonMessage(msg, sender)
     elseif cmd == "HELLO" then
         SendAddon("HI", who)   -- silent handshake; both ends are now marked linked
         AnnouncePet(who)       -- they just logged in; their copy of our pet is gone
+        if ReportRested then ReportRested(true) end   -- and their copy of our rested
 
     elseif cmd == "HI" then
         -- Nothing to say. Arriving at all is the whole message - our own pet went
@@ -2367,6 +2785,7 @@ local function OnAddonMessage(msg, sender)
     elseif cmd == "OK" then
         Print(format("|cff00ff00TagTeam linked|r with %s.", who))
         AnnouncePet(who)
+        if ReportRested then ReportRested(true) end
 
     elseif cmd == "NO" then
         Print(format("|cffff8080%s|r declined the pairing.", who))
@@ -2404,41 +2823,135 @@ local function OnAddonMessage(msg, sender)
         if not kill then
             -- Killed outside our combat log range, or reported before we ever had
             -- eyes on the mob. Nothing to hold it against, so claim nothing.
-            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP |cff808080(actual)|r.",
-                who, amount))
-            return
-        end
-
-        -- Claiming the kill is what folds the miss line into this one: LogMiss
-        -- checks the same flag, so the timer it is racing prints nothing.
-        --
-        -- Unless the timer won. A report slower than MISS_LOG_DELAY has already
-        -- had its miss announced, so the suffix is dropped rather than repeated.
-        local announced = kill.logged
-        kill.logged = true
-        -- Reads as a suffix on either sentence below.
-        local miss = (kill.missed and not announced)
-            and format(" |cffff2020(MISSED, needed %.1f%%)|r", kill.need) or ""
-
-        if not kill.est or kill.est <= 0 then
-            -- A level was unknown when it died, so there is no estimate. The
-            -- damage share was still measured, and is still worth saying.
-            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s "
-                .. "|cff808080(%.1f%% dealt, no estimate)|r%s.",
-                who, amount, kill.name or "the mob", kill.pct, miss))
+            if db.announce then
+                Print(format("%s gained |c%s%d XP|r |cff808080(unpaired)|r.",
+                    TaggerName(key, who), C.HEX_XP, amount))
+            end
             return
         end
 
         -- Missed kills stay out of the session multiplier. Their estimate assumes
         -- a full tag they never made, so averaging them in would drag the number
         -- down and hide what the properly tagged kills are actually paying.
-        if not kill.missed then
+        if kill.est and kill.est > 0 and not kill.missed then
             state.matchedEst, state.matchedXP = state.matchedEst + kill.est, state.matchedXP + amount
         end
-        Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP on %s - expected "
-            .. "|cffffff00%d|r, %s, taggers dealt |cffffff00%.1f%%|r%s.",
-            who, amount, kill.name or "the mob", kill.est,
-            MultiplierText(amount / kill.est), kill.pct, miss))
+
+        PrintKillLine(TaggerName(key, who), kill, amount)
+
+        -- Cosmetic, so it goes after the log. This is the ONLY thing that draws a
+        -- linked kill's float - there is no timer behind it.
+        FloatKill(kill, amount)
+
+    elseif cmd == "XPQ" or cmd == "XPD" then
+        -- XP the tagger earned away from the tag: a quest turn-in, or a zone
+        -- discovery while running to you. Said out loud so a jump in their bar
+        -- has a name on it, but deliberately kept out of the kill counters and
+        -- out of the session multiplier - no mob died, so there is no estimate
+        -- for it to be measured against, and nothing to claim from pendingKills.
+        --
+        -- Its own command rather than a suffix on XP, so a partner still running
+        -- the old version drops it silently instead of pairing it with a kill.
+        --
+        -- Split on 2, so a quest title with a colon in it arrives whole.
+        local amount, title = strsplit(":", arg or "", 2)
+        amount = tonumber(amount)
+        if not amount or amount <= 0 then return end
+        state.offTagXP = state.offTagXP + amount
+
+        if cmd == "XPD" then
+            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP |cff808080(discovery)|r.",
+                who, amount))
+            return
+        end
+
+        if title and title ~= "" then
+            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP by completing \"%s\".",
+                who, amount, title))
+        else
+            Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP by completing a quest.",
+                who, amount))
+        end
+        -- Handing one in gets its own fanfare, the counterpart to the accept cue.
+        -- Not gated on /tag quests: that toggle is for the running commentary on
+        -- their quest log, and this is an XP report, which is the whole job.
+        PlayCue(C.QUEST_DONE_FILES, C.QUEST_DONE_CUE)
+        -- Ungated for the same reason the cue is. Cosmetic, so it goes last.
+        SafeCall(FloatQuest, key, who, "completed", title, amount)
+
+    elseif cmd == "QACC" or cmd == "QDROP" then
+        -- Their quest log, as it happens. No xp rides on either - they are here so
+        -- the carry knows why the tagger just ran off, and can read the name back
+        -- to them. Partners only: this is the chattiest thing on the channel, and
+        -- a stranger has no business filling your chat frame with their quest log.
+        --
+        -- Gated on the RECEIVING side, because that is the chat frame filling
+        -- up: /tag quests takes effect on the client you type it on, without
+        -- needing the other end to agree or even to have the setting.
+        if not db.questNotices then return end
+        if not IsPartner(who) then return end
+        if not arg or arg == "" then return end
+
+        if cmd == "QACC" then
+            Print(format("|cff00ff00%s|r accepted \"%s\".", who, arg))
+            PlayCue(C.QUEST_FILES, C.QUEST_CUE)
+            SafeCall(FloatQuest, key, who, "accepted", arg)
+        else
+            -- No cue. Dropping a quest is not an event to celebrate, and the
+            -- fanfare on both would make the two indistinguishable by ear.
+            Print(format("|cff00ff00%s|r abandoned \"%s\".", who, arg))
+        end
+
+    elseif cmd == "QPROG" then
+        -- An objective ticking over, exactly as it appeared on their screen -
+        -- their client formatted it, so it is printed rather than rebuilt.
+        -- Partners only, like the rest of the quest notices.
+        if not db.questNotices then return end
+        if not IsPartner(who) then return end
+        if not arg or arg == "" then return end
+        Print(format("|cff00ff00%s|r - |cffffff00%s|r", who, arg))
+
+        -- Cosmetic, so it goes last and behind SafeCall: a fault in the float
+        -- must not take the chat line down with it.
+        SafeCall(SpawnQuestFloat, arg)
+
+    elseif cmd == "REST" then
+        -- Partners only, same rule as LEVEL: this decides whether every kill's
+        -- estimate gets doubled, and a stranger must not get to move that.
+        if not IsPartner(who) then return end
+        local pct = tonumber(arg)
+        if not pct or pct < 0 then return end
+
+        local was = state.taggerRested[key]
+        state.taggerRested[key] = pct
+
+        -- Said out loud on the crossings only, and on the first report that has
+        -- something to say, which is the pairing. The pool drains continuously;
+        -- narrating every step of that would bury the kills it explains.
+        if was == nil and pct <= 0 then return end   -- paired, and not rested
+        if was and (was > 0) == (pct > 0) then return end
+
+        if pct > 0 then
+            Print(format("|cff00ff00%s|r is rested: |cff66ccff%.1f%%|r of a level - "
+                .. "their kills pay |cff66ccffdouble|r, and estimates now say so.", who, pct))
+        else
+            Print(format("|cff00ff00%s|r has used up their |cff66ccffrested XP|r - "
+                .. "kills are back to face value.", who))
+        end
+
+    elseif cmd == "LEVEL" then
+        -- Partners only, same rule as PET and THRESH: this writes into the XP
+        -- estimate, and a stranger must not get to move the number every kill is
+        -- measured against.
+        if not IsPartner(who) then return end
+        local lvl = tonumber(arg)
+        if not lvl or lvl <= 0 then return end
+
+        -- The cue fires whether or not the number moved. It is sent once per ding,
+        -- and a unit-token scan that happened to see them first should not eat the
+        -- one notice that works when they are nowhere near you.
+        NoteTaggerLevel(key, lvl)
+        PlayCue(nil, C.DING_CUE)
     end
 end
 
@@ -2449,6 +2962,8 @@ local function GreetPartners()
     -- Our pet, unprompted. A hunter who summoned before logging in generates no
     -- summon for anyone to see, so this is the only notice the other end gets.
     AnnouncePet()
+    -- Same reasoning for the rested pool: the carry cannot see it at all.
+    if ReportRested then ReportRested(true) end
 end
 
 -- Our own pet changed. Three jobs: cache the GUID the carry-mode damage path
@@ -2473,23 +2988,396 @@ ReportTaggedKill = function()
     SendAddon("XP:0", db.carry)
 end
 
--- Tagger side: read the real gain off UnitXP and relay it.
-local function ReportXPGain()
-    local cur, max = UnitXP("player"), UnitXPMax("player")
+-- Tagger side: read the real gain off UnitXP and relay it - one message per MOB,
+-- not one per event, and labelled with where it came from.
+--
+-- A server tick that kills three mobs sends three "X dies, you gain N
+-- experience" chat lines, but batches the player's xp field into a single
+-- update: PLAYER_XP_UPDATE fires ONCE, carrying the whole sum. Relayed as it
+-- stood, that claimed one pending kill on the carry and printed a single mob
+-- paying 3x. The chat lines are the only per-mob record the client offers, so
+-- they supply the split, while UnitXP stays the authority on the total - a bonus
+-- the line words differently still lands in the field.
+--
+-- The same tick is also where the xp gets its label. Three things pay xp here -
+-- kills, quest turn-ins, discoveries - and only kills have anything to do with
+-- tagging, but the last two are worded IDENTICALLY in the chat log. So a kill is
+-- identified by its line, a turn-in by QUEST_TURNED_IN, and a discovery by being
+-- neither. See the note in AGENTS.md before loosening any of that.
+--
+-- All of it is read a frame late. The lines, the field update and the turn-in
+-- arrive in the same frame in an order that is not ours to choose, and both the
+-- split and the labelling need the whole tick in hand.
+local ReportXPGain, NoteXPGainLine, NoteQuestTurnIn, NoteQuestAccepted, NoteQuestRemoved,
+      NoteDiscovery
+do
+-- Block-scoped, like Pets' locals: main-chunk slots are scarce, see C and state.
+local batch = {}   -- this frame's per-mob amounts, in the order they were awarded
+local queued       -- a flush is already booked for the end of this frame
+local pattern      -- built once from the client's own format string; false = no
+local questXP      -- a turn-in this frame, waiting for the flush to classify it
+local questName    -- its title, if the client would tell us
+local turnedIn = {} -- questIDs handed in, so QUEST_REMOVED can tell that from an abandon
+local discovered  -- a zone discovery announced itself this frame
+local lastRest     -- last rested percentage sent, so a steady drain is not spam
+local evidenceAt  -- when the newest scrap of evidence landed, for the TTL below
 
+-- "%s dies, you gain %d experience." becomes
+-- "^(.+) dies, you gain (%d+) experience%." - the escape-then-reopen trick from
+-- OwnerPatterns. Deliberately NOT anchored at the end: the group, raid and
+-- rested variants extend that sentence rather than rewriting it, so the prefix
+-- matches all four. The quest line has no mob in it and never matches, which is
+-- what keeps a turn-in out of the split.
+local function KillPattern()
+    if pattern ~= nil then return pattern end
+    pattern = false
+    local s = COMBATLOG_XPGAIN_FIRSTPERSON
+    if type(s) ~= "string" then return false end
+    local nName, nAmount
+    s = gsub(s, "([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+    s, nName   = gsub(s, "%%%%s", "(.+)")
+    s, nAmount = gsub(s, "%%%%d", "(%%d+)")
+    -- A locale that orders the two the other way round, or uses positional
+    -- specifiers, leaves one of them unconverted. One lump sum beats a split
+    -- built on a pattern we do not actually understand.
+    if nName ~= 1 or nAmount ~= 1 then return false end
+    pattern = "^" .. s
+    return pattern
+end
+
+-- Everything the tick awarded, labelled by where it came from and, for kills,
+-- divided the way the chat lines divided it.
+--
+-- EVERY label here rests on POSITIVE evidence, and that rule was learned the hard
+-- way. This once inferred "discovery" from the absence of a kill line, which
+-- misreported real kills at random - see the note in AGENTS.md. Nothing that
+-- fails to identify itself gets a label: it falls through to a plain XP report,
+-- which is what this did before any of the labelling existed.
+local function Flush()
+    queued = nil
+
+    local cur, max = UnitXP("player"), UnitXPMax("player")
+    local gained = 0
     if lastXP then
-        local gained
         if cur >= lastXP then
             gained = cur - lastXP
         else
             gained = (lastXPMax - lastXP) + cur   -- levelled during the gain
         end
-        if gained > 0 and InTaggerMode() and db.carry then
-            SendAddon("XP:" .. gained, db.carry)
+    end
+    lastXP, lastXPMax = cur, max
+
+    -- /tag xpdebug. This exact ordering is what two separate misreports came
+    -- down to, so it is worth being able to watch rather than infer.
+    if db.xpDebug then
+        Print(format("|cff808080xp: flush gained=%d kills=%d quest=%s disc=%s|r",
+            gained, #batch, tostring(questXP), tostring(discovered)))
+    end
+
+    -- Nothing to attribute it to yet, so the evidence is KEPT rather than
+    -- cleared. This is the whole fix for a hand-in being reported as a kill:
+    -- QUEST_TURNED_IN routinely arrives BEFORE the xp it explains, this ran while
+    -- the bar had not moved, and clearing here threw the turn-in away - so the xp
+    -- that landed a moment later had nothing left to identify it.
+    --
+    -- Only aged out if the xp never turns up at all, which is what stops a
+    -- turn-in at max level from lingering and claiming the next kill.
+    if gained <= 0 then
+        if evidenceAt and GetTime() - evidenceAt > C.XP_EVIDENCE_TTL then
+            wipe(batch)
+            questXP, questName, discovered, evidenceAt = nil, nil, nil, nil
+        end
+        return
+    end
+
+    local n, sum = #batch, 0
+    for i = 1, n do sum = sum + batch[i] end
+    local qXP, qName, explored = questXP, questName, discovered
+
+    -- Cleared only now that there is a gain to spend it on.
+    wipe(batch)
+    questXP, questName, discovered, evidenceAt = nil, nil, nil, nil
+
+    if not InTaggerMode() or not db.carry then return end
+
+    -- Xp was gained, so the rested pool has just drained by some of it. Checked
+    -- HERE rather than on a ticker, because gaining xp is the only thing that
+    -- moves it - and it goes out ahead of the reports, so "they used it up"
+    -- lands before the kills that no longer double.
+    if ReportRested then ReportRested() end
+
+    -- A turn-in in the same tick as a kill: taken off the top rather than left
+    -- for the mobs to absorb, so neither report lies about the other.
+    --
+    -- Tested for nil, NOT for a positive amount. questXP becomes a number the
+    -- moment a turn-in is noted, so nil-vs-number is what says "a turn-in
+    -- happened here" - and QUEST_TURNED_IN firing is the positive evidence, not
+    -- the size of the reward it carried. A client that hands us no reward, or a
+    -- zero one, must not silently demote the quest back to a kill.
+    if qXP then
+        -- Reward unknown and nothing died: then the whole gain is the quest's.
+        if qXP <= 0 and n == 0 then qXP = gained end
+        if qXP > gained then qXP = gained end
+        if qXP > 0 then
+            SendAddon("XPQ:" .. qXP .. ":" .. (qName or ""), db.carry)
+            gained = gained - qXP
+            if gained <= 0 then return end
         end
     end
 
-    lastXP, lastXPMax = cur, max
+    -- Reporting a kill and logging it on our own screen are the same event, so
+    -- they are one call. Both ends then describe the kill through PrintKillLine.
+    local function SendKill(part)
+        SendAddon("XP:" .. part, db.carry)
+        ReportOwnKill(part)
+    end
+
+    if n == 0 then
+        -- Nothing named a mob this tick. That is NOT proof of anything: a kill's
+        -- own line can arrive without a mob name in it, and this client sends
+        -- that variant often enough to matter. So only a zone discovery that
+        -- announced ITSELF is labelled one, and everything else reports as the
+        -- plain kill it almost always is.
+        if explored then
+            SendAddon("XPD:" .. gained, db.carry)
+        else
+            SendKill(gained)
+        end
+    elseif n < 2 or sum <= 0 then
+        -- One mob: the field update is the whole story, nothing to divide.
+        SendKill(gained)
+    else
+        -- Scaled onto the field update rather than sent as read, so the parts
+        -- still add up to what was actually gained. The last mob takes the
+        -- rounding remainder.
+        local left = gained
+        for i = 1, n do
+            local part = (i == n) and left or floor(gained * batch[i] / sum + 0.5)
+            if part < 1 then part = 1 end
+            if part > left then part = left end
+            left = left - part
+            -- A zero would read as a max-level tagger on the other end.
+            if part > 0 then SendKill(part) end
+        end
+    end
+end
+
+-- One flush per window, once the events that feed it have had time to arrive.
+local function Schedule()
+    if queued then return end
+    queued = true
+    C_Timer.After(C.XP_FLUSH_DELAY, Flush)
+end
+
+-- Booking a flush AND stamping the evidence, which is what lets the flush tell
+-- "the xp has not caught up yet" from "the xp is never coming". Everything that
+-- records evidence goes through here rather than calling Schedule directly.
+local function Noted(what)
+    evidenceAt = GetTime()
+    if db.xpDebug then Print(format("|cff808080xp: noted %s|r", what)) end
+    Schedule()
+end
+
+-- PLAYER_XP_UPDATE. The number is read at the flush, not here, so the event has
+-- nothing left to do but book one.
+ReportXPGain = Schedule
+
+-- CHAT_MSG_COMBAT_XP_GAIN. Collected rather than sent: the amount on the line is
+-- only a share until the tick's total is known.
+NoteXPGainLine = function(msg)
+    if type(msg) ~= "string" then return end
+    if not InTaggerMode() or not db.carry then return end
+    local p = KillPattern()
+    if not p then return end
+    local _, amount = strmatch(msg, p)
+    amount = tonumber(amount)
+    if not amount or amount <= 0 then return end
+    batch[#batch + 1] = amount
+    Noted("kill line")
+end
+
+-- A quest's name, from whichever of these this client actually has. Guarded one
+-- member at a time: it ships C_QuestLog without all of C_QuestLog.
+--
+-- GetTitleText is NOT in here. It reads whatever frame happens to be open, which
+-- is right at a turn-in and a stale lie at an auto-accepted quest, so it stays at
+-- the one call site that can vouch for it.
+local function QuestTitle(questID, logIndex)
+    local title
+    if questID and C_QuestLog and C_QuestLog.GetTitleForQuestID then
+        title = C_QuestLog.GetTitleForQuestID(questID)
+    end
+    if (not title or title == "") and logIndex and GetQuestLogTitle then
+        title = GetQuestLogTitle(logIndex)
+    end
+    return (title and title ~= "") and title or nil
+end
+
+-- QUEST_TURNED_IN. Held for the flush rather than sent from here, so one tick's
+-- xp is classified once against the field update - the only number that knows
+-- what actually landed. Two turn-ins in a frame add up rather than overwrite.
+NoteQuestTurnIn = function(questID, xpReward)
+    if not InTaggerMode() or not db.carry then return end
+    questXP = (questXP or 0) + (tonumber(xpReward) or 0)
+    if questID then turnedIn[questID] = true end
+
+    -- The quest frame is still open at a turn-in, so GetTitleText is honest here
+    -- and it has been in the API since vanilla - worth having as the last resort,
+    -- since the reward has already been counted and only the name is missing.
+    local title = QuestTitle(questID)
+    if not title and GetTitleText then
+        title = GetTitleText()
+        if title == "" then title = nil end
+    end
+    if title then questName = title end
+
+    Noted("quest turn-in")
+end
+
+-- QUEST_ACCEPTED. Sent straight out: no xp changes hands here, so there is
+-- nothing for the flush to classify. Signature is (questLogIndex, questID) on
+-- this client - the id is the SECOND argument, not the first.
+--
+-- Nameless goes unsent. "Accepted a quest" tells the carry nothing they can act
+-- on, and a wrong name is worse than no line at all.
+NoteQuestAccepted = function(logIndex, questID)
+    if not InTaggerMode() or not db.carry then return end
+    local title = QuestTitle(questID, logIndex)
+    if title then SendAddon("QACC:" .. title, db.carry) end
+end
+
+-- QUEST_REMOVED, which fires for a hand-in and an abandon ALIKE and does not say
+-- which. Worse, it can arrive BEFORE the QUEST_TURNED_IN for the same quest, so
+-- "have we seen a turn-in yet" is not answerable at the moment it fires. Both
+-- facts were read off Questie, which runs on this client.
+--
+-- So: wait out the grace period, and if no turn-in has claimed the id by then, it
+-- was abandoned. The title is read NOW rather than in the callback, while the
+-- client still has the quest to be asked about.
+NoteQuestRemoved = function(questID)
+    if not questID then return end
+    if not InTaggerMode() or not db.carry then return end
+
+    local title = QuestTitle(questID)
+    if not title then return end   -- nameless goes unsent, same rule as QACC
+
+    C_Timer.After(C.ABANDON_GRACE, function()
+        -- Cleared whether or not it fires, so the set cannot accumulate ids.
+        local handedIn = turnedIn[questID]
+        turnedIn[questID] = nil
+        if handedIn then return end
+        if InTaggerMode() and db.carry then SendAddon("QDROP:" .. title, db.carry) end
+    end)
+end
+
+-- A zone discovery, announcing itself. This is the ONLY thing that earns the
+-- discovery label - see the rule at the top of Flush. It carries no xp of its own
+-- to send, it just tells the flush what this tick was.
+NoteDiscovery = function()
+    discovered = true
+    Noted("discovery")
+end
+
+-- Tagger side: how much rested the pool still holds, as a PERCENTAGE of this
+-- level's xp. The raw number GetXPExhaustion returns is meaningless to the carry
+-- without knowing how big the level is, and the level is the tagger's, not
+-- theirs. Nil from it means not rested at all; the pool can exceed 100%, since it
+-- caps at a level and a half.
+local function RestedPct()
+    if not GetXPExhaustion then return 0 end      -- guarded on its own, as ever
+    local pool = GetXPExhaustion()
+    local need = UnitXPMax("player") or 0
+    if not pool or pool <= 0 or need <= 0 then return 0 end
+    return pool / need * 100
+end
+
+-- Sent on a change worth hearing about rather than on every kill. Crossing into
+-- or out of rested is always worth it: that is the flag the carry's estimate
+-- turns on, and crossing DOWN is "they used it up". Otherwise it waits for
+-- REST_STEP of drift, so a full pool costs about fifteen messages as it drains
+-- rather than one per mob.
+--
+-- force is the handshake and the ding, where the carry needs a number regardless
+-- of what we last sent - they may have just logged in with none of this.
+ReportRested = function(force)
+    if not InTaggerMode() or not db.carry then return end
+
+    local pct = RestedPct()
+    if not force and lastRest then
+        local crossed = (pct > 0) ~= (lastRest > 0)
+        local moved = pct - lastRest
+        if moved < 0 then moved = -moved end
+        if not crossed and moved < C.REST_STEP then return end
+    end
+
+    lastRest = pct
+    SendAddon(format("REST:%.1f", pct), db.carry)
+end
+
+end
+
+-- PLAYER_LEVEL_UP, tagger side. The carry has no way to learn this on their own
+-- while we are out of range - their level cache only moves when they can see us
+-- on a unit token - and that cache is what every XP estimate is measured against.
+--
+-- arg1 is the new level. UnitLevel has not necessarily caught up when this fires,
+-- so it is only the fallback.
+local function ReportLevelUp(newLevel)
+    if not InTaggerMode() or not db.carry then return end
+    newLevel = tonumber(newLevel) or UnitLevel("player")
+    if newLevel and newLevel > 0 then SendAddon("LEVEL:" .. newLevel, db.carry) end
+    -- The pool is a percentage of the level, and the level just changed, so the
+    -- number they hold is stale the instant this fires. Forced for that reason.
+    if ReportRested then ReportRested(true) end
+end
+
+-- The yellow text in the middle of the screen, by TYPE rather than by text.
+--
+-- UI_INFO_MESSAGE carries every one of those messages - loot method changes,
+-- party notices, duel results - so something has to sort them. GetGameMessageInfo
+-- turns the numeric type into the NAME of the global string behind it, which
+-- makes this filter locale-proof and needs no pattern at all: no escaping, no
+-- format specifiers, nothing to go stale in a language we did not test.
+--
+-- The set is Questie's, which does exactly this on this same client.
+-- ERR_QUEST_COMPLETE_S is deliberately absent - a finished quest already reports
+-- itself when it is handed in, as XPQ.
+C.QUEST_PROGRESS = {
+    ERR_QUEST_ADD_KILL_SII         = true,
+    ERR_QUEST_ADD_FOUND_SII        = true,
+    ERR_QUEST_ADD_ITEM_SII         = true,
+    ERR_QUEST_ADD_PLAYER_KILL_SII  = true,
+    ERR_QUEST_OBJECTIVE_COMPLETE_S = true,
+    ERR_QUEST_UNKNOWN_COMPLETE     = true,
+    ERR_QUEST_FAILED_S             = true,
+}
+
+-- Exploring is the one xp source that announces itself in this same yellow text,
+-- which is what lets the flush label a discovery on POSITIVE evidence instead of
+-- inferring it from a missing kill line. If neither name is what this client
+-- calls it, nothing is ever flagged and discovery xp reports as a plain kill -
+-- which is exactly what it did before the label existed, and is the safe way to
+-- be wrong.
+C.DISCOVERY_INFO = {
+    ERR_ZONE_EXPLORED_XP = true,
+    ERR_ZONE_EXPLORED    = true,
+}
+
+-- UI_INFO_MESSAGE, tagger side. Quest progress is forwarded verbatim: the client
+-- that produced it has already formatted and localised it, and re-deriving it
+-- here could only make it worse.
+local function ReportInfoMessage(errorType, message)
+    if not InTaggerMode() or not db.carry then return end
+    if not GetGameMessageInfo then return end   -- guarded on its own, as ever
+    local kind = GetGameMessageInfo(errorType)
+
+    -- Nothing to send, and deliberately checked before the text is: this one is
+    -- read for its TYPE alone, and the flush needs it before it classifies.
+    if C.DISCOVERY_INFO[kind] then NoteDiscovery(); return end
+
+    if type(message) ~= "string" or message == "" then return end
+    if not C.QUEST_PROGRESS[kind] then return end
+    SendAddon("QPROG:" .. message, db.carry)
 end
 
 --------------------------------------------------------------------------------
@@ -2548,6 +3436,12 @@ frame:RegisterEvent("PLAYER_REGEN_DISABLED")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_XP_UPDATE")
+frame:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN")
+frame:RegisterEvent("QUEST_TURNED_IN")
+frame:RegisterEvent("QUEST_ACCEPTED")
+frame:RegisterEvent("QUEST_REMOVED")
+frame:RegisterEvent("UI_INFO_MESSAGE")
+frame:RegisterEvent("PLAYER_LEVEL_UP")
 frame:RegisterEvent("UNIT_PET")
 
 -- Events that keep running while suspended. Everything else - the combat log,
@@ -2579,6 +3473,18 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if arg1 == C.ADDON_PREFIX then OnAddonMessage(arg2, arg4) end
     elseif event == "PLAYER_XP_UPDATE" then
         ReportXPGain()
+    elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
+        NoteXPGainLine(arg1)
+    elseif event == "QUEST_TURNED_IN" then
+        NoteQuestTurnIn(arg1, arg2)
+    elseif event == "QUEST_ACCEPTED" then
+        NoteQuestAccepted(arg1, arg2)
+    elseif event == "QUEST_REMOVED" then
+        NoteQuestRemoved(arg1)
+    elseif event == "UI_INFO_MESSAGE" then
+        ReportInfoMessage(arg1, arg2)
+    elseif event == "PLAYER_LEVEL_UP" then
+        ReportLevelUp(arg1)
     elseif event == "UNIT_PET" then
         OnPetChanged(arg1)
     elseif event == "NAME_PLATE_UNIT_ADDED" then
@@ -2638,6 +3544,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.audio       == nil then db.audio       = true end
         if db.sound       == nil then db.sound       = true end
         if db.announce    == nil then db.announce    = true end
+        if db.questNotices == nil then db.questNotices = true end
         if db.missAlert   == nil then db.missAlert   = true end
         if db.markers     == nil then db.markers     = true end
         if db.stealWarning == nil then db.stealWarning = true end

@@ -117,7 +117,8 @@ same way — `Pets`.
 4. Mob worth — `IsGrey`, `IsBanned`, `IsWorthless`. Pure predicates over cached
    state, cheap enough for the 4 Hz repaint ticker.
 5. Nameplate badges and the threshold stamp.
-6. Screen-space death float (pooled marks).
+6. Screen-space floats (one pooled set): the death burst, and the quest-progress
+   notice above it. `LaunchMark` is the shared flight path.
 7. Sounds, XP estimate, party logistics.
 8. Addon comms.
 9. Events, then slash commands.
@@ -269,12 +270,138 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `HELLO` / `HI` | either | Silent handshake, sent 5 s after login to re-verify saved links. |
 | `INV` | either | Ask the other end to invite *us*. Sent by the carry's out-of-range check and by `/tag inv` from either side. **Only honoured from an established pair.** |
 | `THRESH:<n>` | either | New tag threshold, pushed by `/tag threshold`. Applied silently, **partners only**. Not relayed onward. |
-| `XP:<n>` | tagger → carry | Real XP from `UnitXP` deltas. `0` means max level. |
+| `XP:<n>` | tagger → carry | Real XP from a **kill**, read off `UnitXP`. **One message per mob, not per event** — see the tick-splitting note under XP estimate. `0` means max level. |
+| `XPQ:<n>:<title>` | tagger → carry | Quest turn-in. Title may be empty. Printed, tallied in `state.offTagXP`, and claims **no** pending kill. |
+| `XPD:<n>` | tagger → carry | Zone discovery. Same handling as `XPQ`. |
+| `QACC:<title>` | tagger → carry | Quest accepted. No XP rides on it and nothing is tallied — it prints and plays the accept fanfare. **Partners only**, and never sent without a title. |
+| `QDROP:<title>` | tagger → carry | Quest abandoned. Same handling, **no cue** — see the `QUEST_REMOVED` note below for why it arrives a second late. |
+| `QPROG:<text>` | tagger → carry | An objective ticking over — the yellow centre-screen text, forwarded verbatim. **Partners only**, no cue. Printing is gated on the receiver's `db.questNotices` (`/tag quests`), as are `QACC` and `QDROP`. |
+| `REST:<pct>` | tagger → carry | Rested pool left, as a **percentage of their level's XP** (`0` = none). Feeds `state.taggerRested` and so `RestedFactor`. **Partners only** — it decides whether every estimate doubles. Pushed on the crossings, every `C.REST_STEP` of drift, and forced at the handshake and on a ding. |
+| `LEVEL:<n>` | tagger → carry | They dinged. Feeds `NoteTaggerLevel` and plays `C.DING_CUE`. **Partners only** — it writes the number every XP estimate is measured against. |
 | `PET:<name>` | either | Our own pet, by name. Empty name clears. **Partners only** — it writes into damage accounting. Sent on `UNIT_PET`, at login, and on every link established or re-verified; broadcasts are deduped against the last one sent, direct sends are not. |
 
 `db.linked` persists so a `/reload` does not silently drop back to visible
 whispers. A saved link proves they *had* the addon, not that they are listening —
 so a direct `INV` falls back to a readable whisper after 8 s if no invite lands.
+
+**Cues that are not in the pull.** `C.DING_CUE`, `C.QUEST_FILES` and
+`C.QUEST_CUE` go through `PlayCue` like everything else, so they respect the
+`db.audio` master mute. `PlayCue` takes a **table** of candidate paths as well as
+a single one — the first that this client actually has wins, and `PlaySoundFile`
+returning false is what says so — and it plays the id only `if id`, so a cue with
+no key on this client is **silent rather than wrong**. A made-up id does not
+fail; it plays some unrelated noise.
+
+`SOUNDKIT.LEVELUP` is verified: the addon already uses it as the fallback
+threshold cue. It does not collide with that in practice, because `PlayCue`
+prefers a file and `db.soundFile` defaults to WeakAuras' Brass.
+
+**Accepting a quest makes two sounds, and only one of them means "accepted".**
+The quest log's paper page-turn comes first, then the drums-and-horns fanfare.
+`SOUNDKIT.IG_QUEST_LIST_OPEN` is the **page-turn** — this cue shipped as that by
+mistake, and it sounded wrong because it *was* wrong. The fanfare is engine-side
+and no exposed SOUNDKIT key on this client is it, so it comes from
+`C.QUEST_FILES` by path instead. The page-turn id stays as the last resort
+precisely because it is recognisable: **if you hear paper instead of horns, every
+path in the list missed.** Verify a path in game — it prints true or false:
+
+```
+/run print(PlaySoundFile([[Sound\Interface\iQuestActivate.ogg]]))
+```
+
+**Confirmed in game: this client resolves `Sound\Interface\` paths, and
+`iQuestActivate.ogg` is the accept fanfare.** That settles the open question from
+when `C.QUEST_FILES` was written, and it is why `C.QUEST_DONE_FILES`
+(`iQuestComplete.ogg`, played on `XPQ`) was built the same way rather than hunted
+for as a SOUNDKIT key. Its backstop is `IG_QUEST_LIST_COMPLETE` rather than the
+page-turn: a completion cue that lands on the wrong sound should at least be a
+completion sound.
+
+The completion cue is **not** gated on `db.questNotices`. That toggle is for the
+running commentary on the tagger's quest log; `XPQ` is an XP report, which is the
+addon's whole job.
+
+**`QUEST_REMOVED` cannot tell a hand-in from an abandon**, and it can arrive
+*before* the `QUEST_TURNED_IN` that would have distinguished them — both facts
+read off `Questie`, which runs on this client. So a removal waits
+`C.ABANDON_GRACE` (1 s, the same figure Questie uses) and only counts as
+abandoned if no turn-in has claimed the id by then. `turnedIn` is keyed by quest
+id and cleared in that callback whether or not it fires, so it cannot accumulate.
+The title is read **at the removal, not in the callback**, while the client still
+has the quest to be asked about.
+
+**Filter the yellow centre-screen text by TYPE, never by its words.**
+`UI_INFO_MESSAGE(errorType, message)` carries *every* one of those messages —
+loot method changes, party notices, duel results — so `QPROG` has to sort them.
+`GetGameMessageInfo(errorType)` returns the **name of the global string** behind
+the type (`"ERR_QUEST_ADD_KILL_SII"`), so `C.QUEST_PROGRESS` is a plain set
+lookup on that name: locale-proof for free, with no pattern to build, nothing to
+escape, and no format specifiers to go stale in a language nobody tested. This is
+the one place in the file where a localised string did **not** need the
+escape-then-reopen treatment, and the reason is worth remembering.
+
+The set is `Questie`'s, which does exactly this on this same client.
+`ERR_QUEST_COMPLETE_S` is deliberately **absent**: a finished quest already
+announces itself when it is handed in, as `XPQ`.
+
+The text is forwarded **verbatim**. The client that produced it has already
+formatted and localised it, so rebuilding it on the carry could only make it
+worse — and the carry may not even share the tagger's locale.
+
+**One pool, two kinds of float, one flight path.** The death burst and the
+quest-progress notice share `state.markPool` — frames cannot be destroyed in WoW,
+so everything that floats is pooled — and both go up through `LaunchMark`, which
+owns the rise, the hold and the fade. That sharing is the point: "the same
+fashion" is a requirement, and two copies of the cadence would drift.
+
+Consequences worth knowing before touching either:
+
+- **The label is re-anchored per spawn, not once at creation.** The burst hangs
+  it under the icon; the quest float centres it on the frame and clears the
+  texture. A pooled frame arrives in whatever state the last spawn left it, so
+  both paths set it explicitly. Same reasoning as the texture already had.
+- **The three timing constants are read together.** `FLOAT_FADE_DELAY` is the
+  OPAQUE hold, and the fade runs for `FLOAT_DURATION - FLOAT_FADE_DELAY`. So
+  lengthening a float means lengthening the *hold* and leaving the fade alone —
+  stretching the fade instead just leaves text half-there for longer. And
+  `FLOAT_RISE / FLOAT_DURATION` is the drift speed, so raising the duration on
+  its own slows everything whether you meant it or not; `RISE` moves with it
+  when you did not.
+- **Heights are derived, not typed twice.** `C.QUEST_FLOAT_RISE` is
+  `MARK_RISE + MARK_SIZE + 24`, so it stays clear of the burst if the burst is
+  ever resized or moved.
+- **The stagger exists because objectives tick together.** Two in one instant
+  would land on the same pixel and read as one smeared line, so each takes the
+  next of `C.QUEST_FLOAT_ROWS` slots. The row resets once the previous float has
+  cleared, so an ordinary trickle always uses the first slot.
+- Yellow (1, 1, 0), deliberately not the XP text's gold (1, 0.86, 0.3): they
+  share a flight path a line apart, and near-identical colours read as one notice.
+- It is **cosmetic**, so it runs last in the handler and behind `SafeCall` — a
+  fault in the float must not take the chat line with it.
+
+Measuring `UIParent` is fine, and is what both floats do. The restriction that
+matters is on nameplates and anything parented to them.
+
+**Three colours in one float, from one FontString.** The label is a single
+FontString, so the only way to colour parts of it differently is inline
+`|cAARRGGBB … |r` runs, which a FontString honours regardless of what
+`SetTextColor` set. Two things follow, and both are load-bearing:
+
+- `|r` reverts to the **base** colour, which `SpawnQuestFloat` has already set to
+  yellow — not to white. So only the runs that differ need escaping, and the
+  sentence between them needs nothing.
+- `TaggerName` returns the name **bare** when the class is unknown, rather than
+  wrapping it in the yellow it would have been anyway. An uncoloured name reads
+  fine; a guessed colour is just wrong.
+
+The class is cached in `SampleTrackedLevel`, which is the only place the addon
+ever holds a unit token for a tagger. It costs one `UnitClass` call on a path
+that already had the token, is written once (a character's class never changes),
+and saves into `db.taggers[key].class`. Before it is learned — a fresh pair who
+have not been in sight yet — the name simply comes out yellow.
+
+`C.HEX_XP` is the epic-item purple, not the XP bar's own `(0.58, 0, 0.55)`, which
+is dark enough to vanish against a night sky.
 
 ## Suspending in dungeons and raids
 
@@ -296,6 +423,7 @@ This is not politeness. In a dungeon the carry and tagger are necessarily
 grouped, so the tag is worth almost nothing, and `CheckAutoLeave` would try to
 drop the party mid-run while `CheckContact` whispered for an invite.
 
+
 ## XP estimate
 
 Formula verified against warcraft.wiki.gg, not memory. Base is
@@ -314,22 +442,175 @@ which has meant 530 = Outland since the Burning Crusade shipped; that is checked
 first, and it also answers before the map system is ready. The parent-map walk
 stays as the fallback for Outland instances, which report their own id.
 
+**One session total, never two.** `/tag` and `/tag xp` print the *confirmed*
+total the moment `state.reportedKills > 0`, and stop printing the estimate
+entirely — not beside it, not in brackets. Two totals for one session invites
+reading the wrong one, and the estimate is the wrong one. `state.sessionXP` keeps
+accumulating either way, because `/tag calibrate` and the pairing line still need
+it; it is only the *display* that goes.
+
+The pairing line (`expected N, actual M, 1.02x`) still shows both, and that is a
+different job: it is the one place the contrast is the point, and it is how a
+stale cached level gets caught.
+
 **When an estimate looks wrong, suspect the cached tagger level before the
 formula.** One stale level applies a phantom penalty worth ~6% per level gap,
 which reads exactly like a broken constant. Validated in-game: a level 62 Outland
 mob at no level gap paid 544 against a predicted 545.
 
-Rested (2×) and group splits are invisible to an addon, so the number is always
-labelled an estimate. A linked tagger's reported XP is authoritative and should be
-preferred wherever both exist.
+**`NoteTaggerLevel` is the only place that number moves**, and two things reach
+it. `SampleTrackedLevel` reads `UnitLevel` off a unit token, which needs them in
+front of you; a linked tagger also sends `LEVEL:<n>` from `PLAYER_LEVEL_UP`,
+which is the only path that survives them being out of range. Use `arg1` there —
+`UnitLevel("player")` has not necessarily caught up when that event fires.
 
-**One chat line per kill.** A missed mob still pays the tagger — the tap decides
-that, not the damage share — so the `MISSED` alert and the `XP:<n>` report that
-follows describe the same kill. The report is a whisper from the other client and
-lands a beat later, so the chat line waits `MISS_LOG_DELAY` for it and prints the
-combined version; `kill.logged` is the flag both paths check, so whichever gets
-there first wins and the other stays quiet. The miss **sound and X burst are not
-deferred** — they are the alert, the chat line is only the log.
+The `LEVEL` handler plays `C.DING_CUE` whether or not the number moved, and
+prints only when it did. The message is sent once per ding, so a token scan that
+happened to see them first must not swallow the cue — but it must not print the
+line twice either.
+
+`PLAYER_LEVEL_UP` is **not** in `SUSPEND_EXEMPT`, so a ding inside a dungeon goes
+unannounced. That is deliberate and it costs nothing lasting: the level is
+re-sampled the moment they are visible again, so the estimate self-heals; only
+the notification is lost, which is what suspension means everywhere else.
+
+Group splits are invisible to an addon, so the number is always labelled an
+estimate. A linked tagger's reported XP is authoritative and should be preferred
+wherever both exist.
+
+**Rested is no longer invisible, because the tagger tells us.** `GetXPExhaustion`
+is on their client, not ours, so it arrives as `REST:<pct>` and lands in
+`state.taggerRested`; `RestedFactor()` turns that into the ×2 and it goes into
+the estimate **before** `db.xpScale`. The point is not decoration: a rested kill
+used to print `2.00x`, and the multiplier exists to surface what the formula
+*cannot* see. Anything we can see belongs in the estimate instead, or the one
+number worth reading becomes noise.
+
+- The percentage is **of that level's XP**, not the raw pool. The raw number is
+  meaningless to the carry, who does not know how big the tagger's level is. It
+  can exceed 100% — the pool caps at a level and a half.
+- **All-or-nothing per kill**, deliberately. The pool can run dry mid-kill and
+  pay somewhere between 1× and 2×; pricing that needs the pool size at the
+  instant the mob died, which is on the other client and a message behind.
+- `kill.rested` is **pinned at queue time**, like `need`, because the pool can
+  empty between the kill and the report coming back.
+- It goes into `state.lastRawXP` too, so `/tag calibrate` does not read a rested
+  kill as a scale of 2. `lastXPInfo` says `rested x2` when it applied.
+- `RestedFactor` doubles if **any** tagger is rested. Damage pools against one
+  threshold but XP does not, so with several taggers that is a guess — the same
+  simplification `LowestTaggerLevel` already makes.
+- The `(x2)` on the report line is **light blue**, and marks an expectation that
+  has already had rested folded in. A ~1.00x beside it means the estimate was
+  right, not that the bonus went missing.
+
+`REST` is not sent per kill even though the pool drains on every one. It goes out
+on the crossings — into rested, and out of it, which is the "they used it up"
+report — and otherwise only after `C.REST_STEP` of drift. A full pool costs about
+sixteen messages over the ~90 kills it takes to drain. The handshake and a ding
+force one regardless: the carry may have just logged in with none of this, and a
+ding changes the size of the level the percentage is measured against.
+
+**There is no separate `MISSED` line any more.** The kill line carries the X icon
+and *is* the miss notice — `LogMiss`, `kill.logged` and `MISS_LOG_DELAY` are all
+gone with it. A missed mob still pays the tagger, since the tap decides that and
+not the damage share, so a miss is a footnote on a line about XP rather than an
+announcement of its own.
+
+The consequence to know: **a miss says nothing in chat until the report that
+prices it arrives**, and with nobody linked it says nothing at all. The sound
+still fires the instant the mob dies — that one is the alert and has to be
+immediate — and the float still draws the X with the share. Only the chat line
+waits.
+
+`db.announce` was the toggle on that old MISSED line, so it would have become a
+switch that switched nothing. It gates `PrintKillLine` now, which is what the
+per-kill chat announcement actually *is* today.
+
+**One kill line, and BOTH ends print it.** `PrintKillLine` is shared: the carry
+builds it from the tagger's `XP:<n>`, the tagger builds it from its own flush via
+`ReportOwnKill`. Sharing the function is the whole point — two formatters for one
+kill drift, and then the pair are looking at different sentences describing the
+same mob.
+
+```
+Wallhackmage gained 860 of 1070 XP (x2), 37.2% damage = 80% XP [X icon]
+```
+
+- `nameTag` arrives **already coloured**, because it is the only part that
+  differs between the two ends: the tagger's class colour on the carry, a green
+  `You` on the tagger. Everything downstream of that is identical.
+- Both XP figures are purple (`C.HEX_XP`), the share white (`C.HEX_SHARE`), the
+  `(x2)` blue (`C.HEX_RESTED`).
+- **The ratio's colour is the only judgement on the line.** Everything else is a
+  fact, so nothing else changes colour. `RatioHex` runs red at or below
+  `C.RATIO_FLOOR`, through yellow, to green at 100% — a ratio is the one number
+  there you want to read the health of without reading.
+- The miss mark is `C.X_ICON`, the **texture** rather than a letter: it is the
+  same mark the float draws, so the two read as one thing seen twice. The `:0`
+  in the escape sizes it to the line's font instead of to a guessed pixel height,
+  which is what keeps it aligned if the chat font ever changes.
+- It is gated on `db.announce` — see the note above on why the toggle moved here.
+
+**`RestedFactor` reads `GetXPExhaustion` directly in tagger mode.** The pool is
+our own there and needs no message to reach us. Without that branch the tagger
+would price its own kills undoubled while the carry priced the same kills
+doubled, and the two ends would disagree on every rested kill — exactly what
+sharing the formatter is meant to prevent.
+
+`C.SELF_KEY` is `"\1self"` because claims are keyed per tagger and this one is
+us; a control character is a key no character name can ever normalize to.
+
+**One float per kill, and it waits too.** `kill.floated` is checked by both the
+`FLOAT_WAIT` timer and the arriving report, and whichever lands first draws. Drawing at the moment of
+death meant the centre of the screen could only ever show our *estimate*, when a
+linked tagger's real figure is a fraction of a second behind it — and the centre
+of the screen is the one place worth spending that fraction on.
+
+- `FloatKillSoon` defers only when `ReportComing()` — comms on **and** somebody
+  who has actually talked to us. With nobody linked there is nothing to wait for,
+  so it draws immediately with the estimate. `ReportComing` replaced a bare
+  `next(linked)` on the old MISSED line too, which had been sitting on a timer
+  waiting for a report that comms being off guaranteed would never come.
+- **A linked KILL has no timeout at all.** Not "a timeout that draws the
+  estimate" — none. There are exactly two things a timeout could put up and both
+  are wrong: the estimate is the number the link exists to replace, and a
+  checkmark with nothing on it is worse than no checkmark (it shipped that way
+  briefly and read as a bug). So a kill does not appear until the report does,
+  and if the report never comes it does not appear — the chat line still says
+  what happened. **No float is a valid outcome; a blank one never is.**
+- **A linked MISS keeps its timeout**, because it has something honest to draw
+  without a report: the damage share, which is measured on our end, not theirs.
+  Dropping it would silently lose the X on every miss the tagger never tapped —
+  no report is ever coming for those, so "wait for it" would mean "never show
+  it". `kill.awaited` marks that path so the estimate stays suppressed while the
+  share still prints.
+- `~545 XP` therefore only ever appears with nobody linked at all; `+1090 XP` is
+  theirs, and the tilde is the whole distinction.
+- The **share** is ours and always known, so a miss shows `(22%)` on its own when
+  there is no XP to put beside it. It is parenthesised and **white**
+  (`C.HEX_SHARE`) rather than taking the X's red: the X is the verdict, the share
+  is the evidence behind it, and they read better as two things than one.
+- **The decimal is conditional.** `(22%)` for a miss that was never close;
+  `(37.6%)` only within a point of `kill.need`, where the gap between it and the
+  threshold *is* the story. Precision nobody can act on is just noise at a
+  glance, and the chat line keeps its full tenth regardless.
+- **`(x2)` is the checkmark's alone.** It says the number in front of it already
+  has rested folded in, which is worth knowing about XP you earned; on an X the
+  number that matters is how close they came, and a second parenthetical only
+  competes with it. `C.HEX_RESTED` is one constant shared with the chat line so
+  the two cannot drift, and it shows on the `~estimate` too, which has rested
+  folded in the same way.
+- Greys never wait: nothing pays, and no report can ever arrive for one.
+- `C.FLOAT_WAIT` is deliberately short. A chat line arriving late still reads as a
+  log; a number that appears a beat after the mob dies reads as broken.
+
+**The miss float carries the share, reversing an earlier call.** It was a bare X
+on the reasoning that most misses are incidental — the tagger clipping something
+you were killing anyway — so the share they happened to reach decided nothing.
+That is still true of those misses. It is also true that the ones that were real
+attempts are the ones worth reading, and the two are indistinguishable without
+the number, which is the argument that won. The buzz is still the alert either
+way, and the chat line is unchanged.
 
 Missed kills are queued for pairing like tagged ones. Leaving them out was
 mispairing: the report would arrive, find no entry of its own, and claim the next
@@ -337,6 +618,143 @@ tagged kill's. Greys stay unqueued, because they pay nothing and no report can
 ever arrive to pair with, so the entry would sit waiting for a real report to
 claim by mistake. Missed kills are also kept out of `matchedEst`/`matchedXP` —
 their estimate assumes a full tag they never made.
+
+**One report per mob, and `PLAYER_XP_UPDATE` cannot give you that.** The server
+batches the player's xp field, so a tick that kills three mobs fires the event
+**once**, carrying the sum of all three. Reporting that delta as one message made
+the carry claim one pending kill and print a single mob paying 3.00x, while the
+other two sat unclaimed until they expired. `CHAT_MSG_COMBAT_XP_GAIN` is not
+batched — one line per mob — so the lines supply the split and `UnitXP` stays the
+authority on the total, with each share scaled onto the real delta so the parts
+still sum to it. All of it is read late, through one
+`C_Timer.After(C.XP_FLUSH_DELAY)` flush, because the pieces of a single tick
+arrive in an order that is not ours to choose — see the window note below.
+
+**The flush window is 0.25 s, and evidence outlives an empty flush.** The events
+that make up one tick — the per-mob chat lines, the experience field update, and
+`QUEST_TURNED_IN` — do **not** reliably share a frame, and they can land in
+*either order*. Both directions have now been fixed, and they needed different
+fixes:
+
+- **Evidence arriving late** is what `C.XP_FLUSH_DELAY` is for. A kill whose chat
+  line landed after a one-frame flush got reported unlabelled.
+- **Evidence arriving EARLY** is the subtler one, and it caused a hand-in to be
+  reported as a kill — the carry printed `gained 9000 XP (actual)` for a quest.
+  `QUEST_TURNED_IN` fired, the flush ran while the experience bar had **not yet
+  moved**, and the old code cleared `batch`/`questXP` *before* testing `gained`.
+  The evidence was gone by the time the xp it explained arrived a moment later.
+
+  A flush that finds no gain therefore **keeps** what it holds, and clears only
+  once there is a gain to spend it on. `C.XP_EVIDENCE_TTL` ages it out if the xp
+  never comes at all — a turn-in at max level would otherwise sit there and claim
+  the next kill.
+
+Widening the window does nothing for the early case: the flush still fires before
+the xp lands, it just fires later. That is why both exist.
+
+`Noted()` — not `Schedule()` — is what every evidence recorder calls, because it
+stamps `evidenceAt` as well as booking the flush. Adding a new evidence source
+means calling `Noted`, or the TTL cannot see it.
+
+**`/tag xpdebug`, run on the tagger**, prints each scrap as it lands and every
+flush with what it had in hand. The ordering is not inferable after the fact, and
+guessing at it cost two wrong fixes; use this before theorising about a third.
+
+Being generous with the window costs nothing: merging two adjacent server ticks
+into one flush is **harmless**, because the split is proportional to the per-mob
+amounts and the field update covers every one of them, so the arithmetic holds
+either way. It is short enough that a report still feels attached to the kill
+that caused it.
+
+**`questXP` is tested for nil, never for a positive amount.** It becomes a number
+the instant a turn-in is noted, so nil-vs-number is what records "a turn-in
+happened in this tick". The *evidence* is `QUEST_TURNED_IN` firing — not the size
+of the reward it carried. A client that reports no reward, or a zero one, must
+not silently demote the quest back to a kill, so when the reward is unknown and
+nothing died, the whole gain is the quest's.
+
+The one case that still cannot be split is an unknown reward arriving in the same
+tick as a kill: with no amount to take off the top, it falls through to a plain
+kill report. That is the old behaviour, and the safe direction to be wrong in.
+
+The pattern is built from `COMBATLOG_XPGAIN_FIRSTPERSON` the way `OwnerPatterns`
+builds its own, and is deliberately **not** anchored at the end — the group, raid
+and rested variants extend that sentence rather than rewriting it. A locale that
+orders the name and the number the other way round, or uses positional
+specifiers, converts to nothing and falls back to the single lump sum. Quest xp
+has no mob in its line, so it never matches and never enters a split.
+
+**Labelling where the xp came from.** This expansion pays xp three ways — kills,
+quest turn-ins and zone discoveries — and only the first has anything to do with
+tagging. Before, all three were relayed as `XP:<n>`, so a turn-in on the way to
+the pull claimed a pending kill and printed a wild multiplier against it. The
+flush now classifies the whole tick before it sends anything:
+
+- Any kill lines → kills, split as above, `XP:<n>` each.
+- A `QUEST_TURNED_IN` this frame → `XPQ:<n>:<title>`, taken **off the top** of
+  the delta so a turn-in landing in the same tick as a kill does not inflate the
+  mob's report. Args are `(questID, xpReward, moneyReward)`.
+- An `ERR_ZONE_EXPLORED*` info message this frame → `XPD:<n>`. Positive evidence
+  only; see the elimination rule below.
+- **None of the above → `XP:<n>`, unlabelled.** The safe default, and the one
+  this had before any labelling existed.
+
+**Quest titles, and the two events' different argument orders.** The ids arrive
+in *different positions* in the two events on this client, which is the kind of
+thing that silently reports the wrong quest forever:
+
+| Event | Signature |
+|---|---|
+| `QUEST_TURNED_IN` | `(questID, xpReward, moneyReward)` — id **first** |
+| `QUEST_ACCEPTED` | `(questLogIndex, questID)` — id **second** |
+
+Both were read off `Questie`, which runs on this client, rather than from retail
+docs where `QUEST_ACCEPTED` carries only the id.
+
+`QuestTitle` resolves a name through `C_QuestLog.GetTitleForQuestID` and then
+`GetQuestLogTitle`, each guarded on its own. **`GetTitleText` is deliberately not
+in it**: it reads whatever frame is open, which is honest at a turn-in — the
+quest frame is still up — and a stale lie for a quest accepted any other way, so
+it stays inline at the turn-in call site. A turn-in with no name still sends, and
+says "by completing a quest"; the reward is the point and it has already been
+counted. A `QACC` with no name is **not** sent at all — the name is the entire
+message, and a wrong one is worse than silence.
+
+**Never label XP by elimination. Every label needs positive evidence.** This is
+the most important rule in the section, and it is here because breaking it
+shipped a bug: discovery was once inferred from "no kill line this tick", which
+misreported real kills as discoveries at random. Two independent things empty the
+batch on a genuine kill, and neither is rare:
+
+- **A kill's own XP line can arrive with no mob name in it.**
+  `COMBATLOG_XPGAIN_FIRSTPERSON_UNNAMED` — `"You gain %d experience."` — is a
+  *mob-death* string on this client, not just a quest one.
+  `NovaInstanceTracker` lists it among its "only strings that are mob died
+  related, no quest xp" set. It cannot match a pattern that requires a name, so
+  the batch stays empty and the kill looked like a discovery.
+- **The chat line and the field update need not share a frame.** They are
+  separate packets. The one-frame `C_Timer.After(0)` flush catches them together
+  almost always — but "almost" was doing load-bearing work in a branch that
+  treated silence as proof.
+
+Both fail *randomly* from the outside, which is exactly how it was reported.
+
+So the rule now: a kill is identified by its line, a turn-in by
+`QUEST_TURNED_IN`, a discovery by the `ERR_ZONE_EXPLORED*` info message it
+announces itself with (`C.DISCOVERY_INFO`), and **anything that does not identify
+itself gets no label at all** — it falls through to a plain `XP:<n>`, which is
+what this did before any labelling existed. Every way of being wrong now lands on
+the old, safe behaviour instead of on a confident lie.
+
+Note what was *not* reverted. The per-mob split is positive evidence — kill lines
+are present and counted — so it stayed. Only the inference went.
+
+`XPQ` and `XPD` are their own commands rather than a suffix on `XP` so the wire
+stays backward compatible in both directions: a partner on an older build drops
+an unknown command silently, where `XP:250:Some Quest` would have failed
+`tonumber` and been dropped anyway — or worse, paired. Neither touches
+`reportedKills`, `reportedXP` or `matchedEst`/`matchedXP`; they land in
+`state.offTagXP`, which `/tag xp` prints on its own line.
 
 **Pairing an estimate with its report.** The kill and the `XP:<n>` that follows it
 are separate events on separate clients, so the carry queues each tagged kill in
