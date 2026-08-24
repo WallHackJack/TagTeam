@@ -6,11 +6,17 @@
 #@debug@
 # Keep this literal synchronized with the release tag, it's used when running
 # straight from the repo rather than a packaged build.
-## Version: 0.4.0
+## Version: 0.5.0
 #@end-debug@
 ## SavedVariables: TagTeamDB
 ## X-Category: Leveling
 ## X-License: MIT
 
+# Load order is a dependency chain: WallhackUiKit needs nothing, the core
+# exports to TagTeamView, and SlashCommands reads ns.ToggleView from it.
+#
+# WallhackUiKit.lua is shared verbatim with WhoDoesWhat - see its header before editing.
 TagTeam.lua
+WallhackUiKit.lua
+TagTeamView.lua
 SlashCommands.lua

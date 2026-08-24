@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — the window
+
+A first pass at a real interface: `/tag ui` opens a tabbed window covering
+players, general settings, pop-ups, nameplates and sounds. It needs more work,
+and the About tab's patch notes panel is deliberately empty until it gets some.
+
+Notes for this release are still to be written.
+
 ## 0.4.0 — the link actually talks
 
 The two clients barely spoke before this. The tagger sent XP and nothing else, so

@@ -439,6 +439,21 @@ end
 
 local dynamicTaggers = {}   -- tagger mode: [key] = { name, level }, self + party
 
+-- The saved name lists the window edits, as one subsystem table rather than a
+-- file-level local each - see the ceiling note in AGENTS.md.
+--
+-- Declared here and FILLED IN further down, next to AddTagger, because the
+-- functions need identity helpers that do not exist yet at this point. Callers
+-- above that point still work: `Roster.RememberCarry` is a field lookup made
+-- when the call runs, not when the file loads.
+--
+-- What it holds is only ever a REMEMBERED list. db.carries does not make you a
+-- carry of several people and does not touch mode exclusivity: exactly one
+-- entry is active at a time, the one db.carryKey names, and every transition
+-- still goes through the confirm popup. The rest are names you have boosted
+-- with before, kept so picking one up again is a click.
+local Roster = {}
+
 local function InTaggerMode()
     return db and db.carryKey ~= nil
 end
@@ -1503,32 +1518,27 @@ local function PlayCue(file, id)
     if id then PlaySound(id, C.SOUND_CHANNEL) end
 end
 
-local function PlayAlertSound()
-    PlayCue(db.soundFile, db.soundId)
-end
-
-local function PlayMissSound()
-    PlayCue(db.missFile, db.missId)
-end
-
--- The near miss. Its own cue rather than a quieter miss beep, because the two
--- mean opposite things about the next pull: one says stop doing that, this one
--- says you were nearly there.
-local function PlayShortSound()
-    PlayCue(db.shortFile, db.shortId)
-end
-
-local function PlayThresholdSound()
-    if not db.sound then return end
-    PlayAlertSound()
-end
+-- One function per cue used to live here. They are now rows in C.CUES below,
+-- reached as Cues.Play("tag") and so on. The four pull verdicts each keep their
+-- own sound because they are four different pieces of news: earned it, nearly,
+-- barely, and never had it.
 
 -- Cues for the notices that arrive over the link rather than out of the pull.
 --
--- LEVELUP is the client's own ding. It is also this addon's *fallback* threshold
--- cue - but only the fallback: a file wins over an id in PlayCue, and db.soundFile
--- defaults to WeakAuras' Brass, so the two only collide on a client with no
--- WeakAuras installed.
+-- The client's own level-up fanfare, by file. Same trick as the quest cues
+-- below, and for the same reason: the file IS the sound everyone recognises,
+-- where an id resolves to whatever this client has that key pointed at.
+-- Verify in game - it prints true or false:
+--   /run print(PlaySoundFile([[Sound\Interface\LevelUp.ogg]]))
+C.DING_FILES = {
+    [[Sound\Interface\LevelUp.ogg]],
+    [[Sound\Interface\LevelUp.wav]],
+}
+
+-- The backstop, and this one is on solid ground: LEVELUP is an exposed SOUNDKIT
+-- key. It is also this addon's *fallback* threshold cue - but only the
+-- fallback: a file wins over an id in PlayCue, and db.soundFile defaults to
+-- WeakAuras' Brass, so the two only collide on a client with no WeakAuras.
 C.DING_CUE = SOUNDKIT and SOUNDKIT.LEVELUP
 
 -- Accepting a quest makes TWO sounds, and they are not interchangeable: the quest
@@ -1564,6 +1574,358 @@ C.QUEST_DONE_FILES = {
     [[Sound\Interface\iQuestComplete.wav]],
 }
 C.QUEST_DONE_CUE = SOUNDKIT and (SOUNDKIT.IG_QUEST_LIST_COMPLETE or SOUNDKIT.IG_QUEST_LIST_OPEN)
+
+-- An objective ticking over. The odd one out until now - it was the only
+-- progress cue with no file behind it, so it was the only one whose "Default"
+-- meant something different from the other three.
+--
+-- LESS certain than the two above: the accept and complete paths are confirmed
+-- working in game, this one is inferred from them living in the same directory
+-- under the same naming. If the id is what you hear, the paths both missed.
+-- Verify the same way:
+--   /run print(PlaySoundFile([[Sound\Interface\iQuestUpdate.ogg]]))
+C.QUEST_UPDATE_FILES = {
+    [[Sound\Interface\iQuestUpdate.ogg]],
+    [[Sound\Interface\iQuestUpdate.wav]],
+}
+C.QUEST_UPDATE_CUE = SOUNDKIT
+    and (SOUNDKIT.IG_QUEST_LIST_SELECT or SOUNDKIT.IG_MAINMENU_OPTION) or 851
+
+--------------------------------------------------------------------------------
+-- Cues
+--
+-- Every noise this addon makes, as one list. The window renders it, the call
+-- sites name an entry instead of reaching for a db key, and adding a cue is
+-- adding a row here - which is what stops the next one arriving ungated, the
+-- way the quest and ding cues did.
+--
+--   enable  db flag; the cue is silent while it is off
+--   file    db key holding a path. `false` there means "use the id" and is NOT
+--           the same as nil, which means "nothing saved, use the default"
+--   id      db key holding a SOUNDKIT id
+--   files   default path, or list of candidate paths, when db has none
+--   fixedId default SOUNDKIT id when db has none
+--   icon    the mark this cue belongs to, where it is one of the three verdicts
+--
+-- The three verdicts come first and in the order they read on screen: earned it,
+-- nearly, lost it.
+--------------------------------------------------------------------------------
+
+local Cues = {}
+
+-- Which cues have a path that this client actually has. Runtime only: a file
+-- can appear or vanish between sessions, and a saved "missing" would outlive
+-- the reinstall that fixed it. Cleared wherever a cue is re-pointed.
+state.cueOk = {}
+
+-- The two groups the window draws as separate boxes. Split by what the sound is
+-- about: the three that price the pull you are in, and the four that report
+-- what your partner is getting on with.
+C.CUE_SECTIONS = {
+    { key = "pull",     title = "Tagging" },
+    { key = "progress", title = "Progress" },
+}
+
+C.CUES = {
+    { key = "tag", section = "pull", label = "Kill Ready", icon = C.CHECK_TEXTURE,
+      about  = "The threshold cleared - your tagger has earned the kill.",
+      enable = "sound", file = "soundFile", id = "soundId",
+      files  = C.DEFAULT_SOUND_FILE },
+
+    { key = "near", section = "pull", label = "Acceptable Kill", icon = C.WARN_TEXTURE,
+      about  = "Short of the threshold, but past the minimum - it still paid "
+            .. "most of what it was worth.",
+      enable = "nearSound",
+      file   = "shortFile", id = "shortId",
+      files  = C.DEFAULT_SHORT_FILE },
+
+    { key = "miss", section = "pull", label = "Low XP Kill", icon = C.X_TEXTURE,
+      about  = "Your tagger's share was too small. The kill counted, the XP "
+            .. "barely did.",
+      enable = "missSound", file = "missFile", id = "missId",
+      files  = C.DEFAULT_MISS_FILE },
+
+    { key = "mistag", section = "pull", label = "Mistags", icon = C.X_TEXTURE,
+      about  = "The tag itself was lost - stolen, or spent by being grouped. "
+            .. "Nothing your tagger did to the mob could have paid.",
+      enable = "mistagSound", file = "mistagFile", id = "mistagId",
+      files  = C.DEFAULT_MISS_FILE },
+
+    { key = "qaccept", section = "progress", label = "Quest accepted",
+      about  = "Your partner picked up a quest. Needs quest notices on.",
+      enable = "questAcceptSound", file = "qAcceptFile", id = "qAcceptId",
+      files  = C.QUEST_FILES, fixedId = C.QUEST_CUE },
+
+    { key = "qprogress", section = "progress", label = "Quest progress",
+      about  = "An objective of theirs ticked over. Off by default - it fires "
+            .. "as often as their quest log updates.",
+      enable = "questProgressSound", file = "qProgFile", id = "qProgId",
+      files  = C.QUEST_UPDATE_FILES, fixedId = C.QUEST_UPDATE_CUE },
+
+    { key = "qdone", section = "progress", label = "Quest completed",
+      about  = "Your partner handed a quest in. This one is an XP report, so it "
+            .. "plays whether or not quest notices are on.",
+      enable = "questDoneSound", file = "qDoneFile", id = "qDoneId",
+      files  = C.QUEST_DONE_FILES, fixedId = C.QUEST_DONE_CUE },
+
+    { key = "ding", section = "progress", label = "Tagger levelled up",
+      about  = "The client's own level-up fanfare, played when a tagger dings.",
+      enable = "dingSound", file = "dingFile", id = "dingId",
+      files = C.DING_FILES, fixedId = C.DING_CUE },
+}
+
+function Cues.Def(key)
+    for i = 1, #C.CUES do
+        if C.CUES[i].key == key then return C.CUES[i] end
+    end
+end
+
+function Cues.Enabled(key)
+    local cue = Cues.Def(key)
+    return cue and db[cue.enable] and true or false
+end
+
+function Cues.Toggle(key)
+    local cue = Cues.Def(key)
+    if not cue then return end
+    db[cue.enable] = not db[cue.enable]
+    return db[cue.enable]
+end
+
+--------------------------------------------------------------------------------
+-- Volume
+--
+-- This client's PlaySoundFile takes no volume. The only lever there is is the
+-- Sound Effects CVar the "SFX" channel already rides, so a cue that wants to be
+-- quieter is played with that CVar moved and moved straight back.
+--
+-- That is a real cost and it is why the default configuration never does it.
+-- With "use the game's volume" on and every per-cue slider at 100%, Volume()
+-- returns nil and the CVar is not touched at all - the cue simply plays on the
+-- SFX channel as it always did. Only somebody who has actually asked for a
+-- different volume pays for one.
+--------------------------------------------------------------------------------
+
+C.SFX_CVAR = "Sound_SFXVolume"
+
+-- Both of these moved onto C_CVar with the globals kept as aliases. Resolve
+-- each member on its own rather than assuming the pair travels together.
+local GetCVarValue = (C_CVar and C_CVar.GetCVar) or GetCVar
+local SetCVarValue = (C_CVar and C_CVar.SetCVar) or SetCVar
+
+function Cues.GameVolume()
+    local v = GetCVarValue and tonumber(GetCVarValue(C.SFX_CVAR))
+    return v or 1
+end
+
+-- The volume to play a cue at, 0..1, or nil for "leave the game's setting
+-- alone" - which is still the cheap path, just a narrower one than it was.
+--
+-- All three multiply. The game's Sound Effects slider is a factor while
+-- db.useGameVolume is on, our own slider always is, and the cue's own always
+-- is. Turning the first off does not disable ours - it means we stop caring
+-- what the game's slider says and play at our number regardless.
+function Cues.Volume(key)
+    local per  = (db.cueVolume and db.cueVolume[key] or 100) / 100
+    local ours = (db.volume or 100) / 100
+
+    -- Following the game at full volume on both our sliders IS what the SFX
+    -- channel already does, so there is nothing to set and nothing to restore.
+    if db.useGameVolume and ours >= 1 and per >= 1 then return nil end
+
+    local game = db.useGameVolume and Cues.GameVolume() or 1
+    return game * ours * per
+end
+
+-- Play it, if it is on. The master mute is checked inside PlayCue, so nothing
+-- here can bypass it.
+function Cues.Play(key)
+    local cue = Cues.Def(key)
+    if not cue or not db[cue.enable] then return end
+    -- `~= nil` rather than `or`: a saved `false` means the user picked an id and
+    -- the default path must not come back.
+    local file = db[cue.file]
+    if file == nil then file = cue.files end
+    local id = db[cue.id] or cue.fixedId
+
+    local volume = Cues.Volume(key)
+    if not volume or not SetCVarValue then return PlayCue(file, id) end
+
+    local was = GetCVarValue(C.SFX_CVAR)
+    SetCVarValue(C.SFX_CVAR, volume)
+    -- pcall, and the restore outside it: a sound is cosmetic, and leaving
+    -- somebody's Sound Effects slider moved because a cue threw would be a far
+    -- worse bug than a missing beep.
+    local ok, err = pcall(PlayCue, file, id)
+    SetCVarValue(C.SFX_CVAR, was)
+    if not ok then state.lastCosmeticError = err end
+end
+
+-- What the cue is set to, in one line, for a tooltip or a row.
+--
+-- A path is shown as its file name only. The full one is
+-- Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3, which in a list of seven
+-- tells you nothing the last twelve characters do not.
+-- Is this path one the cue ships with? `files` is a single path on the three
+-- pull cues and a candidate list on the four progress ones, so both shapes are
+-- answered here rather than at each caller.
+local function IsDefaultPath(cue, path)
+    if type(cue.files) == "table" then
+        for i = 1, #cue.files do
+            if cue.files[i] == path then return true end
+        end
+        return false
+    end
+    return cue.files == path
+end
+
+function Cues.Describe(key)
+    local cue = Cues.Def(key)
+    if not cue then return "" end
+
+    local file = db[cue.file]
+    -- Nothing saved, or saved as exactly what it shipped with. Both are the
+    -- default and both say so - a path the user never chose is not information,
+    -- it is the absence of a choice.
+    if file == nil then return "Default" end
+    if type(file) == "string" then
+        if IsDefaultPath(cue, file) then return "Default" end
+        return strmatch(file, "([^\\/]+)$") or file
+    end
+
+    -- file == false: they picked an id.
+    local id = db[cue.id] or cue.fixedId
+    if not id then return "silent" end
+    if id == cue.fixedId then return "Default" end
+    return "#" .. id
+end
+
+-- Does the sound this cue would play actually exist on this client?
+--
+-- The only thing that answers that is PlaySoundFile, which has to start the
+-- sound to find out - so it is started and stopped in the same call. StopSound
+-- takes effect immediately, which is what makes the check inaudible, and it is
+-- the same trick SetSound has always used to validate a typed path.
+--
+-- Cached on state, not db: a file can appear or vanish between sessions, and a
+-- saved "missing" would outlive the reinstall that fixed it.
+local function Probe(path)
+    if not PlaySoundFile then return false end
+    local ok, handle = PlaySoundFile(path, C.SOUND_CHANNEL)
+    if handle and StopSound then StopSound(handle) end
+    return ok and true or false
+end
+
+-- Does this client have this file? For a path somebody is part-way through
+-- typing, so it is NOT cached - the answer is about the text, not about a cue.
+function Cues.Playable(path)
+    return type(path) == "string" and path ~= "" and Probe(path)
+end
+
+-- true / false / nil, where nil is "nothing to check" - a cue set to an id has
+-- no path that can be missing.
+function Cues.PathOk(key)
+    local cue = Cues.Def(key)
+    if not cue then return nil end
+    if state.cueOk[key] ~= nil then return state.cueOk[key] end
+
+    local file = db[cue.file]
+    if file == nil then file = cue.files end
+    local ok
+    if type(file) == "table" then
+        ok = false
+        for i = 1, #file do
+            if Probe(file[i]) then ok = true; break end
+        end
+    elseif type(file) == "string" then
+        ok = Probe(file)
+    end
+
+    state.cueOk[key] = ok
+    return ok
+end
+
+-- The cue's setting as the text to hand a prompt: what it is actually playing,
+-- so opening the box shows the current path rather than an empty field the user
+-- has to guess the shape of. Falls through to the default the cue would use.
+function Cues.CurrentSetting(key)
+    local cue = Cues.Def(key)
+    if not cue then return "" end
+    local file = db[cue.file]
+    if type(file) == "string" then return file end
+
+    if file == nil and cue.files then
+        if type(cue.files) ~= "table" then return cue.files end
+        -- The candidate that actually PLAYS, not the first one listed. The
+        -- lists exist because only one of .ogg / .wav is on any given client,
+        -- and handing back the one that is not would show a path that works as
+        -- a path that is missing.
+        for i = 1, #cue.files do
+            if Probe(cue.files[i]) then return cue.files[i] end
+        end
+        return cue.files[1]
+    end
+
+    local id = db[cue.id] or cue.fixedId
+    return id and tostring(id) or ""
+end
+
+-- Point a cue at a different sound. A number is a SOUNDKIT id, anything else is
+-- a file path - and the path is VALIDATED BY PLAYING IT, because that is the
+-- only thing on this client that answers whether the file is there. Cut short
+-- again straight away while muted, so the master really does cover everything.
+--
+-- Returns ok, message.
+function Cues.Forget(key) state.cueOk[key] = nil end
+
+function Cues.SetVolume(key, pct)
+    if not db.cueVolume then return end
+    -- 100 is stored as absent, so a cue nobody has touched costs nothing in the
+    -- saved variables and Volume()'s cheap path stays the common one.
+    pct = tonumber(pct)
+    if pct then pct = floor(pct + 0.5) end
+    db.cueVolume[key] = (pct and pct < 100) and pct or nil
+end
+
+-- Back to what the cue shipped with, sound and volume both: a Reset that left
+-- the volume where somebody dragged it would not be one.
+function Cues.Reset(key)
+    local cue = Cues.Def(key)
+    if not cue then return end
+    db[cue.file], db[cue.id] = nil, nil
+    Cues.Forget(key)
+    if db.cueVolume then db.cueVolume[key] = nil end
+end
+
+function Cues.SetSound(key, text)
+    local cue = Cues.Def(key)
+    if not cue then return false, "no such cue." end
+    text = text and strtrim(text) or ""
+
+    if text == "" then
+        db[cue.file], db[cue.id] = nil, nil
+        Cues.Forget(key)
+        return true, format("%s reset to its default.", cue.label)
+    end
+
+    local num = tonumber(text)
+    if num then
+        -- false, not nil: nil would be re-defaulted to the bundled file on load.
+        db[cue.file], db[cue.id] = false, num
+        Cues.Forget(key)
+        PlayCue(false, num)
+        return true, format("%s set to #%d.", cue.label, num)
+    end
+
+    local willPlay, handle = PlaySoundFile(text, C.SOUND_CHANNEL)
+    if not willPlay then
+        return false, format("couldn't play %s - check the path.", text)
+    end
+    if not db.audio and handle then StopSound(handle) end
+    db[cue.file] = text
+    Cues.Forget(key)
+    return true, format("%s set to %s.", cue.label, text)
+end
 
 --------------------------------------------------------------------------------
 -- XP estimate
@@ -2452,7 +2814,7 @@ local function HandleDeath(guid, name)
         -- nothing was ever on offer, so nothing was lost.
         local dealt = state.damage[guid]
         if db.missAlert and dealt and dealt > 0 and not IsWorthless(guid) then
-            PlayMissSound()
+            Cues.Play("mistag")
         end
         return
     end
@@ -2542,9 +2904,11 @@ local function HandleDeath(guid, name)
     -- arrives. The SOUND is the alert itself and fires now, which is the part
     -- that has to be immediate.
     --
-    -- Both cues sit under db.missAlert. They are the same notice graded two ways,
-    -- and someone who turned miss cues off did not mean "except the near ones".
-    if ShareBand(pct) == "short" then PlayShortSound() else PlayMissSound() end
+    -- The two grades of the same measurement: how much of the mob the tagger
+    -- actually took down. Both still sit under db.missAlert, which is the
+    -- NOTICE - the mark on screen and the queued report - but each has its own
+    -- sound now, because "nearly" and "not really" are different news.
+    if ShareBand(pct) == "short" then Cues.Play("near") else Cues.Play("miss") end
     if kill.at then FloatKillSoon(kill) else FloatKill(kill) end
 end
 
@@ -2714,7 +3078,7 @@ local function OnCombatLog()
             -- so a ding would be a false promise. Same reasoning as the grouped
             -- early return in HandleDeath.
             if not TapLost(destGUID) and not state.groupTagged[destGUID] then
-                PlayThresholdSound()
+                Cues.Play("tag")
                 if unit then SafeCall(SpawnPlateStamp, unit) end
             end
         end
@@ -2826,9 +3190,160 @@ local function AddTagger(name)
     return db.taggers[key]
 end
 
+-- The remembered lists. See the declaration of `Roster` for what these are and,
+-- more importantly, what they are not.
+--
+-- Both hold the same shape as db.taggers - [key] = { name, order } - so the
+-- window renders all three the same way and `order` gives every list a stable
+-- sort that does not shuffle when a name is removed.
+
+local function Remember(list, seqField, name)
+    local key = NormalizeName(name)
+    if not key then return nil end
+    if not list[key] then
+        db[seqField] = (db[seqField] or 0) + 1
+        list[key] = { name = gsub(name, "^%l", strupper), order = db[seqField] }
+    end
+    return list[key]
+end
+
+-- Sorted by establishment order, with one entry optionally pinned to the front.
+-- That is how the active carry reaches slot 1 without the list reordering
+-- itself every time somebody switches.
+local function Listed(list, firstKey)
+    local out = {}
+    for key, info in pairs(list or {}) do
+        out[#out + 1] = { key = key, name = info.name, order = info.order or 0 }
+    end
+    sort(out, function(a, b)
+        if firstKey then
+            if a.key == firstKey then return true end
+            if b.key == firstKey then return false end
+        end
+        return a.order < b.order
+    end)
+    return out
+end
+
+--------------------------------------------------------------------------------
+-- Pinging
+--
+-- A name on a list is just a name: the level is whatever it was when we last
+-- heard, the class is unknown until we have stood next to them, and the zone is
+-- unknowable from here. A ping asks their client directly, over the same hidden
+-- whisper channel everything else rides, and their answer fills all three in.
+--
+-- What comes back lands in db.seen, which is a directory keyed by name and NOT
+-- part of any one list - the same character can be a remembered carry on one
+-- character and a tagger on another, and what they are does not change where
+-- they are. Tagger records keep their own `level` field; the PONG handler
+-- updates that too, where NoteTaggerLevel is in scope.
+--
+-- There is no timer behind "offline". A ping stamps `asked`, an answer stamps
+-- `at`, and a reply that never came is simply an `asked` newer than any `at`,
+-- read at the moment somebody looks. A timer to reach the same conclusion would
+-- be one more thing to leak.
+--------------------------------------------------------------------------------
+
+C.PING_TIMEOUT = 5     -- seconds before silence is taken for an answer
+C.PING_THROTTLE = 20   -- seconds before the same name is asked again
+
+function Roster.Seen(key)
+    return key and db.seen and db.seen[key] or nil
+end
+
+-- Is this name on any of our lists? Everything about pinging is symmetric:
+-- we ask people we have written down, and we answer people who have written us
+-- down. A stranger gets nothing - their ping would otherwise report our zone
+-- to anybody who guessed the prefix.
+function Roster.Knows(key)
+    if not key then return false end
+    return (db.taggers and db.taggers[key] ~= nil)
+        or (db.carries and db.carries[key] ~= nil)
+        or (db.followTargets and db.followTargets[key] ~= nil)
+        or key == db.carryKey
+end
+
+function Roster.NoteSeen(key, level, class, zone)
+    if not key then return end
+    db.seen[key] = db.seen[key] or {}
+    local seen = db.seen[key]
+    seen.level = tonumber(level) or seen.level
+    seen.class = (class and class ~= "" and class) or seen.class
+    seen.zone  = (zone and zone ~= "" and zone) or nil
+    seen.at    = GetTime()
+end
+
+-- Ask one name. Throttled, because the window pings its whole roster every time
+-- it opens and somebody toggling tabs should not whisper the same character
+-- four times a second.
+function Roster.Ping(name, force)
+    local key = NormalizeName(name)
+    if not key or not db.comms then return false end
+
+    db.seen[key] = db.seen[key] or {}
+    local seen = db.seen[key]
+    local now = GetTime()
+    if not force and seen.asked and now - seen.asked < C.PING_THROTTLE then
+        return false
+    end
+
+    seen.asked = now
+    SendAddon("PING", name)
+    return true
+end
+
+-- What a name's `seen` record means right now, as one of four states. The view
+-- turns these into text and colour; deciding it here keeps that decision in one
+-- place, and out of a file that is meant to have no rules in it.
+--
+--   "here"    answered, and we know where they are
+--   "silent"  asked, nothing came back inside the timeout
+--   "waiting" asked, still inside the timeout
+--   "unknown" never asked, or comms are off
+function Roster.Presence(key)
+    local seen = Roster.Seen(key)
+    if not seen or not seen.asked then return "unknown" end
+    if seen.at and seen.at >= seen.asked then return "here", seen.zone end
+    if GetTime() - seen.asked < C.PING_TIMEOUT then return "waiting" end
+    return "silent"
+end
+
+function Roster.RememberCarry(name) return Remember(db.carries, "carrySeq", name) end
+function Roster.Carries()           return Listed(db.carries, db.carryKey) end
+
+-- The active carry is not really a member of this list, it is the mode you are
+-- in. Forgetting it would leave you in tagger mode with a carry that is not on
+-- your own roster, so it is refused; ending tagger mode is /tag carry off, and
+-- saying so is more use than a button that quietly half-works.
+function Roster.ForgetCarry(key)
+    if not key or key == db.carryKey then return false end
+    db.carries[key] = nil
+    return true
+end
+
+function Roster.AddFollow(name)  return Remember(db.followTargets, "followSeq", name) end
+function Roster.Follows()        return Listed(db.followTargets) end
+function Roster.ForgetFollow(key) db.followTargets[key] = nil end
+
+-- Dropping a tagger frees its marker, so the rest have to be re-derived. Lives
+-- here rather than in the slash file because the window removes taggers too,
+-- and both had better do the same four things.
+function Roster.RemoveTagger(key)
+    if not key or not db.taggers[key] then return nil end
+    local was = db.taggers[key].name
+    db.taggers[key] = nil
+    ReassignMarkers()
+    ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+    return was
+end
+
 local function SetCarryTo(name)
     db.carry = gsub(name, "^%l", strupper)
     db.carryKey = NormalizeName(name)
+    -- Every carry you set joins the remembered roster, so the list fills itself
+    -- from normal use rather than needing to be curated.
+    Roster.RememberCarry(db.carry)
     -- A new carry's pet is not the old carry's pet.
     db.carryPet, db.carryPetKey = nil, nil
     -- UpdateMacroButton matters here: in tagger mode the carry IS the follow
@@ -2849,6 +3364,58 @@ local function SwitchToTaggerMode(carryName)
     if db.taggers then wipe(db.taggers) end
     SetCarryTo(carryName)
 end
+
+-- The mode guard, in ONE place. Both /tag and the window add names, and if each
+-- decided for itself when a switch needs confirming they would drift - so both
+-- come through here and neither gets to skip the popup.
+--
+-- Returns "switch" when the popup was raised and the caller should say nothing
+-- more; the popup's own OnAccept reports what happened. Otherwise "added" or
+-- "set", plus the tagger's record where there is one.
+function Roster.RequestTagger(name)
+    if InTaggerMode() then
+        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
+            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00tagger mode|r with "
+                .. "|cff00ff00%s|r as your carry.\n\nAdding a tagger switches you to "
+                .. "carry mode and clears your carry.\n\nContinue?", db.carry),
+            nil, { mode = "carry", who = name })
+        return "switch"
+    end
+    return "added", AddTagger(name)
+end
+
+function Roster.RequestCarry(name)
+    if db.taggers and next(db.taggers) then
+        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
+            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00carry mode|r with "
+                .. "|cff00ff00%s|r.\n\nSetting a carry switches you to tagger mode "
+                .. "and clears your tagger list.\n\nContinue?",
+                table.concat(TaggerNames(), ", ")),
+            nil, { mode = "tagger", who = name })
+        return "switch"
+    end
+    SetCarryTo(name)
+    return "set"
+end
+
+-- Emptying a list. Taggers clears the live relationship and so has to re-derive
+-- everything; the other two are remembered names and nothing downstream reads
+-- them yet.
+function Roster.ClearTaggers()
+    wipe(db.taggers)
+    ReassignMarkers()
+    ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+end
+
+function Roster.ClearCarries()
+    wipe(db.carries)
+    -- The active carry is not a member of the roster, it is a mode. Clearing
+    -- the remembered names must not silently drop you out of tagger mode, so
+    -- the one you are actually using is put straight back.
+    if db.carry then Roster.RememberCarry(db.carry) end
+end
+
+function Roster.ClearFollows() wipe(db.followTargets) end
 
 StaticPopupDialogs["TAGTEAM_MODE_SWITCH"] = {
     text = "%s",
@@ -2873,6 +3440,21 @@ StaticPopupDialogs["TAGTEAM_MODE_SWITCH"] = {
             SendAddon("PAIRT", db.carry)
         end
     end,
+}
+
+-- A tagger dinged. The whole addon exists to make this happen, and until now it
+-- was one chat line that scrolled away behind the pull it arrived in.
+--
+-- Raised only from the LEVEL message, never from the unit-token scan: the scan
+-- discovers a level we did not know, which is not the same event as somebody
+-- levelling while you watch.
+StaticPopupDialogs["TAGTEAM_LEVELUP"] = {
+    text = "%s",
+    button1 = OKAY,
+    timeout = 30,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,   -- avoids tainting Blizzard's popup stack
 }
 
 StaticPopupDialogs["TAGTEAM_PAIR"] = {
@@ -2959,6 +3541,32 @@ local function OnAddonMessage(msg, sender)
                 InTaggerMode()
                     and format("\n\n|cffff8080This clears your carry (%s).|r", db.carry) or ""),
             nil, { role = "tagger", who = who })
+
+    elseif cmd == "PING" then
+        -- Answered only for names on our own lists. Symmetric with Roster.Ping,
+        -- which only asks people we have written down: this reports our zone,
+        -- and a stranger who guessed the prefix has no business having it.
+        if not Roster.Knows(key) and not IsPartner(who) then return end
+        local _, class = UnitClass("player")
+        SendAddon(format("PONG:%d:%s:%s", UnitLevel("player") or 0, class or "",
+            GetZoneText() or ""), who)
+
+    elseif cmd == "PONG" then
+        -- Only from somebody we have written down. A PONG arrives in answer to
+        -- our own PING, so an unsolicited one is either a stray or somebody
+        -- writing themselves into our directory.
+        if not Roster.Knows(key) and not IsPartner(who) then return end
+        -- Limit 3, so a zone name is taken whole - it is the last field and
+        -- nothing else may be split out of it.
+        local level, class, zone = strsplit(":", arg or "", 3)
+        Roster.NoteSeen(key, level, class, zone)
+        -- A tagger's record carries its own level, and it is what the XP
+        -- estimate reads. NoteTaggerLevel is in scope here and not where
+        -- Roster.NoteSeen is defined, which is why this half sits out here.
+        local lvl = tonumber(level)
+        if lvl and lvl > 0 and db.taggers and db.taggers[key] then
+            NoteTaggerLevel(key, lvl)
+        end
 
     elseif cmd == "HELLO" then
         SendAddon("HI", who)   -- silent handshake; both ends are now marked linked
@@ -3076,7 +3684,7 @@ local function OnAddonMessage(msg, sender)
         -- Handing one in gets its own fanfare, the counterpart to the accept cue.
         -- Not gated on /tag quests: that toggle is for the running commentary on
         -- their quest log, and this is an XP report, which is the whole job.
-        PlayCue(C.QUEST_DONE_FILES, C.QUEST_DONE_CUE)
+        Cues.Play("qdone")
         -- Ungated for the same reason the cue is. Cosmetic, so it goes last.
         SafeCall(FloatQuest, key, who, "completed", title, amount)
 
@@ -3095,7 +3703,7 @@ local function OnAddonMessage(msg, sender)
 
         if cmd == "QACC" then
             Print(format("|cff00ff00%s|r accepted \"%s\".", who, arg))
-            PlayCue(C.QUEST_FILES, C.QUEST_CUE)
+            Cues.Play("qaccept")
             SafeCall(FloatQuest, key, who, "accepted", arg)
         else
             -- No cue. Dropping a quest is not an event to celebrate, and the
@@ -3111,6 +3719,10 @@ local function OnAddonMessage(msg, sender)
         if not IsPartner(who) then return end
         if not arg or arg == "" then return end
         Print(format("|cff00ff00%s|r - |cffffff00%s|r", who, arg))
+        -- Off by default. This is the chattiest event on the channel, so a cue
+        -- on it is a preference rather than a default, but it belongs in the
+        -- list either way: an option nobody can find is not an option.
+        Cues.Play("qprogress")
 
         -- Cosmetic, so it goes last and behind SafeCall: a fault in the float
         -- must not take the chat line down with it.
@@ -3152,7 +3764,12 @@ local function OnAddonMessage(msg, sender)
         -- and a unit-token scan that happened to see them first should not eat the
         -- one notice that works when they are nowhere near you.
         NoteTaggerLevel(key, lvl)
-        PlayCue(nil, C.DING_CUE)
+        Cues.Play("ding")
+        -- Same reasoning, one step further: this is the event the addon is FOR,
+        -- and a chat line scrolls away behind whatever you were pulling.
+        if db.levelPopup then StaticPopup_Show("TAGTEAM_LEVELUP",
+            format("|cff33ff99TagTeam|r\n\n|cff00ff00%s|r is now level |cffffff00%d|r.",
+                who, lvl)) end
     end
 end
 
@@ -3743,10 +4360,37 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.ignorePvP   == nil then db.ignorePvP   = true end
         if db.includePets == nil then db.includePets = true end
         if db.audio       == nil then db.audio       = true end
-        if db.sound       == nil then db.sound       = true end
         if db.announce    == nil then db.announce    = true end
         if db.questNotices == nil then db.questNotices = true end
+        -- The miss NOTICE: the on-screen mark and the queued report, not just
+        -- the sound. Splitting the sound off it (db.missSound, below) is what
+        -- lets the Sounds tab be about sounds, so this one keeps /tag miss.
         if db.missAlert   == nil then db.missAlert   = true end
+        -- One flag per cue in C.CUES. A cue with no flag of its own is a cue
+        -- nobody can turn off, which is how the quest and ding fanfares got out
+        -- the door ungated. Quest progress is the one default-off: it fires as
+        -- often as their quest log ticks.
+        if db.sound              == nil then db.sound              = true end
+        if db.missSound          == nil then db.missSound          = db.missAlert end
+        -- Split out of missSound. Anyone upgrading inherits whatever they had
+        -- the one flag set to, so nobody's cues change under them - they just
+        -- get three switches where there was one.
+        if db.nearSound          == nil then db.nearSound          = db.missSound end
+        if db.mistagSound        == nil then db.mistagSound        = db.missSound end
+        if db.mistagFile         == nil then db.mistagFile         = C.DEFAULT_MISS_FILE end
+        db.mistagId = db.mistagId or db.missId
+        -- The level-up pop-up. Loud by design, so it gets its own way off.
+        if db.levelPopup         == nil then db.levelPopup         = true end
+        if db.questAcceptSound   == nil then db.questAcceptSound   = true end
+        if db.questDoneSound     == nil then db.questDoneSound     = true end
+        if db.questProgressSound == nil then db.questProgressSound = false end
+        if db.dingSound          == nil then db.dingSound          = true end
+        -- Following the game's Sound Effects slider is the default, and it is
+        -- also the only setting under which nothing touches that CVar. See the
+        -- Volume block.
+        if db.useGameVolume      == nil then db.useGameVolume      = true end
+        db.volume = db.volume or 100
+        db.cueVolume = db.cueVolume or {}
         if db.markers     == nil then db.markers     = true end
         if db.stealWarning == nil then db.stealWarning = true end
         if db.autoInvite   == nil then db.autoInvite   = true end
@@ -3779,6 +4423,16 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         db.banlist = db.banlist or {}
         db.banlistMigrated = true
         db.autotag = db.autotag or {}
+        db.carries = db.carries or {}
+        db.followTargets = db.followTargets or {}
+        -- What pinging learns about a name, keyed by name and shared by all
+        -- three lists: the same character can be a carry here and a tagger on
+        -- your other login, and their zone does not care which.
+        db.seen = db.seen or {}
+        -- An install that already had a carry when these lists arrived would
+        -- otherwise show an empty roster next to a set carry. Seeding is safe to
+        -- run every login: Remember is a no-op once the key is there.
+        if db.carry then Roster.RememberCarry(db.carry) end
         db.banlistSeed = nil   -- retired with the scheme that used it
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
@@ -3842,8 +4496,10 @@ end)
 --------------------------------------------------------------------------------
 -- Exports
 --
--- SlashCommands.lua is the only other file and it is a leaf: it reads from here,
--- nothing here reads from it. This block is the entire boundary between them.
+-- Every other file is a leaf: they read from here, nothing here reads from
+-- them. This block is the entire boundary. (TagTeamView.lua exports one name of
+-- its own, ns.ToggleView, which SlashCommands.lua reads — that is the only edge
+-- between two leaves, and it is why the view loads first.)
 --
 -- It sits at the bottom of the file on purpose. Everything below is assigned by
 -- the time this runs, including SendAddon, which is a forward-declared local
@@ -3865,6 +4521,7 @@ ns.TaggersByPriority            = TaggersByPriority
 ns.PrimaryTaggerKey             = PrimaryTaggerKey
 ns.ReassignMarkers              = ReassignMarkers
 ns.AddTagger, ns.SetCarryTo     = AddTagger, SetCarryTo
+ns.Roster                       = Roster
 ns.RebuildDynamicTaggers        = RebuildDynamicTaggers
 ns.ResetAll                     = ResetAll
 ns.UpdateAllPlates              = UpdateAllPlates
@@ -3886,7 +4543,5 @@ ns.InviteTarget                 = InviteTarget
 ns.SendAddon                    = SendAddon
 ns.PushThreshold                = PushThreshold
 ns.PlayCue                      = PlayCue
-ns.PlayAlertSound               = PlayAlertSound
-ns.PlayMissSound                = PlayMissSound
-ns.PlayShortSound               = PlayShortSound
+ns.Cues                         = Cues
 ns.SpawnBurst                   = SpawnBurst

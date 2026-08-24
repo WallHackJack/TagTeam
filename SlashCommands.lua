@@ -5,7 +5,9 @@ local ADDON_NAME, ns = ...
 --
 -- Everything /tag does, and nothing else does. This file is a leaf: it reads
 -- from the core, the core never reads from it, and the whole boundary between
--- them is the export block at the bottom of TagTeam.lua.
+-- them is the export block at the bottom of TagTeam.lua. It also reads
+-- ns.ToggleView from the other leaf, TagTeamView.lua, which is why that one
+-- loads first.
 --
 -- It is a separate file because the main chunk of a Lua file is itself a
 -- function, and Lua 5.1 allows only 200 locals per function - the core had
@@ -33,9 +35,6 @@ local TaggerKeyOf               = ns.TaggerKeyOf
 local TaggersByPriority         = ns.TaggersByPriority
 local InviteTarget              = ns.InviteTarget
 local PrimaryTaggerKey          = ns.PrimaryTaggerKey
-local ReassignMarkers           = ns.ReassignMarkers
-local AddTagger                 = ns.AddTagger
-local SetCarryTo                = ns.SetCarryTo
 local RebuildDynamicTaggers     = ns.RebuildDynamicTaggers
 local ResetAll                  = ns.ResetAll
 local UpdateAllPlates           = ns.UpdateAllPlates
@@ -56,11 +55,11 @@ local CheckLootMethod           = ns.CheckLootMethod
 local AskForInvite              = ns.AskForInvite
 local SendAddon                 = ns.SendAddon
 local PushThreshold             = ns.PushThreshold
-local PlayCue                   = ns.PlayCue
-local PlayAlertSound            = ns.PlayAlertSound
-local PlayMissSound             = ns.PlayMissSound
-local PlayShortSound            = ns.PlayShortSound
-local SpawnBurst                = ns.SpawnBurst
+local Roster                    = ns.Roster
+-- The two names here that come from TagTeamView.lua rather than the core, which
+-- is why that file loads before this one.
+local ToggleView                = ns.ToggleView
+local ShowPairPrompt            = ns.ShowPairPrompt
 
 local db            -- refreshed from ns.db on every dispatch
 local macroFrame    -- the copyable-macro window, built on first use
@@ -176,42 +175,14 @@ local function Status()
         db.groupWarning and "on" or "off",
         db.focusWarning and "on" or "off"))
     Print(format("badge position: |cffffff00%s|r the nameplate", db.badgePos))
-    Print(format("audio: %s | tag cue: %s (%s)",
+    -- Per-cue settings are not listed. There are seven of them now and they live
+    -- on the window's Sounds tab; a status line that reprints all seven every
+    -- time you type /tag is worse than a pointer to where they are.
+    Print(format("sound: %s | miss notice: %s",
         db.audio and "|cff00ff00on|r" or "|cffff2020MUTED|r",
-        db.sound and "on" or "off", db.soundFile or ("id " .. db.soundId)))
-    Print(format("miss cue: %s (%s)",
-        db.missAlert and "on" or "off", db.missFile or ("id " .. db.missId)))
+        db.missAlert and "on" or "off"))
 end
 
--- Returns the new (file, id, enabled) triple for a cue.
-local function ConfigureCue(label, rest, file, id, enabled)
-    rest = rest and strtrim(rest) or ""
-
-    local num = tonumber(rest)
-    if num then
-        -- false, not nil: nil would be re-defaulted to the bundled file on load.
-        PlayCue(false, num)
-        Print(format("%s sound set to id %d.", label, num))
-        return false, num, enabled
-    end
-
-    if rest ~= "" then
-        -- Played to validate the path - it is the only thing that answers whether
-        -- this client has the file - then cut short while muted, so /tag audio
-        -- really does cover every noise this addon can make.
-        local willPlay, handle = PlaySoundFile(rest, C.SOUND_CHANNEL)
-        if willPlay then
-            if not db.audio and handle then StopSound(handle) end
-            Print(format("%s sound set to %s", label, rest))
-            return rest, id, enabled
-        end
-        Print("|cffff8080couldn't play|r " .. rest .. " |cffff8080- check the path.|r")
-        return file, id, enabled
-    end
-
-    Print(format("%s sound %s", label, (not enabled) and "on." or "off."))
-    return file, id, not enabled
-end
 
 -- Commands, one function each.
 --
@@ -235,16 +206,36 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag link|r  |cffffff00/tag comms|r - addon-to-addon pairing and real XP reporting")
     Print("|cffffff00/tag macro|r - copyable target/follow/focus macro for your taggers")
     Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
-    Print("|cffffff00/tag audio|r|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
-    Print("|cffffff00/tag sound|r |cffffff00/tag sound <id|path>|r |cffffff00/tag testsound|r - tag cue")
-    Print("|cffffff00/tag miss|r |cffffff00/tag miss <id|path>|r |cffffff00/tag testmiss|r - miss cue")
-    Print("|cffffff00/tag near <id|path>|r |cffffff00/tag testnear|r - cue for a kill that cleared the minimum but missed the threshold")
-    Print("|cffffff00/tag testkill|r - preview the tagged-kill checkmark")
+    Print("|cffffff00/tag sound|r - master mute. Which cues play, and what each one is, live on the window's Sounds tab.")
+    Print("|cffffff00/tag miss|r - the on-screen miss notice (the mark, not the sound)")
+    Print("|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
     Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
     Print("|cffffff00/tag autoinvite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
     Print("|cffffff00/tag leave|r  |cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
 end
 commands["status"] = commands[""]
+
+-- Deliberately absent from the help text above while the window is still empty:
+-- pointing people at it would only be an invitation to be disappointed.
+commands["ui"] = function(rest, cmd)
+    ToggleView()
+end
+commands["window"] = commands["ui"]
+
+-- /tag pair <name> - the window's add prompt, with the name filled in and the
+-- role still open. It deliberately does NOT decide anything itself: naming
+-- somebody is not the same as saying what they are to you, and getting that
+-- backwards is what the two roles exist to prevent.
+--
+-- Also absent from the help text while the window is empty; see above.
+commands["pair"] = function(rest, cmd)
+    local name = strtrim(rest or "")
+    if name == "" then
+        Print("|cffffff00/tag pair <name>|r - pick what they are from the list.")
+        return
+    end
+    ShowPairPrompt(name)
+end
 
 commands["diag"] = function(rest, cmd)
     RefreshContinent()
@@ -399,18 +390,11 @@ commands["carry"] = function(rest, cmd)
         return
     end
 
-    -- Same rule in the other direction.
-    if db.taggers and next(db.taggers) then
-        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
-            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00carry mode|r with "
-                .. "|cff00ff00%s|r.\n\nSetting a carry switches you to tagger mode "
-                .. "and clears your tagger list.\n\nContinue?",
-                table.concat(TaggerNames(), ", ")),
-            nil, { mode = "tagger", who = name })
-        return
-    end
+    -- Same rule in the other direction. The guard itself lives in the core, so
+    -- the window cannot enforce a different one - it raises the same popup and
+    -- that popup does the reporting from there.
+    if Roster.RequestCarry(name) == "switch" then return end
 
-    SetCarryTo(name)
     Print(format("carry set to |cff00ff00%s|r - |cffffff00tagger mode|r.", db.carry))
     Print(format("Taggers: you%s. Party automation is off in this mode.",
         IsInGroup() and " and your party" or ""))
@@ -426,18 +410,10 @@ commands["add"] = function(rest, cmd)
         return
     end
     -- Can't hold both roles. Confirm the switch rather than silently
-    -- discarding a carry the user deliberately set.
-    if InTaggerMode() then
-        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
-            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00tagger mode|r with "
-                .. "|cff00ff00%s|r as your carry.\n\nAdding a tagger switches you to "
-                .. "carry mode and clears your carry.\n\nContinue?", db.carry),
-            nil, { mode = "carry", who = name })
-        return
-    end
-
-    local info = AddTagger(name)
-    if not info then return end
+    -- discarding a carry the user deliberately set. The guard is the core's,
+    -- shared with the window; "switch" means the popup has it from here.
+    local outcome, info = Roster.RequestTagger(name)
+    if outcome == "switch" or not info then return end
 
     -- Offer them the inverse role; their client decides.
     SendAddon("PAIRC", info.name)
@@ -466,10 +442,17 @@ commands["remove"] = function(rest, cmd)
             (#TaggerNames() > 0 and table.concat(TaggerNames(), ", ") or "none"))
         return
     end
-    local was = db.taggers[key].name
-    db.taggers[key] = nil
-    ReassignMarkers()   -- free the slot and re-derive the rest
-    ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+    -- Frees the marker and re-derives the rest. In the core because the window
+    -- removes taggers too, and both had better do the same four things.
+    local was = Roster.RemoveTagger(key)
+    -- TaggerKeyOf also matches the party-derived taggers of tagger mode, and
+    -- those are not a list anyone can edit - they are rebuilt from the roster
+    -- on every change. Say so rather than reporting a removal that did nothing.
+    if not was then
+        Print("|cffff8080That tagger comes from your party in tagger mode.|r " ..
+            "Leave the group, or |cffffff00/tag carry off|r.")
+        return
+    end
     Print(format("removed |cffff8080%s|r. Taggers: %s", was,
         #TaggerNames() > 0 and table.concat(TaggerNames(), ", ") or "none"))
 end
@@ -663,15 +646,29 @@ commands["pos"] = function(rest, cmd)
 end
 commands["position"] = commands["pos"]
 
-commands["audio"] = function(rest, cmd)
+-- The master switch, and the only sound command left. The seven individual cues
+-- - which one plays, and what each is set to - are the Sounds tab's job now;
+-- there were five commands for it and nobody could hold them in their head.
+commands["sound"] = function(rest, cmd)
     db.audio = not db.audio
     if db.audio then
-        Print("audio |cff00ff00on|r - tag, near-miss, miss and quest cues will play.")
+        Print("sound |cff00ff00on|r - per-cue settings are on the window's Sounds tab.")
     else
-        Print("audio |cffff2020off|r - all cues silenced, visuals unaffected.")
+        Print("sound |cffff2020off|r - every cue silenced, visuals unaffected.")
     end
 end
-commands["mute"] = commands["audio"]
+commands["audio"], commands["mute"] = commands["sound"], commands["sound"]
+
+-- Kept, and it is NOT a sound command any more. db.missAlert gates the whole
+-- miss notice - the mark on screen and the report queued behind it - and the
+-- audio half now sits on db.missSound with the other six cues. Deleting this
+-- along with the sound commands would have stranded the notice with no way to
+-- turn it off at all.
+commands["miss"] = function(rest, cmd)
+    db.missAlert = not db.missAlert
+    Print(format("miss notice %s. The sound for it is on the Sounds tab.",
+        db.missAlert and "|cff00ff00on|r" or "|cffff2020off|r"))
+end
 
 commands["autoinvite"] = function(rest, cmd)
     db.autoInvite = not db.autoInvite
@@ -815,59 +812,6 @@ commands["xpdebug"] = function(rest, cmd)
     else
         Print("xp debug |cffff2020off|r.")
     end
-end
-
-commands["testsound"] = function(rest, cmd)
-    PlayAlertSound()
-    Print("played " .. (db.soundFile or ("sound id " .. db.soundId)) .. ".")
-end
-
--- One preview per verdict, and they have to stay in step with FloatKill: this is
--- where anyone checks what a cue sounds like before trusting it mid-pull.
-commands["testmiss"] = function(rest, cmd)
-    if cmd == "testnear" then
-        Print("near-miss preview: "
-            .. (db.shortFile or ("sound id " .. tostring(db.shortId))))
-        PlayShortSound()
-        SafeCall(SpawnBurst, C.WARN_TEXTURE, "+118 XP", 1, 0.62, 0.1)
-    elseif cmd == "testmiss" then
-        Print("miss preview: " .. (db.missFile or ("sound id " .. db.missId)))
-        PlayMissSound()
-        SafeCall(SpawnBurst, C.X_TEXTURE, nil, 1, 0.35, 0.35)
-    else
-        Print("tagged-kill preview.")
-        SafeCall(SpawnBurst, C.CHECK_TEXTURE, "+142 XP", 1, 0.86, 0.3)
-    end
-end
-commands["testkill"], commands["testnear"] = commands["testmiss"], commands["testmiss"]
-
--- Both cues configure identically: a bare command toggles, a number sets a
--- SOUNDKIT id, anything else is treated as a file path.
-commands["sound"] = function(rest, cmd)
-    db.soundFile, db.soundId, db.sound =
-        ConfigureCue("tag", rest, db.soundFile, db.soundId, db.sound)
-end
-
-commands["miss"] = function(rest, cmd)
-    db.missFile, db.missId, db.missAlert =
-        ConfigureCue("miss", rest, db.missFile, db.missId, db.missAlert)
-end
-
--- The near-miss cue: a kill that cleared the minimum but missed the threshold.
---
--- It has no on/off of its own, so the bare form reports instead of toggling.
--- db.missAlert governs both cues - they are one notice graded two ways, and
--- someone who silenced misses did not mean "except the near ones" - which makes
--- /tag miss the switch and this the sound picker.
-commands["near"] = function(rest, cmd)
-    if strtrim(rest or "") == "" then
-        Print(format("near-miss cue: |cffffff00%s|r. |cffffff00/tag near <file or id>|r "
-            .. "to change it, |cffffff00/tag miss|r to silence near misses and misses "
-            .. "together.", db.shortFile or ("id " .. tostring(db.shortId))))
-        return
-    end
-    db.shortFile, db.shortId = ConfigureCue("near miss", rest,
-        db.shortFile, db.shortId, db.missAlert)
 end
 
 -- Runs from either end: the tagger watching its own damage climb is usually

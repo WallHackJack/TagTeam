@@ -1,19 +1,229 @@
 # TagTeam — agent instructions
 
-TagTeam is a two-file Lua 5.1 addon for the WoW TBC Anniversary client. The
+TagTeam is a four-file Lua 5.1 addon for the WoW TBC Anniversary client. The
 checked-out repository is also the user's live addon directory, so source files
 must remain directly loadable by the game.
 
 | File | Holds |
 |---|---|
 | `TagTeam.lua` | Everything: tracking, nameplates, XP, comms, party logistics, events. |
+| `WallhackUiKit.lua` | Window chrome. **Shared verbatim with WhoDoesWhat** — see below. |
+| `TagTeamView.lua` | The `/tag ui` window: which tabs there are, what is on them. |
 | `SlashCommands.lua` | `/tag` and nothing else. |
 
-`SlashCommands.lua` is a **leaf** — it reads from the core, the core never reads
-from it, and the entire boundary is the export block at the bottom of
-`TagTeam.lua`. Keep it that way: anything the core needs back belongs in the
+Everything outside the core is a **leaf** — it reads from the core, the core
+never reads from it, and the entire boundary is the export block at the bottom
+of `TagTeam.lua`. Keep it that way: anything the core needs back belongs in the
 core. The TOC load order is what makes the exports available, so a new file must
 be added there.
+
+The one edge between leaves is `SlashCommands.lua` reading `ns.ToggleView` from
+`TagTeamView.lua`, which is why the view loads first. Keep that arrow pointing
+this way: the view must never reach into the slash file.
+
+## WallhackUiKit.lua is shared with WhoDoesWhat
+
+`WallhackUiKit.lua` is **duplicated byte-for-byte** into WhoDoesWhat. The two
+copies are kept identical by hand, deliberately, so both addons' windows are the
+same windows. Rules that follow, and they are the whole point of the file:
+
+- **Fix a bug here, then copy the entire file across.** Never patch one side.
+- It may reference **nothing** from the addon around it. No addon object, no
+  Ace, no logging hook, no constant from another file. `local ADDON_NAME, ns =
+  ...` is the entire contact surface and works unchanged in either addon.
+- Every number the chrome is built from lives in it. A view that declares its
+  own margin has already started the drift — three WhoDoesWhat views each carry
+  a private `SCROLLBAR_W = 26` today, which is the case in point.
+- Helpers the *other* addon needs stay even with no caller here. `StyleDropdown`
+  has no caller in TagTeam; deleting it for being unused would make the copies
+  differ. Dead code in one addon is the price of the file being one file.
+- Each addon gets its own private copy at `ns.UI`. Nothing is shared at runtime,
+  only the source — no global, no LibStub, no revision guard, and no question
+  about which addon loaded first.
+
+Anything a second window or a pop-up would also want belongs in the kit.
+Anything specific to what TagTeam is showing belongs in `TagTeamView.lua`.
+
+WhoDoesWhat's `Views/SectionKit.lua` is where the kit's section primitives come
+from — same boxes, header chain, row pooling and `[x]` button, with the
+WhoDoesWhat-only parts (two columns, mass-mail, class tints) taken out so a
+caller with one column can use them. The migration of WhoDoesWhat onto this file
+has **not** happened yet: it still has its own `CreateWindowFrame`,
+`StyleDropdown` and three private copies of `SCROLLBAR_W`.
+
+## The tabs
+
+`Players`, `General`, `Popups`, `Nameplate`, `Sounds`, then `About` pushed to
+the far right by `right = true` on its tab spec — the kit anchors that run from
+the other end, so the gap is whatever is left over rather than a number somebody
+has to keep correct.
+
+**General, Popups and Nameplate are declared, not built.** `OPTION_PAGES` in
+`TagTeamView.lua` is a table of boxes, each a list of rows naming the `db` key
+it stands for; the builder knows checkbox, slider and dropdown and nothing about
+what any of them mean. Adding an option is a line there.
+
+Two fields carry the things that bit:
+
+- **`after`** names what has to be re-derived once the value changes. A badge
+  position nobody repaints is a setting that appears not to work.
+- **`Set`** replaces the plain `db` write where the core has its own way in. The
+  threshold uses it because it is *synchronised with the other client* — and it
+  goes through `PushThresholdSoon`, which defers the whisper until the handle
+  stops moving. Forty addon messages to say what the last one says is how you
+  get muted by the server.
+- **`requires`** hides a row this client cannot honour (`HAS_FOCUS`). A greyed
+  row explaining that on every login is worse than the row not being there.
+
+Every option value is in the window's refresh signature, because most of them
+still have a `/tag` command and a window showing the opposite of what you just
+typed is worse than no window.
+
+## The window decides nothing
+
+`TagTeamView.lua` has no rules in it. Every button ends in a `ns.Roster` call,
+because `/tag` and the window are two front ends to one set of invariants and
+the moment each enforces its own they drift.
+
+That is why `Roster.RequestTagger` / `Roster.RequestCarry` exist: the mode-switch
+guard and its confirm popup used to live inside `commands["add"]` and
+`commands["carry"]`, where the window could not reach them. `"switch"` back from
+either means the popup was raised and the caller reports nothing — the popup's
+own `OnAccept` does that. `Roster.RemoveTagger` moved for the same reason.
+
+`Roster` also owns the two remembered lists, `db.carries` and `db.followTargets`.
+**Neither changes the two modes.** `db.carries` is a roster of names you have
+boosted with; exactly one is active at a time, the one `db.carryKey` names, and
+`Roster.Carries` pins that one to slot 1. Forgetting the active carry is refused
+outright — it is a mode, not a list entry.
+
+The window refreshes off a half-second signature check while it is open, rather
+than the core calling into it. That keeps the leaf a leaf, and it means a change
+made from `/tag`, or by a confirm popup accepted a minute after the click that
+raised it, shows up on its own. Presence is part of that signature on purpose —
+a ping that goes unanswered becomes "offline" when its timeout passes, and
+there is no event to hang a refresh on.
+
+## Pinging
+
+`PING` / `PONG` over the same hidden whisper channel as everything else. Their
+client answers with level, class file and zone; it lands in **`db.seen`**, a
+directory keyed by name that belongs to no one list — the same character can be
+a remembered carry here and a tagger on your other login, and where they are
+does not depend on which.
+
+Both halves are **symmetric and restricted to `Roster.Knows`**: we ping only
+names we have written down, and we answer only people who have written us down.
+A `PONG` reports your zone, so a stranger who guessed the prefix gets nothing.
+
+There is **no timer behind "offline"**. `Roster.Ping` stamps `asked`, a reply
+stamps `at`, and `Roster.Presence` reads the pair at the moment somebody looks:
+an `asked` newer than any `at`, past `C.PING_TIMEOUT`, *is* silence. A timer to
+reach the same answer would be one more thing to leak. `Roster.Presence` returns
+one of `here` / `waiting` / `silent` / `unknown` — deciding that in the core is
+what keeps the view free of rules.
+
+The tagger half of a `PONG` (writing `level` onto the tagger record via
+`NoteTaggerLevel`) is handled in `OnAddonMessage` rather than in
+`Roster.NoteSeen`, because `NoteTaggerLevel` is a local defined after `Roster`.
+
+## Every sound is a row in C.CUES
+
+There is no `PlayAlertSound`/`PlayMissSound`/`PlayShortSound` any more. Every
+noise the addon makes is an entry in `C.CUES` and is played as
+`Cues.Play("<key>")`, which gates on that entry's `enable` flag.
+
+**This is the point of it.** The quest-accept, quest-complete and level-up
+fanfares shipped with no flag at all — nothing but the master mute could silence
+them — because each was added as a one-off `PlayCue` at its call site. Adding a
+cue is now adding a row, and a row without an `enable` does not work.
+
+Reading a row: `file` is a db key holding a path, where `false` means "the user
+picked an id, do not put the default path back" and `nil` means "nothing saved,
+use `files`". That distinction is load-bearing — `nil` gets re-defaulted at
+`ADDON_LOADED` and `false` does not.
+
+Two things that look like sound flags and are not:
+
+- **`db.missAlert` is the miss NOTICE**, not the miss sound. It gates the
+  on-screen mark and the queued XP report as well, which is why `/tag miss`
+  survives the sound-command cull. The audio half is `db.missSound`.
+- **The near miss has no flag of its own.** It rides `db.missSound` because it
+  and the miss are one notice graded two ways, and somebody who silenced misses
+  did not mean "except the near ones". The window shows that as a checkbox
+  disabled with a reason rather than hiding it.
+
+`/tag` keeps exactly one sound command, `/tag sound`, which toggles the master
+`db.audio`. Which cue plays and what each is set to belong to the Sounds tab.
+
+`C.CUE_SECTIONS` groups the rows into the boxes the tab draws — `pull` for the
+four verdicts, `progress` for what your partner is getting on with. A cue's
+`section` field decides which box it lands in.
+
+### The four pull verdicts
+
+They are four different pieces of news and each has its own flag. Do not
+re-merge them:
+
+| Cue | Says | Fires from |
+|---|---|---|
+| **Kill Ready** | the threshold cleared | the combat-log threshold crossing |
+| **Acceptable Kill** | short of the threshold, past the minimum | `ShareBand(pct) == "short"` |
+| **Low XP Kill** | the share was too small | the other arm of that same branch |
+| **Mistags** | the tap was lost — stolen, or spent by being grouped | `TapLost` / `groupTagged` / `TagIsWasted` |
+
+The first three grade the same measurement; **Mistags is a different event** and
+was previously sharing the miss cue, which made "somebody stole it" and "you
+were nearly there" the same noise.
+
+Acceptable Kill used to have no flag of its own and rode `missSound`, shown as a
+permanently disabled checkbox. That read as broken — which is exactly how it was
+reported — so it has `db.nearSound` now. `db.mistagSound` is likewise split out.
+Both default to whatever `db.missSound` was, so nobody's cues changed under them.
+
+`Cues.Describe` says **"Default"** whenever nothing is saved, the saved path is
+one the cue ships with, or the saved id is the cue's own `fixedId`. A deliberate
+non-default id shows as **`#877`**. All four progress cues are path-first with an
+id backstop now, so "Default" means the same thing on every row.
+
+### Volume moves a CVar, so the default never does
+
+This client's `PlaySoundFile` takes no volume. The only lever is
+`Sound_SFXVolume`, the CVar the "SFX" channel already rides, so a cue that wants
+to be quieter is played with that CVar moved and moved straight back — inside a
+`pcall`, with the restore *outside* it, because leaving somebody's Sound Effects
+slider moved would be far worse than a missing beep.
+
+**All three volumes multiply**: the game's Sound Effects slider (while
+`db.useGameVolume` is on), `db.volume`, and the cue's own `db.cueVolume[key]`.
+Turning off "follow the game" does not disable ours — it means we stop caring
+what the game's slider says and play at our number regardless.
+
+That CVar cost is why **`Cues.Volume` returns nil in the default
+configuration**: with `db.useGameVolume` on and both our sliders at 100%,
+nothing is touched at all and the cue plays on SFX exactly as it always did.
+Only somebody who has asked for a different volume pays for one. Keep it that
+way — a change that makes the CVar path unconditional would move every user onto
+it for no gain.
+
+`Cues.PathOk` answers whether a cue's file is actually on this client, by
+starting it and stopping it in the same call — the only thing that can answer is
+`PlaySoundFile`, and `StopSound` takes effect immediately, which is what makes
+the check inaudible. Cached on `state`, never on `db`: a file can appear or
+vanish between sessions, and a saved "missing" would outlive the reinstall that
+fixed it. `Cues.Playable` is the uncached form, for a path somebody is still
+typing.
+
+`db.cueVolume[key]` stores 100 as **absent**, which is what keeps that cheap
+path the common one.
+
+### The level-up popup
+
+A tagger dinging is the event the whole addon exists to produce, and it used to
+be one chat line that scrolled away behind the pull it arrived in.
+`TAGTEAM_LEVELUP` is raised from the `LEVEL` message only — never from
+`SampleTrackedLevel`, because a unit scan *discovering* a level we did not know
+is not the same event as somebody levelling while you watch.
 
 `db` is deliberately **not** exported at load — it does not exist until
 `ADDON_LOADED`, so exporting it then would hand the slash file a nil forever.
