@@ -1746,10 +1746,23 @@ end
 
 state.markPool = {}
 
+-- Draw order inside a strata is the frame level, and frames sharing a level fall
+-- back to creation order - so a pooled frame reused for a fresh mark comes up
+-- UNDER a mark created later that is already on its way out. Each launch takes
+-- the next level up instead, so the newest notice is always the one in front.
+-- Wraps far below the per-strata cap, and a mark only lives FLOAT_DURATION
+-- seconds, so nothing from before a wrap is still on screen to be ordered against.
+-- markLive is how many are in flight; the level counter goes back to zero once
+-- the screen is empty, so an ordinary session never gets near the wrap at all.
+local markLevel, markLive = 0, 0
+
 local function ReleaseMark(anim)
     local f = anim:GetParent()
     f:Hide()
     tinsert(state.markPool, f)
+
+    markLive = markLive - 1
+    if markLive <= 0 then markLive, markLevel = 0, 0 end
 end
 
 local function AcquireMark()
@@ -1804,6 +1817,9 @@ local function LaunchMark(f, rise)
         UIParent:GetHeight() / 2 + rise
             + math.sin(angle) * dist * C.FLOAT_JITTER_SQUASH)
     f:SetAlpha(1)
+    markLevel = markLevel % 1000 + 1
+    markLive  = markLive + 1
+    f:SetFrameLevel(markLevel)
 
     f.move:SetOffset(0, C.FLOAT_RISE)
     f.move:SetDuration(C.FLOAT_DURATION)
