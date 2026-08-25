@@ -642,6 +642,368 @@ local BADGE_CHOICES = {
     { value = "right", label = "Right" },
 }
 
+--------------------------------------------------------------------------------
+-- The fonts the badge can be drawn in
+--
+-- The game's own four, which are on every client whatever else is installed,
+-- plus whatever LibSharedMedia-3.0 has been given IF some other addon you run
+-- provides it. That library is how nearly every addon with a font dropdown
+-- fills one, so taking its list when it happens to be loaded gets our dropdown
+-- the same fonts as the rest of your UI for no dependency of our own - and its
+-- absence costs nothing but a shorter list.
+--
+-- Values are PATHS, never library keys: a path is what SetFont takes, and it is
+-- the half that still means something after the addon that registered the name
+-- is uninstalled. See SetBadgeFont in the core for what happens when it stops
+-- resolving.
+--------------------------------------------------------------------------------
+
+-- "" is the game's own font rather than a fifth path, so "Default" follows
+-- STANDARD_TEXT_FONT wherever this client's locale puts it.
+local SHIPPED_FONTS = {
+    { value = "",                    label = "Default" },
+    { value = "Fonts\\FRIZQT__.TTF", label = "Friz Quadrata" },
+    { value = "Fonts\\ARIALN.TTF",   label = "Arial Narrow" },
+    { value = "Fonts\\MORPHEUS.TTF", label = "Morpheus" },
+    { value = "Fonts\\SKURRI.TTF",   label = "Skurri" },
+}
+
+-- Blizzard's dropdown draws its list as one column and does not scroll it, so a
+-- list longer than the screen has a bottom nobody can reach. Everything past
+-- the game's own fonts is therefore filed into submenus of this many, labelled
+-- by the letters they span - which is also how you find "Expressway" in a media
+-- pack of two hundred without reading all two hundred.
+local FONT_GROUP = 18
+
+local function LetterRange(first, last)
+    local a, b = first:sub(1, 1):upper(), last:sub(1, 1):upper()
+    return a == b and a or (a .. " - " .. b)
+end
+
+-- Every row drawn in the font it names, with a sample of the thing the badge
+-- actually shows on the end of it. A name in a uniform font tells you what a
+-- font is called; it does not tell you whether its digits are legible at speed
+-- over a mob's head, which is the only question being asked here.
+--
+-- One Font OBJECT per row, because that is what a dropdown button takes. They
+-- are global by necessity - CreateFont needs a name - so they are numbered off
+-- a counter and built once, on the single pass FontChoices ever makes.
+local FONT_SAMPLE = " - 25%"
+local FONT_MENU_SIZE = 11
+local fontObjects = 0
+
+local function SampleFont(path)
+    fontObjects = fontObjects + 1
+    local name = "TagTeamFontSample" .. fontObjects
+    local obj = _G[name] or CreateFont(name)
+    if path ~= "" then obj:SetFont(path, FONT_MENU_SIZE, "") end
+    -- Same fallback the badge uses, and for the same reason: a font object
+    -- whose SetFont did not take draws nothing at all, so a dead path would
+    -- turn its row into an empty line rather than a name you could avoid.
+    if path == "" or not obj:GetFont() then
+        obj:SetFont(STANDARD_TEXT_FONT, FONT_MENU_SIZE, "")
+    end
+    obj:SetTextColor(1, 1, 1)
+    return obj
+end
+
+local function Sampled(entry)
+    return { value = entry.value,
+             label = entry.label .. FONT_SAMPLE,
+             font  = SampleFont(entry.value) }
+end
+
+-- Resolved when the window is first built, not at load: which addons have
+-- registered fonts is not settled while this file is still being read.
+local function FontChoices()
+    local out, seen = {}, {}
+    for _, entry in ipairs(SHIPPED_FONTS) do
+        out[#out + 1] = Sampled(entry)
+        seen[entry.value] = true
+    end
+
+    -- Guarded member by member, like every other optional API: an old copy of
+    -- the library brought in by some other addon is a likelier thing to meet
+    -- than no copy at all. The list comes back sorted, which is what makes the
+    -- letter ranges below mean anything.
+    local extra = {}
+    local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
+    if LSM and LSM.List and LSM.Fetch then
+        for _, name in ipairs(LSM:List("font") or {}) do
+            -- The third argument is "do not hand me the default instead", so a
+            -- name that resolves to nothing is skipped rather than listed a
+            -- dozen times over as the same file.
+            local path = LSM:Fetch("font", name, true)
+            if path and not seen[path] then
+                extra[#extra + 1] = { value = path, label = name }
+                seen[path] = true
+            end
+        end
+    end
+
+    -- One flat run while there are few enough to read at a glance; grouped once
+    -- there are not. The threshold is the same number the groups are sized to,
+    -- so a list of nineteen does not become two submenus of ten.
+    if #extra <= FONT_GROUP then
+        for _, entry in ipairs(extra) do out[#out + 1] = Sampled(entry) end
+    else
+        for first = 1, #extra, FONT_GROUP do
+            local last, group = min(first + FONT_GROUP - 1, #extra), {}
+            for i = first, last do group[#group + 1] = Sampled(extra[i]) end
+            -- Off the RAW names, before the sample was appended to them: the
+            -- first letter is the same either way, but the intent is not.
+            out[#out + 1] = {
+                label = LetterRange(extra[first].label, extra[last].label),
+                entries = group,
+            }
+        end
+    end
+
+    -- A saved font that is not on the list any more - its addon was removed -
+    -- still has to name itself in the box, or the dropdown falls back to
+    -- showing the raw value. The file name rather than the path: the box is a
+    -- hundred and fifty pixels wide.
+    local saved = ns.db and ns.db.badgeFont
+    if saved and saved ~= "" and not seen[saved] then
+        out[#out + 1] = Sampled({ value = saved,
+                                  label = saved:match("([^\\/]+)$") or "Custom" })
+    end
+    return out
+end
+
+--------------------------------------------------------------------------------
+-- The badge preview
+--
+-- A grey rectangle standing in for a nameplate, with a real badge over it and a
+-- damage share climbing past the threshold on a loop, so the settings under
+-- it can be watched rather than guessed at and applied one reload at a time.
+--
+-- The rectangle is deliberately a rectangle. The addon can never measure a real
+-- nameplate (see the client rules in AGENTS.md), every nameplate addon draws a
+-- different thing inside the frame the badge actually hangs off, and what this
+-- has to show is where the badge lands relative to that frame - which is what a
+-- plain box at roughly a plate's size says and a drawing of a health bar would
+-- only dress up.
+--
+-- Everything ON it comes from the core: the anchor, the font, the text, the
+-- colour and the slam. A preview that graded or placed a share by its own rules
+-- would be a preview of nothing.
+--------------------------------------------------------------------------------
+
+-- The preview draws two rectangles' worth of geometry, and only one of them can
+-- be seen.
+--
+-- The badge anchors to the Blizzard BASE nameplate frame, which is WIDER than
+-- the bar any nameplate addon actually draws inside it - crossing that gap is
+-- what C.BADGE_SIDE_INSET exists for. Drawing the visible rectangle at the base
+-- frame's size therefore lied in the one direction that matters: the badge came
+-- out sitting on top of the plate here while standing clear of it in game.
+--
+-- So `anchor` is the base frame, invisible, and `plate` is the bar drawn inside
+-- it, narrower by this much a side.
+--
+-- Its OWN number, deliberately not C.BADGE_SIDE_INSET. The two look alike and
+-- are not: the inset is how far the badge hangs off the base frame, and this is
+-- how much wider that frame is than the bar. Tying them together was what made
+-- moving one of them move the other for no reason. Neither is a measurement -
+-- every nameplate addon picks its own geometry, which is what the offset
+-- sliders are for - so this is a catch-all for what an untouched plate looks
+-- like.
+--
+-- Horizontal only. The vertical anchors clear the frame by 4px rather than by
+-- the inset, and above and below already read correctly.
+local PLATE_W, PLATE_H = 188, 40
+local PLATE_INSET = 7
+
+-- Just enough room around the plate for a badge beside it. The offsets reach
+-- forty pixels and this does not, deliberately: a box tall enough to hold the
+-- extremes would be mostly empty every other minute of its life, and the
+-- clipping below is what shows an extreme one leaving.
+local PREVIEW_H = 100
+
+-- The sweep. Bursts rather than a smooth climb because that is what damage
+-- does: a share jumps by whatever the last hit was worth and then sits there,
+-- and a bar sliding evenly upward would be a picture of something else.
+local SWEEP_FROM = 10
+local SWEEP_MIN_BURST, SWEEP_MAX_BURST = 3, 6
+local SWEEP_TO    = 60     -- unless the threshold is set past it; see SweepTop
+local SWEEP_HOLD  = 0.7    -- seconds a share stays up before the next hit
+local SWEEP_PAUSE = 1.8    -- on the finished checkmark, before it starts over
+
+-- Held on one share while a dropdown that wants to be compared against a steady
+-- number is open - the font list, where a percentage moving under you is the
+-- one thing that makes two fonts hard to tell apart. Keyed by the dropdown
+-- frame, which is what FrameXML names in UIDROPDOWNMENU_OPEN_MENU.
+local previewHolds = {}
+
+local function HeldShare()
+    -- Both halves: the global is not cleared when a menu closes, so on its own
+    -- it would pin the preview for the rest of the session after one look.
+    if not (DropDownList1 and DropDownList1:IsShown()) then return nil end
+    local open = UIDROPDOWNMENU_OPEN_MENU
+    return open and previewHolds[open]
+end
+
+-- Where the sweep turns round. Normally 60, which clears the default threshold
+-- comfortably - but somebody who has set theirs to 80 would otherwise watch a
+-- preview that never reaches a checkmark, which is the one moment it exists to
+-- show.
+local function SweepTop()
+    local need = (ns.db and ns.db.threshold) or C.THRESHOLD_DEFAULT
+    return max(SWEEP_TO, ceil(need) + SWEEP_MAX_BURST)
+end
+
+local function ShowPreviewShare(area, pct)
+    local badge = area.badge
+    local need = (ns.db and ns.db.threshold) or C.THRESHOLD_DEFAULT
+
+    if pct < need then
+        area.stamped = nil
+        badge.check:Hide()
+        -- The core's own draw: number, colour, warning icon, where each of them
+        -- sits, and the pop-in when the badge was showing nothing. Nothing
+        -- about the badge is decided in this file.
+        ns.DrawBadgeShare(badge, pct)
+    elseif not area.stamped then
+        -- Once, on the step that crosses. The stamp is the sound of the
+        -- threshold being met, and replaying it on every step above the
+        -- threshold would turn one event into five.
+        area.stamped = true
+        ns.ShowBadgeCheck(badge, true)   -- shows the check and hides the number
+    end
+end
+
+local function SweepPreview(area, elapsed)
+    -- Pinned while a dropdown asked for it, and picked up again where it left
+    -- off once that closes - restarting the sweep would throw away the frame
+    -- somebody was looking at.
+    local held = HeldShare()
+    if held ~= area.held then
+        area.held = held
+        ShowPreviewShare(area, held or area.pct)
+    end
+    if held then return end
+
+    area.since = area.since + elapsed
+    local top = SweepTop()
+    local done = area.pct >= top
+    if area.since < (done and SWEEP_PAUSE or SWEEP_HOLD) then return end
+
+    area.since = 0
+    if done then
+        -- Wiped before it starts again, so the first share of the next run
+        -- arrives out of nothing and pops in the way a real one does on a mob
+        -- taking its first hit. Without this the loop would only ever show the
+        -- badge changing, never appearing.
+        area.pct = SWEEP_FROM
+        ns.BlankBadge(area.badge)
+    else
+        -- min, because a burst can overshoot the top and because the threshold
+        -- can be lowered while this runs, taking the top under where the sweep
+        -- already got to.
+        area.pct = min(area.pct + math.random(SWEEP_MIN_BURST, SWEEP_MAX_BURST), top)
+    end
+    ShowPreviewShare(area, area.pct)
+end
+
+-- Where the badge sits and what it is drawn in, both straight off the core, so
+-- a change to either lands on the preview the same pass it lands on a plate.
+local function RefreshBadgePreview(box)
+    local area = box.preview
+    if not area then return end
+    -- One call, and the same one a real plate gets: anchor, font and which edge
+    -- the contents are pinned to.
+    ns.ApplyBadgeStyle(area.badge, area.anchor)
+    -- Redrawn at whatever the sweep is on - or at the share a dropdown is
+    -- holding it to - so a font or a threshold change shows now instead of at
+    -- the next burst.
+    ShowPreviewShare(area, area.held or area.pct)
+end
+
+local function BuildBadgePreview(box)
+    -- The strip above the box's rows, reserved before any of them is created -
+    -- a row anchors once and will not move for this afterwards.
+    UI.ReserveSectionStrip(box, PREVIEW_H)
+
+    local area = CreateFrame("Frame", nil, box)
+    area:SetFrameLevel(box:GetFrameLevel() + 1)
+    area:SetPoint("TOPLEFT", UI.BOX_PAD, -(UI.BOX_PAD + UI.SECTION_TITLE_H))
+    area:SetPoint("TOPRIGHT", -UI.BOX_PAD, -(UI.BOX_PAD + UI.SECTION_TITLE_H))
+    area:SetHeight(PREVIEW_H)
+    -- The offsets reach forty pixels each way, which is further than this box
+    -- is tall. Clipped, so an extreme one is seen leaving the frame instead of
+    -- being drawn over the rows underneath. Guarded on its own like every other
+    -- optional API member; without it the badge simply hangs over the edge.
+    if area.SetClipsChildren then area:SetClipsChildren(true) end
+
+    -- The base plate frame: what the badge is anchored to, and never drawn.
+    -- See the note on PLATE_INSET for why it is wider than the bar inside it.
+    local anchor = CreateFrame("Frame", nil, area)
+    anchor:SetFrameLevel(area:GetFrameLevel() + 1)
+    anchor:SetSize(PLATE_W + 2 * PLATE_INSET, PLATE_H)
+    anchor:SetPoint("CENTER")
+
+    local plate = CreateFrame("Frame", nil, anchor)
+    plate:SetFrameLevel(anchor:GetFrameLevel())
+    plate:SetSize(PLATE_W, PLATE_H)
+    plate:SetPoint("CENTER")
+
+    local fill = plate:CreateTexture(nil, "BACKGROUND")
+    fill:SetAllPoints()
+    fill:SetColorTexture(0.30, 0.30, 0.33, 1)
+
+    local caption = plate:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    caption:SetPoint("CENTER")
+    caption:SetText("Nameplate")
+    caption:SetTextColor(0.75, 0.75, 0.75)
+
+    -- Parented to the area rather than to either rectangle, and a level above
+    -- them both, so an offset that walks the badge back over the plate draws on
+    -- top of it rather than behind it. The core anchors it to `anchor` all the
+    -- same - SetPoint does not care who the parent is.
+    --
+    -- The same four regions the core builds on a real plate, under the same
+    -- names, because ApplyBadgeStyle and DrawBadgeShare are what dress them.
+    -- Sizes and points come from the style too, so none are set here.
+    local badge = CreateFrame("Frame", nil, area)
+    badge:SetFrameLevel(area:GetFrameLevel() + 2)
+
+    badge.check = badge:CreateTexture(nil, "OVERLAY")
+    badge.check:SetTexture(C.CHECK_TEXTURE)
+    badge.check:SetAllPoints(badge)
+    badge.check:Hide()
+
+    badge.icon = badge:CreateTexture(nil, "OVERLAY")
+    badge.icon:SetTexture(C.WARN_TEXTURE)
+    badge.icon:Hide()
+
+    -- Never shown here - the preview has no stolen tags to report - but a badge
+    -- the core is handed has to be a whole badge, or BlankBadge trips over the
+    -- one region this frame did not bother to have.
+    badge.deny = badge:CreateTexture(nil, "OVERLAY")
+    badge.deny:SetTexture(C.X_TEXTURE)
+    badge.deny:SetAllPoints(badge)
+    badge.deny:Hide()
+
+    badge.text = badge:CreateFontString(nil, "OVERLAY")
+
+    area.anchor, area.badge = anchor, badge
+    area.pct, area.since = SWEEP_FROM, 0
+
+    -- A hidden frame gets no OnUpdate, so the sweep stops on its own the moment
+    -- another tab is picked and costs nothing at all while the window is shut.
+    -- Wrapped for the same reason the window's own ticker is: an error on a
+    -- per-frame script repeats into the chat frame rather than happens.
+    area:SetScript("OnUpdate", function(self, elapsed)
+        SafeCall(SweepPreview, self, elapsed)
+    end)
+
+    box.preview = area
+    -- Anchored and dressed here rather than left for the first refresh: an
+    -- unanchored badge with no font on it is a frame that draws nowhere.
+    RefreshBadgePreview(box)
+end
+
 local OPTION_PAGES = {
     general = {
         {
@@ -703,6 +1065,13 @@ local OPTION_PAGES = {
                 { db = "autoLoot", label = "Free-for-all loot in a tag group",
                   about = "A two-person tag group wants everything lootable by "
                        .. "whoever gets there." },
+                -- Here rather than on the Nameplate tab, which is about the
+                -- badge: this marker goes on a PERSON, and finding your tagger
+                -- is a party problem whichever way round you solve it.
+                { db = "taggerMarker", label = "Mark taggers while ungrouped",
+                  about = "Ungrouped there is no party frame to find them on, "
+                       .. "so the marker goes on the tagger instead.",
+                  after = "markers" },
                 { db = "autoFocus", label = "Use focus for range detection",
                   about = "The focus unit is the most reliable range check "
                        .. "there is. Setting focus is protected, so bind a key "
@@ -746,24 +1115,94 @@ local OPTION_PAGES = {
     nameplate = {
         {
             title = "Badge",
+            -- The preview is this box's first row in everything but name: a
+            -- picture of what the rows under it do, sitting where a reader
+            -- looks first. It gets no label of its own because "Preview" over a
+            -- picture of a nameplate says nothing the picture did not.
+            Build = BuildBadgePreview,
+            Refresh = RefreshBadgePreview,
+            -- Straight back to how it shipped. In the core, because that is
+            -- where the defaults are and a second copy of them out here would
+            -- be a second answer to what "default" means.
+            Reset = function() ns.ResetBadgeOptions() end,
+            -- The controls line up in one column instead of each starting
+            -- where its own label happened to end. Worth the number here and
+            -- nowhere else: this is the only box with more than one of them.
+            labelW = 108,
             rows = {
-                { db = "badgePos", label = "Badge position",
-                  choices = BADGE_CHOICES, after = "plates",
-                  about = "Where the damage-share badge sits relative to the "
-                       .. "nameplate." },
-            },
-        },
-        {
-            title = "Markers",
-            rows = {
-                { db = "markers", label = "Raid marker on their tag",
-                  about = "Marks the mob your tagger has credit for, so it is "
-                       .. "obvious which one to leave alone.",
-                  after = "markers" },
-                { db = "taggerMarker", label = "Mark taggers while ungrouped",
-                  about = "Ungrouped there is no party frame to find them on, "
-                       .. "so the marker goes on the tagger instead.",
-                  after = "markers" },
+                -- The `about` strings on this page are ONE SENTENCE each, on
+                -- purpose. Ten rows of paragraph-length tooltips is a wall
+                -- nobody reads; what a control does is the part somebody
+                -- hovering wants, and why it does it belongs in the source.
+                { db = "badgePos", label = "Badge Position",
+                  choices = BADGE_CHOICES,
+                  -- Through the core, which also zeroes the offsets and flips
+                  -- "Text before Icon" to suit the new side. /tag pos goes the
+                  -- same way, so the two cannot apply different halves of it.
+                  Set = function(value) ns.SetBadgePosition(value) end,
+                  about = "Which side of the nameplate the damage-share badge "
+                       .. "sits on." },
+                -- The badge hangs off Blizzard's base nameplate frame, which is
+                -- wider than the bar most nameplate addons actually draw, so
+                -- the four positions do not land the same way for everyone.
+                -- C.BADGE_SIDE_INSET carries the common case; these are for the
+                -- plate that puts its bar somewhere else entirely.
+                { db = "badgeX", label = "X Offset: %.0f",
+                  slider = { min = -C.BADGE_NUDGE_LIMIT,
+                             max =  C.BADGE_NUDGE_LIMIT, step = 1 },
+                  after = "plates",
+                  about = "Nudge the badge sideways, in pixels." },
+                { db = "badgeY", label = "Y Offset: %.0f",
+                  slider = { min = -C.BADGE_NUDGE_LIMIT,
+                             max =  C.BADGE_NUDGE_LIMIT, step = 1 },
+                  after = "plates",
+                  about = "Nudge the badge up or down, in pixels." },
+                { db = "badgeFont", label = "Badge Font",
+                  choices = FontChoices, width = 150, after = "plates",
+                  -- The preview stops sweeping and sits on one share while
+                  -- this list is open: two fonts are hard to tell apart when
+                  -- the number under them keeps changing.
+                  holdPreview = 25,
+                  about = "The font the percentage is drawn in." },
+                { db = "badgeFontSize", label = "Font Size: %.0f",
+                  slider = { min = C.BADGE_FONT_MIN,
+                             max = C.BADGE_FONT_MAX, step = 1 },
+                  after = "plates",
+                  about = "How big the percentage is drawn." },
+                { db = "badgePercent", label = "Show '%' Character",
+                  after = "plates",
+                  about = "Add the percentage symbol to tagger's damage "
+                       .. "output." },
+                -- Above the switch that governs the other two, because it is
+                -- not governed by it: this sizes the checkmark and the X as
+                -- well, so it still does something with the warning icon off.
+                { db = "badgeIconSize", label = "Icon Size: %.0f",
+                  slider = { min = C.BADGE_SIZE_MIN,
+                             max = C.BADGE_SIZE_MAX, step = 1 },
+                  after = "plates",
+                  -- Named by drawing them. Three marks described in words is a
+                  -- sentence you have to translate back into what you saw over
+                  -- a mob; the marks themselves are not.
+                  about = "How big the badge's marks are - " .. C.CHECK_ICON
+                       .. " " .. C.X_ICON .. " " .. C.WARN_ICON .. " alike." },
+                { db = "badgeWarnIcon",
+                  label = "Use " .. C.WARN_ICON .. " Icon when below lower threshold",
+                  after = "plates",
+                  about = "Display a warning icon when tagger's minimum damage "
+                       .. "threshold hasn't been met yet." },
+                -- Both are about an icon that is not being drawn once the row
+                -- above is off. Greyed with a reason rather than hidden: a row
+                -- that vanishes makes the box jump and takes the explanation
+                -- with it.
+                { db = "badgeGap", label = "Icon Padding: %.0f",
+                  slider = { min = 0, max = C.BADGE_GAP_MAX, step = 1 },
+                  after = "plates", needs = "badgeWarnIcon",
+                  about = "The gap between the warning icon and the number "
+                       .. "beside it, in pixels." },
+                { db = "badgeTextFirst", label = "Text before Icon",
+                  after = "plates", needs = "badgeWarnIcon",
+                  about = "Put the percentage before the warning icon rather "
+                       .. "than after it." },
             },
         },
     },
@@ -771,6 +1210,15 @@ local OPTION_PAGES = {
 
 -- Everything built for a page, kept so the refresh can find its widgets again.
 local optionPages = {}
+
+-- Stood in for a group that has no rows, rather than a fresh `{}` per group per
+-- pass: the refresh and the signature both run twice a second for as long as
+-- the window is up.
+local NO_ROWS = {}
+
+-- The control a row can be holding. One list, so the passes that treat them
+-- alike do not each carry their own copy of what a row can be.
+local OPTION_PARTS = { "check", "slider", "dropdown" }
 
 local function OptionValue(row)
     return ns.db and ns.db[row.db]
@@ -786,7 +1234,35 @@ local function SetOption(row, value)
     ns.RefreshView()
 end
 
-local function DressOptionRow(box, index, row)
+-- A row's choices, which is a list, or a function returning one for a list that
+-- cannot be written down at load: the fonts depend on what other addons have
+-- registered by the time the window is first opened.
+local function Choices(row)
+    return type(row.choices) == "function" and row.choices() or row.choices
+end
+
+local ROW_TEXT_LEFT = 6    -- row edge to a label, matching the checkbox rows
+local CONTROL_GAP   = 12   -- label to the control beside it
+
+-- Blizzard's dropdown housing carries this much transparent padding to the left
+-- of its visible edge, so anchoring one flush against a label leaves a gap
+-- nobody asked for. Backed out below, so the spacing written down is the
+-- spacing you see. StyleDropdown trims the housing's height, not this.
+local DROPDOWN_LEAD = 15
+
+-- Where the control beside a label starts. A group setting `labelW` puts every
+-- control in one column; without it each starts where its own label happens to
+-- end, which is all a box with a single control in it needs.
+local function AnchorControl(widget, control, labelW, lead, y)
+    if labelW then
+        control:SetPoint("LEFT", widget, "LEFT",
+            ROW_TEXT_LEFT + labelW - lead, y or 0)
+    else
+        control:SetPoint("LEFT", widget.label, "RIGHT", CONTROL_GAP - lead, y or 0)
+    end
+end
+
+local function DressOptionRow(box, index, row, labelW)
     local widget = box.rows and box.rows[index]
     if widget and widget.built then return widget end
 
@@ -797,13 +1273,13 @@ local function DressOptionRow(box, index, row)
         -- Caption then handle, on one line. The caption carries the value, so
         -- the slider needs no numbers of its own.
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        widget.label:SetPoint("LEFT", 6, 0)
+        widget.label:SetPoint("LEFT", ROW_TEXT_LEFT, 0)
 
         widget.slider = UI.CreateSlider(widget, "TagTeamOption" .. row.db,
             row.slider.min, row.slider.max, row.slider.step,
             function(_, value) SetOption(row, value) end)
         widget.slider:SetWidth(150)
-        widget.slider:SetPoint("LEFT", widget.label, "RIGHT", 12, 0)
+        AnchorControl(widget, widget.slider, labelW, 0)
         if widget.slider.title then widget.slider.title:SetText("") end
         -- Parenthesised: gsub returns a count as well, and that second value
         -- would arrive as the tooltip body.
@@ -811,15 +1287,21 @@ local function DressOptionRow(box, index, row)
 
     elseif row.choices then
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        widget.label:SetPoint("LEFT", 6, 0)
+        widget.label:SetPoint("LEFT", ROW_TEXT_LEFT, 0)
         widget.label:SetText(row.label)
 
         widget.dropdown = UI.CreateDropdown(widget, "TagTeamOption" .. row.db,
-            90, row.choices,
+            row.width or 90, Choices(row),
             function() return OptionValue(row) end,
             function(value) SetOption(row, value) end)
-        widget.dropdown:SetPoint("RIGHT", 8, -2)
+        -- Beside its label rather than pushed to the far right edge: a caption
+        -- and its control at opposite ends of a wide row read as two unrelated
+        -- things.
+        AnchorControl(widget, widget.dropdown, labelW, DROPDOWN_LEAD, -2)
         UI.AddTooltip(widget.dropdown, row.label, row.about)
+        -- Registered rather than looked up by name later: this is the only
+        -- place that holds the frame the preview has to recognise.
+        if row.holdPreview then previewHolds[widget.dropdown] = row.holdPreview end
 
     else
         widget.check = UI.CreateCheckbox(widget, nil, row.label, row.about,
@@ -828,12 +1310,15 @@ local function DressOptionRow(box, index, row)
         widget.check:SetPoint("LEFT", 4, 0)
 
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        widget.label:SetPoint("LEFT", 4 + UI.ROW_ICON + 6, 0)
+        widget.label:SetPoint("LEFT", 4 + UI.ROW_ICON + ROW_TEXT_LEFT, 0)
         widget.label:SetText(row.label)
         -- The label is part of the click target: a checkbox you have to hit
-        -- exactly is a checkbox people miss.
+        -- exactly is a checkbox people miss. Guarded on the box being live,
+        -- because a greyed row must not stay clickable through its label.
         widget:EnableMouse(true)
-        widget:SetScript("OnMouseUp", function() widget.check:Click() end)
+        widget:SetScript("OnMouseUp", function()
+            if widget.check:IsEnabled() then widget.check:Click() end
+        end)
     end
 
     return widget
@@ -847,7 +1332,18 @@ local function BuildOptionsPage(page, key)
     local boxes = {}
     for i, group in ipairs(OPTION_PAGES[key]) do
         local box = UI.CreateSectionBox(scroll:GetScrollChild(), group.title)
-        UI.LayoutHeaderChain(box)   -- no header buttons; keeps the call uniform
+        if group.Reset then
+            UI.AddHeaderTextButton(box, "Reset", "Reset " .. group.title,
+                "Put every setting in this box back to the way it shipped.",
+                function()
+                    group.Reset()
+                    ns.RefreshView()
+                end)
+        end
+        UI.LayoutHeaderChain(box)
+        -- Before any row exists: a custom builder reserves its strip above them,
+        -- and a row already anchored will not move for it.
+        if group.Build then group.Build(box) end
         boxes[i] = box
     end
     optionPages[key] = { scroll = scroll, boxes = boxes }
@@ -859,13 +1355,15 @@ local function RefreshOptionsPage(key)
 
     for i, group in ipairs(OPTION_PAGES[key]) do
         local box, index = built.boxes[i], 0
-        for _, row in ipairs(group.rows) do
+        if group.Refresh then group.Refresh(box) end
+
+        for _, row in ipairs(group.rows or NO_ROWS) do
             -- A setting this client cannot honour is not shown at all. Classic
             -- Era has no focus unit, and a greyed row explaining that on every
             -- login is worse than the row not being there.
             if not row.requires or C[row.requires] then
                 index = index + 1
-                local widget = DressOptionRow(box, index, row)
+                local widget = DressOptionRow(box, index, row, group.labelW)
                 local value = OptionValue(row)
 
                 if widget.slider then
@@ -875,6 +1373,22 @@ local function RefreshOptionsPage(key)
                     widget.dropdown:Sync()
                 elseif widget.check then
                     widget.check:SetChecked(value and true or false)
+                end
+
+                -- A row `needs` another to be on before it means anything -
+                -- the icon's padding and its side, with the icon switched off.
+                -- Greyed with a reason rather than hidden: a row that vanishes
+                -- makes the box jump and takes its own explanation with it.
+                if row.needs then
+                    local live = ns.db and ns.db[row.needs] and true or false
+                    for _, part in ipairs(OPTION_PARTS) do
+                        if widget[part] then
+                            widget[part].disabledReason = row.needsReason
+                                or "Turn on the option above first."
+                        end
+                    end
+                    UI.SetEnabled(live, widget.label, widget.check,
+                        widget.slider, widget.dropdown)
                 end
                 widget:Show()
             end
@@ -1038,7 +1552,7 @@ local function Signature()
     -- what you just typed is worse than no window.
     for _, page in pairs(OPTION_PAGES) do
         for _, group in ipairs(page) do
-            for _, row in ipairs(group.rows) do
+            for _, row in ipairs(group.rows or NO_ROWS) do
                 parts[#parts + 1] = tostring(ns.db and ns.db[row.db])
             end
         end

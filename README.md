@@ -57,7 +57,6 @@ Type `/tag` for all options.
   isn't running TagTeam is placed from the pet's own tooltip the first time it
   crosses your target, your mouseover, or your target's target. `/tag` lists who
   owns what, and `/tag pets` turns the whole thing off.
-- **Raid markers** on the mobs your taggers have claimed — skull, cross, square.
 - **One keybind to target, follow and focus your partner.** It builds itself from
   whoever you've set up, tries each of them in priority order, and falls back to
   following your current target if nobody's configured. Bind it under

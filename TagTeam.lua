@@ -162,17 +162,17 @@ C.RATIO_FLOOR = 0.70
 -- The miss mark on the kill line is the X TEXTURE, not a letter: it is the same
 -- mark the float draws, so the two read as one thing seen twice. ":0" sizes the
 -- icon to the line's font rather than to a guessed pixel height.
-C.X_ICON    = "|T" .. C.X_TEXTURE .. ":0|t"
-C.WARN_ICON = "|T" .. C.WARN_TEXTURE .. ":0|t"
+C.X_ICON     = "|T" .. C.X_TEXTURE .. ":0|t"
+C.WARN_ICON  = "|T" .. C.WARN_TEXTURE .. ":0|t"
+-- No caller on a chat line, unlike the other two - this one is for naming the
+-- three badge marks in a tooltip, which is the one place they are talked about
+-- as a set rather than drawn as a verdict.
+C.CHECK_ICON = "|T" .. C.CHECK_TEXTURE .. ":0|t"
 
 -- The tagger claims its OWN kills to print the same line the carry does. Claims
 -- are keyed per tagger, so this needs a key no character can normalize to - and a
 -- name cannot contain a control character.
 C.SELF_KEY = "\1self"
-
--- Skull, cross, square. Deliberately only three: more markers than you can hold
--- in your head at a glance is just clutter. The rotation resets out of combat.
-C.TAG_MARKERS = { 8, 7, 6 }
 
 -- Only warn about stealing a tag if the tagger has actually been doing something
 -- recently - otherwise every mob you kill while questing alone would scold you.
@@ -267,6 +267,12 @@ C.STAMP_BACK_DURATION = 0.09
 C.STAMP_FROM          = 3.0
 C.STAMP_UNDERSHOOT    = 0.78
 
+-- Worth knowing before retuning these: SetSmoothing("OUT") over IN_DURATION
+-- spends its first couple of frames covering 3.0 down to roughly 1.0 and the
+-- whole rest of its time crawling to the undershoot, so what a viewer actually
+-- sees is the spring back out, not the slam in. Lowering STAMP_FROM does almost
+-- nothing; lengthening IN_DURATION is the lever.
+
 -- Death float: one mark that rises and fades on the cadence of the Classic XP
 -- gain text. Hits and misses share it, differing only in texture and label.
 --
@@ -343,7 +349,6 @@ state.alerted     = {}  -- [destGUID]  = true once we've played the threshold so
 state.lastSeen    = {}  -- [destGUID]  = GetTime() of last accumulation
 state.maxHealth   = {}  -- [destGUID]  = cached UnitHealthMax, to score off-screen mobs
 state.tapOwner    = {}  -- [destGUID]  = "carry" | "tagger" | "other", by first damage
-state.marked      = {}  -- [destGUID]  = true once we've put a raid marker on it
 state.groupTagged = {}  -- [destGUID]  = true once tagger damage landed while grouped
 state.mobLevel    = {}  -- [destGUID]  = cached UnitLevel, for the XP estimate
 state.mobElite    = {}  -- [destGUID]  = true if elite/rare-elite/boss (double XP)
@@ -363,7 +368,6 @@ state.inOutland = false     -- recomputed on zone change; picks the XP base cons
 state.sessionXP, state.sessionTags = 0, 0
 local playerGUID            -- our own GUID, for spotting mobs we tapped ourselves
 local trackedActiveAt = 0   -- last time we saw the tagger do anything
-local markerSlot = 1        -- rotates through TAG_MARKERS, resets out of combat
 state.lastRawXP, state.lastXPInfo = nil, nil -- last unscaled estimate, for /tag calibrate
 local pendingKills = {}     -- tagged kills awaiting an XP report, oldest first
 state.matchedEst, state.matchedXP = 0, 0  -- paired totals, for the session multiplier
@@ -847,7 +851,7 @@ end
 -- the tagger is - and so belong to ResetAll alone.
 C.PER_MOB = {
     "damage", "alerted", "lastSeen", "maxHealth", "mobLevel", "mobElite",
-    "mobTrivial", "mobName", "tapOwner", "marked", "groupTagged",
+    "mobTrivial", "mobName", "tapOwner", "groupTagged",
 }
 
 local function Forget(guid)
@@ -1057,6 +1061,12 @@ local function ShareColor(pct, need)
     return (1 - t) * 2, 1, 0
 end
 
+-- What the nameplate badge writes for a share that has not reached the
+-- threshold yet. Under the minimum the number wears the warning icon, because
+-- on its own an orange 12% and an orange 35% look like the same kind of problem
+-- and they are not. The icon comes off the moment the share is worth having,
+-- and from there the colour alone carries it to the checkmark.
+--
 local function ShareHex(pct, need)
     local r, g, b = ShareColor(pct, need)
     return format("ff%02x%02x%02x",
@@ -1086,10 +1096,17 @@ end
 -- Parented to the Blizzard base nameplate frame rather than any unit frame:
 -- ThreatPlates/Plater/KUI recycle and restyle their own children, but the base
 -- frame from C_NamePlate is stable, so the badge survives their re-skinning.
--- Horizontal anchors are pulled inward: the Blizzard base plate frame is wider
--- than the health bar most nameplate addons actually draw, so anchoring flush to
+--
+-- Horizontal anchors are pulled inward, because the base plate frame is wider
+-- than the health bar most nameplate addons actually draw - anchoring flush to
 -- its edge leaves the badge floating well clear of the visible plate.
-C.BADGE_SIDE_INSET = 12
+--
+-- MEASURED IN GAME, not reasoned out. This was 12, and 12 put the badge far
+-- enough in that everybody had to dial +8 back out of it on the X offset before
+-- a side-mounted badge sat where it looked right. The offset is for a nameplate
+-- addon that puts its bar somewhere unusual; it should not be paying for our
+-- own default being wrong.
+C.BADGE_SIDE_INSET = 4
 
 -- badge point, plate point, x, y
 C.BADGE_ANCHORS = {
@@ -1099,71 +1116,153 @@ C.BADGE_ANCHORS = {
     right = { "LEFT",   "RIGHT",  -C.BADGE_SIDE_INSET,     0 },
 }
 
+-- Which edge of the badge its contents are pinned to. The badge frame is 24px
+-- square and the text is whatever width the number happens to be, so a centred
+-- string grows in BOTH directions - which is fine over the plate and wrong
+-- beside it, where one edge is up against the nameplate and the other has the
+-- whole screen. Pin the edge that faces the plate and let it grow away.
+C.BADGE_JUSTIFY = {
+    above = "CENTER",
+    below = "CENTER",
+    left  = "RIGHT",   -- badge is left OF the plate, so it grows leftward
+    right = "LEFT",
+}
+
+-- How far the badge may be nudged off that anchor, in pixels. Kept as a
+-- pair of offsets on top of the four positions rather than replacing them: the
+-- anchor decides which way the badge grows from the plate, and the offsets are
+-- for the nameplate addon whose bar sits somewhere other than where Blizzard's
+-- base frame says it does. A nudge, not a second positioning system - past a
+-- few tens of pixels the answer is the other anchor.
+C.BADGE_NUDGE_LIMIT = 40
+
+-- Sizes, and the range the sliders behind them span. ICON_SIZE is the badge
+-- FRAME - so the checkmark, the X and the warning icon are one size between
+-- them, because they are three faces of the same mark and a slider called
+-- "Icon Size" that moved only one of them would be lying.
+C.BADGE_FONT_SIZE = 26
+C.BADGE_ICON_SIZE = 30
+C.BADGE_GAP       = 1    -- between the warning icon and the number
+-- Both ranges run well past anything the defaults use. A badge is read at a
+-- glance from across a pull, on whatever resolution and UI scale somebody
+-- happens to run - so the top of these is set by what is still legible, not by
+-- what looks sensible in the options window.
+C.BADGE_SIZE_MIN, C.BADGE_SIZE_MAX = 12, 64
+C.BADGE_FONT_MIN, C.BADGE_FONT_MAX = 8, 48
+C.BADGE_GAP_MAX = 12
+
+-- Whether a badge was built from settings that have since moved. Field compares
+-- rather than one composed key: GetBadge asks this for every plate on a 4 Hz
+-- ticker, and building a string to throw away on each of them is the kind of
+-- steady garbage that costs nothing anywhere and everything in a pull.
+local function BadgeStyleStale(badge)
+    return badge.stylePos   ~= db.badgePos
+        or badge.styleX     ~= db.badgeX
+        or badge.styleY     ~= db.badgeY
+        or badge.styleFont  ~= db.badgeFont
+        or badge.styleSize  ~= db.badgeFontSize
+        or badge.styleIcon  ~= db.badgeIconSize
+        or badge.styleGap   ~= db.badgeGap
+        or badge.styleFirst ~= db.badgeTextFirst
+end
+
 local function ApplyBadgeAnchor(badge, plateFrame)
     local a = C.BADGE_ANCHORS[db.badgePos] or C.BADGE_ANCHORS.above
     badge:ClearAllPoints()
-    badge:SetPoint(a[1], plateFrame, a[2], a[3], a[4])
-    badge.anchorMode = db.badgePos   -- so GetBadge can spot a changed setting
+    badge:SetPoint(a[1], plateFrame, a[2],
+        a[3] + (db.badgeX or 0), a[4] + (db.badgeY or 0))
 end
 
-local function CreateBadge(plateFrame)
-    local badge = CreateFrame("Frame", nil, plateFrame)
-    badge:SetSize(24, 24)
-    badge:SetFrameStrata("HIGH")
-    ApplyBadgeAnchor(badge, plateFrame)
+-- Put db.badgeFont on a font string, or the game's own font if that path is not
+-- on this client.
+--
+-- A saved path can stop existing between sessions - it usually came from
+-- another addon's media, and that addon can be uninstalled - and a FontString
+-- whose SetFont failed renders NOTHING at all, which would look like the badge
+-- being broken rather than like a missing font. GetFont coming back nil is what
+-- says the call did not take; SetFont's own return value is not usable, because
+-- it reports success on some clients and nothing at all on others.
+local function SetBadgeFont(fontString)
+    local path, size = db.badgeFont, db.badgeFontSize or C.BADGE_FONT_SIZE
+    if path and path ~= "" then
+        fontString:SetFont(path, size, "THICKOUTLINE")
+        if fontString:GetFont() then return end
+    end
+    fontString:SetFont(STANDARD_TEXT_FONT, size, "THICKOUTLINE")
+end
 
-    badge.check = badge:CreateTexture(nil, "OVERLAY")
-    badge.check:SetTexture(C.CHECK_TEXTURE)
-    badge.check:SetAllPoints(badge)
-    badge.check:Hide()
+-- Where the number and the warning icon sit inside the badge.
+--
+-- MEASURES NOTHING, and that is the whole shape of it. The badge is parented to
+-- a nameplate, so GetStringWidth on its font string throws for the entire
+-- duration of combat - see the client rules in AGENTS.md. Anchoring is fine;
+-- asking how wide anything came out is not. So the two regions are chained to
+-- each other, and the only number that ever enters the arithmetic is the icon
+-- size, which is a setting we already have.
+--
+-- Centring the PAIR falls out of that: stepping the text half an icon plus half
+-- a gap off centre leaves exactly the room the icon then fills on the other
+-- side, whatever width the text turned out to be.
+--
+-- `withIcon` is memoised on the badge, because it changes as a share crosses
+-- SHARE_MIN and re-anchoring on every 4 Hz pass would be four SetPoints per
+-- plate for nothing. Anything that hides the icon by hand must clear `laidOut`
+-- or the memo will refuse to bring it back; HideBadgeShare is the one place
+-- that does.
+local function LayoutBadgeContents(badge, withIcon)
+    if badge.laidOut == withIcon then return end
+    badge.laidOut = withIcon
 
-    -- Shown on mobs we tapped ourselves: the tagger can never get credit for
-    -- these, so the percentage is meaningless and the X is permanent.
-    badge.deny = badge:CreateTexture(nil, "OVERLAY")
-    badge.deny:SetTexture(C.X_TEXTURE)
-    badge.deny:SetAllPoints(badge)
-    badge.deny:Hide()
+    local justify = C.BADGE_JUSTIFY[db.badgePos] or "CENTER"
+    badge.text:ClearAllPoints()
+    badge.icon:ClearAllPoints()
+    badge.icon:SetShown(withIcon)
 
-    badge.text = badge:CreateFontString(nil, "OVERLAY")
-    badge.text:SetFont(STANDARD_TEXT_FONT, 18, "THICKOUTLINE")
-    badge.text:SetPoint("CENTER", badge, "CENTER", 0, 0)
+    if not withIcon then
+        badge.text:SetPoint(justify, badge, justify, 0, 0)
+        return
+    end
+
+    local gap  = db.badgeGap or C.BADGE_GAP
+    local size = db.badgeIconSize or C.BADGE_ICON_SIZE
+
+    -- Reading left to right, whichever of the two comes first.
+    local lead, trail = badge.icon, badge.text
+    if db.badgeTextFirst then lead, trail = badge.text, badge.icon end
+
+    if justify == "LEFT" then
+        lead:SetPoint("LEFT", badge, "LEFT", 0, 0)
+        trail:SetPoint("LEFT", lead, "RIGHT", gap, 0)
+    elseif justify == "RIGHT" then
+        trail:SetPoint("RIGHT", badge, "RIGHT", 0, 0)
+        lead:SetPoint("RIGHT", trail, "LEFT", -gap, 0)
+    elseif db.badgeTextFirst then
+        badge.text:SetPoint("CENTER", badge, "CENTER", -(size + gap) / 2, 0)
+        badge.icon:SetPoint("LEFT", badge.text, "RIGHT", gap, 0)
+    else
+        badge.text:SetPoint("CENTER", badge, "CENTER", (size + gap) / 2, 0)
+        badge.icon:SetPoint("RIGHT", badge.text, "LEFT", -gap, 0)
+    end
+end
+
+-- The number and the icon beside it are one notice. Hide them together, or the
+-- icon outlives the share it was qualifying and sits on a checkmark.
+local function HideBadgeShare(badge)
     badge.text:Hide()
-
-    return badge
+    badge.icon:Hide()
+    badge.laidOut = nil   -- see the memo note on LayoutBadgeContents
 end
 
--- Frames can never be destroyed in WoW, and nameplates churn constantly, so the
--- badge is cached on the plate frame itself rather than on our per-add record.
-local function GetBadge(unit, createIfMissing)
-    local plateFrame = C_NamePlate.GetNamePlateForUnit(unit)
-    if not plateFrame then return nil end
-    if not plateFrame.tagTeamBadge and createIfMissing then
-        plateFrame.tagTeamBadge = CreateBadge(plateFrame)
-    end
-
-    -- Re-anchor lazily instead of sweeping every plate when the setting changes:
-    -- badges live on recycled frames, so some aren't reachable at that moment.
-    local badge = plateFrame.tagTeamBadge
-    if badge and badge.anchorMode ~= db.badgePos then
-        ApplyBadgeAnchor(badge, plateFrame)
-    end
-    return badge
-end
-
--- The moment a mob crosses the threshold, slam its badge checkmark into place.
+-- The slam: in from oversized, past true size, then back out to it.
 --
--- This animates the badge itself rather than spawning marks over it. The badge
--- holds nothing but the checkmark at this point (the percentage is hidden once
--- the threshold is met), so scaling the whole frame scales exactly the thing we
--- want - and no separate mark can overlap the static check underneath it.
+-- Animates the badge FRAME, so whatever the badge is showing at the time comes
+-- in with it - which is why the same animation serves the checkmark landing at
+-- the threshold and the percentage appearing in the first place. Nothing here
+-- decides what is on screen; the callers have already put it there.
 --
--- It can sit over the mob at all, unlike the death animation, because the mob is
--- still alive: its nameplate exists, so we anchor to it and never calculate a
--- screen position.
-local function SpawnPlateStamp(unit)
-    local badge = GetBadge(unit, true)
-    if not badge then return end
-
+-- Takes any badge-shaped frame, so the options window's preview plays THIS
+-- animation rather than an approximation of it.
+local function PlayBadgeStamp(badge)
     if not badge.stamp then
         badge.stamp = badge:CreateAnimationGroup()
 
@@ -1195,13 +1294,139 @@ local function SpawnPlateStamp(unit)
         settle:SetScaleTo(1, 1)
     end
 
-    -- Show the check now rather than waiting for the next UpdatePlate, so the
-    -- animation has something to act on from its first frame.
-    badge.text:Hide()
-    badge.check:Show()
-
     badge.stamp:Stop()   -- cannot replay an animation mid-flight
     badge.stamp:Play()
+end
+
+local function ApplyBadgeStyle(badge, plateFrame)
+    -- Size first: the anchors below are to the badge's edges, so a bigger badge
+    -- has to grow outward from the plate rather than be re-anchored after.
+    local size = db.badgeIconSize or C.BADGE_ICON_SIZE
+    badge:SetSize(size, size)
+    badge.icon:SetSize(size, size)
+
+    ApplyBadgeAnchor(badge, plateFrame)
+    SetBadgeFont(badge.text)
+    badge.text:SetJustifyH(C.BADGE_JUSTIFY[db.badgePos] or "CENTER")
+    badge.laidOut = nil   -- the contents re-anchor on the next draw
+
+    -- Stamped with what it was just built from, so BadgeStyleStale can spot a
+    -- changed setting on a plate that came back from the recycler.
+    badge.stylePos, badge.styleFont = db.badgePos, db.badgeFont
+    badge.styleX, badge.styleY = db.badgeX, db.badgeY
+    badge.styleSize, badge.styleIcon = db.badgeFontSize, db.badgeIconSize
+    badge.styleGap, badge.styleFirst = db.badgeGap, db.badgeTextFirst
+end
+
+-- Draw a share on a badge: the number, the colour it earned, and the warning
+-- icon beside it if it fell under the minimum.
+--
+-- One function because the options window draws a badge too, and a preview that
+-- wrote, graded or arranged a share differently from the nameplate would be a
+-- preview of nothing.
+--
+-- `db.badgePercent` drops the % sign - a few pixels of nameplate back for a
+-- symbol that never says anything the number did not. `db.badgeWarnIcon` drops
+-- the icon: below the minimum the kill is a write-off whatever the colour says,
+-- and somebody who has learned to read the orange does not need telling twice.
+local function DrawBadgeShare(badge, pct)
+    badge.text:SetText(format(db.badgePercent and "%d%%" or "%d", pct))
+    badge.text:SetTextColor(ShareColor(pct))
+    LayoutBadgeContents(badge,
+        (db.badgeWarnIcon and ShareBand(pct) == "failed") and true or false)
+    badge.text:Show()
+
+    -- A badge appearing out of NOTHING pops in, the same way the checkmark does
+    -- when the threshold is met - the first damage on a mob is news too, and a
+    -- number that fades up unannounced is easy to miss in a pull.
+    --
+    -- Gated on `showing` being empty rather than on it not already being the
+    -- share, and that is the whole point of the field: a mob taken past the
+    -- threshold by its first hit shows a checkmark, which slams on its own, and
+    -- the two must not land on top of each other. Once something is up, the
+    -- share arriving is a change rather than an appearance.
+    if not badge.showing then PlayBadgeStamp(badge) end
+    badge.showing = "share"
+end
+
+-- The checkmark, with or without the slam. Both callers go through here so the
+-- `showing` bookkeeping cannot be forgotten on one of them.
+local function ShowBadgeCheck(badge, stamp)
+    HideBadgeShare(badge)
+    badge.check:Show()
+    badge.showing = "check"
+    if stamp then PlayBadgeStamp(badge) end
+end
+
+-- Nothing at all: no verdict on this plate. Clearing `showing` here is what
+-- makes the next thing to arrive count as an appearance and pop in.
+local function BlankBadge(badge)
+    HideBadgeShare(badge)
+    badge.check:Hide()
+    badge.deny:Hide()
+    badge.showing = nil
+end
+
+local function CreateBadge(plateFrame)
+    local badge = CreateFrame("Frame", nil, plateFrame)
+    badge:SetFrameStrata("HIGH")
+
+    badge.check = badge:CreateTexture(nil, "OVERLAY")
+    badge.check:SetTexture(C.CHECK_TEXTURE)
+    badge.check:SetAllPoints(badge)
+    badge.check:Hide()
+
+    -- Shown on mobs we tapped ourselves: the tagger can never get credit for
+    -- these, so the percentage is meaningless and the X is permanent.
+    badge.deny = badge:CreateTexture(nil, "OVERLAY")
+    badge.deny:SetTexture(C.X_TEXTURE)
+    badge.deny:SetAllPoints(badge)
+    badge.deny:Hide()
+
+    -- Both left unanchored here: LayoutBadgeContents pins them to whichever
+    -- edge the current position calls for, and a point set twice is a point to
+    -- forget. A real Texture rather than an inline |T..|t run inside the text,
+    -- because a run inside a font string cannot be given a size or a gap of its
+    -- own - and both of those are sliders now.
+    badge.text = badge:CreateFontString(nil, "OVERLAY")
+    badge.text:Hide()
+
+    badge.icon = badge:CreateTexture(nil, "OVERLAY")
+    badge.icon:SetTexture(C.WARN_TEXTURE)
+    badge.icon:Hide()
+
+    -- Last, not first: the style covers the size, the font and the alignment as
+    -- well as the anchor, so it needs both regions to exist.
+    ApplyBadgeStyle(badge, plateFrame)
+    return badge
+end
+
+-- Frames can never be destroyed in WoW, and nameplates churn constantly, so the
+-- badge is cached on the plate frame itself rather than on our per-add record.
+local function GetBadge(unit, createIfMissing)
+    local plateFrame = C_NamePlate.GetNamePlateForUnit(unit)
+    if not plateFrame then return nil end
+    if not plateFrame.tagTeamBadge and createIfMissing then
+        plateFrame.tagTeamBadge = CreateBadge(plateFrame)
+    end
+
+    -- Re-style lazily instead of sweeping every plate when a setting changes:
+    -- badges live on recycled frames, so some aren't reachable at that moment.
+    local badge = plateFrame.tagTeamBadge
+    if badge and BadgeStyleStale(badge) then
+        ApplyBadgeStyle(badge, plateFrame)
+    end
+    return badge
+end
+
+-- The moment a mob crosses the threshold, slam its badge checkmark into place.
+--
+-- It can sit over the mob at all, unlike the death animation, because the mob is
+-- still alive: its nameplate exists, so we anchor to it and never calculate a
+-- screen position.
+local function SpawnPlateStamp(unit)
+    local badge = GetBadge(unit, true)
+    if badge then ShowBadgeCheck(badge, true) end
 end
 
 local function UpdatePlate(unit)
@@ -1250,20 +1475,17 @@ local function UpdatePlate(unit)
         and (TapLost(guid) or state.groupTagged[guid]) then
         local badge = GetBadge(unit, true)
         if badge then
-            badge.text:Hide()
+            HideBadgeShare(badge)
             badge.check:Hide()
             badge.deny:Show()
+            badge.showing = "deny"
         end
         return
     end
 
     if not db.enabled or Suspended() or not HasTaggers() or not dealt or not maxhp or maxhp <= 0 then
         local badge = GetBadge(unit, false)
-        if badge then
-            badge.check:Hide()
-            badge.text:Hide()
-            badge.deny:Hide()
-        end
+        if badge then BlankBadge(badge) end
         return
     end
 
@@ -1274,26 +1496,16 @@ local function UpdatePlate(unit)
     -- Worth no XP, so the threshold is meaningless. Any damage at all tags it,
     -- and that's the only fact worth showing.
     if IsWorthless(guid) then
-        badge.text:Hide()
-        badge.check:Show()
+        ShowBadgeCheck(badge)
         return
     end
 
     local pct = dealt / maxhp * 100
     if pct >= db.threshold then
-        badge.text:Hide()
-        badge.check:Show()
+        ShowBadgeCheck(badge)
     else
         badge.check:Hide()
-        -- Under the minimum the number wears the warning icon, because on its own
-        -- an orange 12% and an orange 35% look like the same kind of problem and
-        -- they are not. The icon comes off the moment the share is worth having,
-        -- and from there the colour alone carries it to the checkmark.
-        badge.text:SetText(ShareBand(pct) == "failed"
-            and format("%s%d%%", C.WARN_ICON, pct)
-            or format("%d%%", pct))
-        badge.text:SetTextColor(ShareColor(pct))
-        badge.text:Show()
+        DrawBadgeShare(badge, pct)
     end
 
 end
@@ -1302,6 +1514,70 @@ local function UpdateAllPlates()
     for unit in pairs(state.plates) do
         UpdatePlate(unit)
     end
+end
+
+-- Moving the badge to another side of the plate, and the two things that have
+-- to move with it.
+--
+-- The OFFSETS go back to zero. They are a nudge measured against one side - a
+-- +40 that lined the badge up beside the health bar means nothing above it, and
+-- keeping it would drop the badge somewhere the user did not put it, on the one
+-- click where they are least expecting to have to go looking for it.
+--
+-- TEXT FIRST follows the side, because it is not really a preference about text
+-- so much as about which end of the badge faces the plate; see BADGE_JUSTIFY.
+-- It stays a checkbox because somebody may disagree, and setting it here rather
+-- than deriving it is what leaves them the room to.
+--
+-- In the core rather than in the window, because /tag pos is the other way in
+-- and two front ends that each apply their own half of this is exactly the
+-- drift the window is meant not to have.
+local function SetBadgePosition(mode)
+    if not C.BADGE_ANCHORS[mode] then return false end
+    db.badgePos = mode
+    db.badgeX, db.badgeY = 0, 0
+    db.badgeTextFirst = (mode == "left")
+    UpdateAllPlates()   -- GetBadge re-styles each plate as it comes through
+    return true
+end
+
+-- Every badge setting, defaulted AND range-checked, in one place.
+--
+-- Called at load to fill in whatever was never set, and called with `force` by
+-- the Reset button on the Badge box. One function rather than two, because two
+-- would be two answers to "what does this ship as" and only one of them would
+-- get updated when a default moved.
+--
+-- The numbers are clamped whichever way they arrived: they come off sliders
+-- with a range, and a hand-edited SavedVariables shoving the badge 900px away
+-- would put it somewhere nobody could find it again to put it back.
+local function BadgeDefaults(force)
+    local function Flag(key, value)
+        if force or db[key] == nil then db[key] = value end
+    end
+    local function Number(key, value, lo, hi)
+        db[key] = min(max(force and value or tonumber(db[key]) or value, lo), hi)
+    end
+
+    if force or not C.BADGE_ANCHORS[db.badgePos] then db.badgePos = "right" end
+    -- "" is the game's own font, and is deliberately not a path: whatever
+    -- STANDARD_TEXT_FONT is on this client's locale is what "Default" means.
+    if force or type(db.badgeFont) ~= "string" then db.badgeFont = "" end
+
+    Flag("badgeTextFirst", db.badgePos == "left")
+    Flag("badgePercent",  true)
+    Flag("badgeWarnIcon", true)
+
+    Number("badgeX", 0, -C.BADGE_NUDGE_LIMIT, C.BADGE_NUDGE_LIMIT)
+    Number("badgeY", 0, -C.BADGE_NUDGE_LIMIT, C.BADGE_NUDGE_LIMIT)
+    Number("badgeFontSize", C.BADGE_FONT_SIZE, C.BADGE_FONT_MIN, C.BADGE_FONT_MAX)
+    Number("badgeIconSize", C.BADGE_ICON_SIZE, C.BADGE_SIZE_MIN, C.BADGE_SIZE_MAX)
+    Number("badgeGap", C.BADGE_GAP, 0, C.BADGE_GAP_MAX)
+end
+
+local function ResetBadgeOptions()
+    BadgeDefaults(true)
+    UpdateAllPlates()
 end
 
 --------------------------------------------------------------------------------
@@ -2746,20 +3022,6 @@ local function CheckContact()
     AskForInvite(target, "out of range - ")
 end
 
--- Put one of the three markers on a mob the tagger has tagged. Marking is not a
--- protected action, so this works solo and in combat.
-local function MarkTaggedMob(guid)
-    if not db.markers or state.marked[guid] then return end
-
-    local unit = state.guidToUnit[guid]
-    if not unit then return end   -- retried from OnNameplateAdded
-
-    SetRaidTarget(unit, C.TAG_MARKERS[markerSlot])
-    state.marked[guid] = true
-    markerSlot = markerSlot + 1
-    if markerSlot > #C.TAG_MARKERS then markerSlot = 1 end
-end
-
 -- The carry just took a mob out from under the tagger. Only fires when the tagger
 -- has been active recently, so it can't nag during solo play.
 local function WarnTagStolen()
@@ -3033,21 +3295,19 @@ local function OnCombatLog()
         state.tapOwner[destGUID] = fromCarry and "carry"
             or (fromTracked and "tagger" or "other")
 
-        -- Nothing is at stake on a worthless mob, so neither the scolding nor the
-        -- marker clutter is worth it.
+        -- Nothing is at stake on a worthless mob, so the scolding is not worth it.
         if not worthless then
             -- TapLost rather than tapOwner: on an auto-tagged mob there was
             -- nothing to take, so scolding for taking it is just wrong.
             if TapLost(destGUID) then
                 WarnTagStolen()
             elseif state.tapOwner[destGUID] == "tagger" then
-                SafeCall(MarkTaggedMob, destGUID)
                 -- Being grouped is about the pull, not about who tapped it, so it
                 -- has to be said on this side too - WarnTagStolen only covers the
                 -- mobs the carry grabbed. Without it, whether a mob pulled after
                 -- joining mid-fight warned at all came down to who happened to
                 -- land the first hit. No-op when ungrouped, and rate limited when
-                -- grouped, so the marker path stays quiet in the normal case.
+                -- grouped, so this stays quiet in the normal case.
                 WarnGroupedCombat()
             end
         end
@@ -4214,19 +4474,12 @@ local function OnNameplateAdded(unit)
     -- Only for mobs we're already tracking: caching level for every plate we ever
     -- see would grow unbounded, since the sweep only walks mobs with damage.
     if state.damage[guid] then CacheMobInfo(unit, guid) end
-    -- The tag may have been recorded before this plate existed, so marking gets
-    -- a second chance here.
-    if state.tapOwner[guid] == "tagger" then SafeCall(MarkTaggedMob, guid) end
     UpdatePlate(unit)   -- mob may already have damage banked from outside plate range
 end
 
 local function OnNameplateRemoved(unit)
     local badge = GetBadge(unit, false)
-    if badge then
-        badge.check:Hide()
-        badge.text:Hide()
-        badge.deny:Hide()
-    end
+    if badge then BlankBadge(badge) end
 
     local p = state.plates[unit]
     if p and p.guid and state.guidToUnit[p.guid] == unit then
@@ -4329,7 +4582,6 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         -- Delayed: leadership and roster aren't settled the instant this fires.
         C_Timer.After(1, CheckLootMethod)
     elseif event == "PLAYER_REGEN_ENABLED" then
-        markerSlot = 1   -- start each pull back at skull
         UpdateMacroButton()   -- secure attributes were locked during the fight
     elseif event == "PARTY_INVITE_REQUEST" then
         -- Strictly the other half of the pair, by name. Auto-accepting anything
@@ -4395,7 +4647,6 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.useGameVolume      == nil then db.useGameVolume      = true end
         db.volume = db.volume or 100
         db.cueVolume = db.cueVolume or {}
-        if db.markers     == nil then db.markers     = true end
         if db.stealWarning == nil then db.stealWarning = true end
         if db.autoInvite   == nil then db.autoInvite   = true end
         if db.autoAccept   == nil then db.autoAccept   = true end
@@ -4440,7 +4691,11 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         db.banlistSeed = nil   -- retired with the scheme that used it
         if db.comms == nil then db.comms = true end
         if db.autoLoot == nil then db.autoLoot = true end
-        db.badgePos = C.BADGE_ANCHORS[db.badgePos] and db.badgePos or "above"
+        -- To the side by default: the badge is a number, and a number beside
+        -- the name is read without moving your eyes off the plate the way one
+        -- stacked over it is. No migration - anyone who set a position already
+        -- has one saved, and this only decides for somebody who never said.
+        BadgeDefaults()
 
         -- Rebind the runtime table onto the saved one: who has the addon is a
         -- stable fact about a character pair, and losing it on /reload silently
@@ -4532,6 +4787,16 @@ ns.Roster                       = Roster
 ns.RebuildDynamicTaggers        = RebuildDynamicTaggers
 ns.ResetAll                     = ResetAll
 ns.UpdateAllPlates              = UpdateAllPlates
+-- The badge, in pieces, so the options window can draw one over a fake plate.
+-- Every one of these is the thing the real badge uses, not a copy of it: a
+-- preview that grades, writes, positions or animates a share differently from
+-- the nameplate is a preview of nothing.
+ns.ApplyBadgeStyle              = ApplyBadgeStyle
+ns.SetBadgePosition             = SetBadgePosition
+ns.ResetBadgeOptions            = ResetBadgeOptions
+ns.DrawBadgeShare               = DrawBadgeShare
+ns.ShowBadgeCheck               = ShowBadgeCheck
+ns.BlankBadge                   = BlankBadge
 ns.UpdateMacroButton            = UpdateMacroButton
 ns.BuildFollowMacro             = BuildFollowMacro
 ns.RefreshContinent             = RefreshContinent

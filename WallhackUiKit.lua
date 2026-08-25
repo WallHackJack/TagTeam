@@ -570,30 +570,62 @@ end
 --
 -- `Selected` is asked for the current value on every open rather than the
 -- caller pushing one in, so the control cannot disagree with what it is showing.
+--
+-- An entry carrying `entries` instead of a `value` is a SUBMENU holding that
+-- list. This is not decoration: Blizzard's dropdown draws its buttons in one
+-- column and does not scroll them, so a list long enough to reach past the
+-- screen edge simply has a bottom nobody can get to - which is what a font
+-- list borrowed from a media pack does the moment it is more than a screenful.
+-- Grouping is the caller's business, since only the caller knows what the list
+-- means; all this knows is how to nest one.
 function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
     local dd = CreateFrame("Frame", globalName, parent, "UIDropDownMenuTemplate")
     dd:SetFrameLevel(parent:GetFrameLevel() + 1)
     UI.StyleDropdown(dd, true)
 
-    local function Label(value)
-        for _, entry in ipairs(choices) do
-            if entry.value == value then return entry.label end
+    -- Depth first: the label for the box has to be found wherever in the tree
+    -- the value ended up, and the caller does not tell us where that was.
+    local function Find(value, list)
+        for _, entry in ipairs(list) do
+            if entry.entries then
+                local found = Find(value, entry.entries)
+                if found then return found end
+            elseif entry.value == value then
+                return entry.label
+            end
         end
-        return tostring(value)
     end
 
-    UIDropDownMenu_Initialize(dd, function()
+    local function Label(value)
+        return Find(value, choices) or tostring(value)
+    end
+
+    -- `menuList` is whatever the parent button put in info.menuList, and comes
+    -- back here when a submenu opens - so one initialiser serves every level.
+    UIDropDownMenu_Initialize(dd, function(_, level, menuList)
         local current = Selected()
-        for _, entry in ipairs(choices) do
+        for _, entry in ipairs(menuList and menuList.entries or choices) do
             local info = UIDropDownMenu_CreateInfo()
             info.text = entry.label
-            info.checked = entry.value == current
-            info.func = function()
-                OnPick(entry.value)
-                UIDropDownMenu_SetText(dd, Label(entry.value))
-                CloseDropDownMenus()
+            if entry.entries then
+                -- notCheckable, because a submenu is a way through rather than
+                -- a choice: a tick box beside it would be a tick nobody can set.
+                info.hasArrow, info.notCheckable = true, true
+                info.menuList = entry
+            else
+                info.checked = entry.value == current
+                -- An entry may name a Font OBJECT to draw its own label with.
+                -- A font list that shows each name in the font it names is the
+                -- whole point of a font list, and a dropdown button takes a
+                -- font object or nothing - there is no other way in.
+                info.fontObject = entry.font
+                info.func = function()
+                    OnPick(entry.value)
+                    UIDropDownMenu_SetText(dd, Label(entry.value))
+                    CloseDropDownMenus()   -- every level, not just this one
+                end
             end
-            UIDropDownMenu_AddButton(info)
+            UIDropDownMenu_AddButton(info, level)
         end
     end)
     UIDropDownMenu_SetWidth(dd, width)
@@ -633,13 +665,14 @@ function UI.CreateSectionRow(box, index)
     local row = box.rows[index]
     if row then return row end
 
+    local top = UI.BOX_PAD + UI.SECTION_TITLE_H + (box.rowsInset or 0)
+        + (index - 1) * UI.ROW_H
+
     row = CreateFrame("Frame", nil, box)
     row:SetFrameLevel(box:GetFrameLevel() + 1)
     row:SetHeight(UI.ROW_H)
-    row:SetPoint("TOPLEFT", UI.BOX_PAD,
-        -(UI.BOX_PAD + UI.SECTION_TITLE_H + (index - 1) * UI.ROW_H))
-    row:SetPoint("TOPRIGHT", -UI.BOX_PAD,
-        -(UI.BOX_PAD + UI.SECTION_TITLE_H + (index - 1) * UI.ROW_H))
+    row:SetPoint("TOPLEFT", UI.BOX_PAD, -top)
+    row:SetPoint("TOPRIGHT", -UI.BOX_PAD, -top)
 
     local color = box.rowColors[index % 2 == 1 and 1 or 2]
     local bg = row:CreateTexture(nil, "BACKGROUND")
@@ -659,12 +692,22 @@ function UI.CreateEmptyHint(box)
     return hint
 end
 
+-- Reserve a strip between a box's title and its first row, for a box whose top
+-- is a picture rather than a list. The caller fills the strip itself.
+--
+-- MUST be called before any row is created: a row anchors once, at creation,
+-- and a pooled row that already exists will not move for this.
+function UI.ReserveSectionStrip(box, height)
+    box.rowsInset = height
+end
+
 -- Size a box to hold `count` rows, and hide any pooled row past that count.
 -- An empty list still gets EMPTY_ROWS_H so the hint has somewhere to sit.
 function UI.SetSectionRowCount(box, count)
     for i = count + 1, #box.rows do box.rows[i]:Hide() end
     local rowsH = count > 0 and count * UI.ROW_H or UI.EMPTY_ROWS_H
-    box:SetHeight(UI.BOX_PAD * 2 + UI.SECTION_TITLE_H + rowsH)
+    box:SetHeight(UI.BOX_PAD * 2 + UI.SECTION_TITLE_H
+        + (box.rowsInset or 0) + rowsH)
 end
 
 -- Stack visible section boxes down a parent, chaining each to the one above so

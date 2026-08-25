@@ -151,12 +151,11 @@ local function Status()
         state.reportedKills > 0
             and format("|cff00ff00%d|r XP confirmed", state.reportedXP)
             or format("~%d XP estimated", state.sessionXP)))
-    Print(format("pets: %s | pvp mobs: %s | announce: %s | quests: %s | markers: %s | steal warning: %s | enabled: %s",
+    Print(format("pets: %s | pvp mobs: %s | announce: %s | quests: %s | steal warning: %s | enabled: %s",
         db.includePets and "on" or "off",
         db.ignorePvP and "ignored" or "tracked",
         db.announce and "on" or "off",
         db.questNotices and "on" or "off",
-        db.markers and "on" or "off",
         db.stealWarning and "on" or "off",
         db.enabled and "on" or "off"))
     -- Loud, because a suspended addon looks exactly like a broken one.
@@ -208,7 +207,7 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag pos <above|below|left|right>|r - where the badge sits on the nameplate")
     Print("|cffffff00/tag sound|r - master mute. Which cues play, and what each one is, live on the window's Sounds tab.")
     Print("|cffffff00/tag miss|r - the on-screen miss notice (the mark, not the sound)")
-    Print("|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag markers|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
+    Print("|cffffff00/tag level <n>|r  |cffffff00/tag xp|r  |cffffff00/tag zone|r  |cffffff00/tag calibrate|r  |cffffff00/tag steal|r  |cffffff00/tag pets|r  |cffffff00/tag pvp|r  |cffffff00/tag announce|r  |cffffff00/tag quests|r  |cffffff00/tag instance|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r  |cffffff00/tag xpdebug|r")
     Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
     Print("|cffffff00/tag autoinvite|r  |cffffff00/tag accept|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
     Print("|cffffff00/tag leave|r  |cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
@@ -640,8 +639,10 @@ commands["pos"] = function(rest, cmd)
         Print("|cffffff00/tag pos above|below|left|right|r")
         return
     end
-    db.badgePos = mode
-    UpdateAllPlates()   -- GetBadge re-anchors each plate as it comes through
+    -- Through the core, not by hand: moving the badge also zeroes the offsets
+    -- and flips which end its contents face, and this command doing half of
+    -- that while the window does all of it is exactly the drift to avoid.
+    ns.SetBadgePosition(mode)
     Print(format("badge moved |cffffff00%s|r the nameplate.", mode))
 end
 commands["position"] = commands["pos"]
@@ -738,11 +739,6 @@ commands["focus"] = function(rest, cmd)
     state.focusEverSet = false
     Print("use focus for range detection: " .. (db.autoFocus and "on." or "off."))
     Print("|cff808080Setting focus is protected. Bind a key under Key Bindings > TagTeam, or use /tag macro.|r")
-end
-
-commands["markers"] = function(rest, cmd)
-    db.markers = not db.markers
-    Print("raid markers on their tags " .. (db.markers and "on." or "off."))
 end
 
 commands["steal"] = function(rest, cmd)

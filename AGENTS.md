@@ -74,10 +74,209 @@ Two fields carry the things that bit:
   get muted by the server.
 - **`requires`** hides a row this client cannot honour (`HAS_FOCUS`). A greyed
   row explaining that on every login is worse than the row not being there.
+- **`labelW`** on a *box* puts every control in it in one column instead of each
+  starting where its own label happened to end. Worth the number only where a
+  box holds more than one; the Badge box is the only one that does.
+- **`needs`** names another `db` key this row is meaningless without, and greys
+  it while that one is off — the icon's padding and its side, with the warning
+  icon switched off. Greyed with a reason, **not hidden**: a row that vanishes
+  makes the box jump and takes its own explanation with it. Contrast `requires`,
+  which does hide, because a client that has no focus unit will never have one.
+- **`Reset`** on a *box* puts a Reset button in its header. It names a core call
+  (`ns.ResetBadgeOptions`), never a table of defaults out here — the defaults
+  live in the core and a second copy would be a second answer to what "default"
+  means. `BadgeDefaults(force)` is that one answer: the load path fills in what
+  was never set, the button overwrites, same function.
 
 Every option value is in the window's refresh signature, because most of them
 still have a `/tag` command and a window showing the opposite of what you just
 typed is worse than no window.
+
+**A box can bring a picture as well as rows.** `Build` and `Refresh` on a group
+sit alongside `rows`, and the builder calls `UI.ReserveSectionStrip` to leave
+room above the first one. That reservation **must happen before any row exists**
+— a row anchors once, at creation, and will not move for it afterwards, which is
+why `group.Build` runs inside `BuildOptionsPage` rather than at first refresh.
+
+### The badge preview
+
+The Badge box's first row is a picture rather than an option: a grey rectangle
+the size of a nameplate with a **real badge** over it and a damage share
+climbing past the threshold on a loop, so the settings under it can be watched
+instead of being applied one reload at a time. It carries no label of its own —
+"Preview" written over a picture of a nameplate says nothing the picture did
+not, and it was a separate box once, which put a header between the settings and
+the thing they change.
+
+Everything on it comes from the core, through the exports beside
+`UpdateAllPlates`: `ApplyBadgeStyle`, `DrawBadgeShare`, `ShowBadgeCheck` and
+`BlankBadge`. **Keep it that way.** A preview that placed, graded, wrote or
+animated a share by its own rules is a preview of nothing, and the drift would
+not be visible until somebody trusted it. Each of those was split out of
+`UpdatePlate` for exactly this, and every one still serves the real plate. The
+preview frame builds the same four regions under the same names — `check`,
+`deny`, `icon`, `text` — and sets no sizes or points of its own. It builds
+`deny` too, which it never shows: a badge handed to the core has to be a whole
+badge, or `BlankBadge` trips over the one region it did not bother to have.
+
+The rectangle is deliberately a rectangle. The addon can never measure a real
+nameplate, every nameplate addon draws something different inside the frame the
+badge hangs off, and what the box has to show is where the badge lands relative
+to a plate — which a plain box says and a drawing of a health bar would only
+dress up.
+
+**There are two rectangles, and one of them is invisible.** The badge anchors to
+Blizzard's *base* plate frame, which is wider than the bar any nameplate addon
+draws inside it. Drawing the visible rectangle at the base frame's size lied in
+the one direction that matters: the badge came out sitting *on* the plate in the
+preview while standing clear of it in game. So `area.anchor` is the base frame,
+never drawn, and `plate` is the bar inside it, narrower by `PLATE_INSET` a side.
+Horizontal only: the vertical anchors clear the frame by 4px rather than by the
+inset, and above and below already read right.
+
+`PLATE_INSET` is its own number and **deliberately not `C.BADGE_SIDE_INSET`**.
+The two look alike and are not — the inset is how far the badge hangs off the
+base frame, this is how much wider that frame is than the bar — and reusing one
+for the other meant moving either moved both for no reason. Neither is a
+measurement; every nameplate addon picks its own geometry, which is what the
+offset sliders exist for.
+
+`C.BADGE_SIDE_INSET` itself was **measured in game, not reasoned out**. It was
+12, and 12 sat the badge far enough in that a side-mounted badge needed +8 dialled
+back out of it on the X offset before it looked right. The offsets are for a
+plate that puts its bar somewhere unusual; they should not be paying for our own
+default being wrong.
+
+Four things it depends on:
+
+- The sweep runs off `OnUpdate` on the preview's own frame. A hidden frame gets
+  none, so it stops on its own the moment another tab is picked and costs
+  nothing while the window is shut. No ticker to cancel.
+- It climbs in **random bursts of 3–6%**, because that is what damage does — a
+  share jumps by whatever the last hit was worth and then sits there. An evenly
+  sliding number would be a picture of something else.
+- It turns round at 60%, **or past the threshold if that is set higher** —
+  otherwise somebody running at 80% would watch a preview that never reaches the
+  checkmark, which is the one moment it exists to show.
+- A row carrying `holdPreview = <pct>` **pins the sweep to that share while its
+  dropdown is open**, and picks up where it left off after. The font list uses
+  it: two fonts are hard to tell apart when the number under them keeps moving.
+  `HeldShare` checks `DropDownList1:IsShown()` *as well as*
+  `UIDROPDOWNMENU_OPEN_MENU`, because that global is not cleared on close and
+  alone would pin the preview for the rest of the session after one look.
+- It calls `BlankBadge` before each run rather than jumping back to 10%, so the
+  first share of the loop **appears** rather than merely changes — which is what
+  makes the pop-in below visible in the preview at all.
+
+### The pop-in, and why `showing` exists
+
+A badge arriving out of nothing plays the same slam the checkmark plays when the
+threshold is met. The first damage on a mob is news too, and a number that fades
+up unannounced is easy to miss mid-pull.
+
+`badge.showing` (`nil` / `"share"` / `"check"` / `"deny"`) is what tells an
+appearance from a change, and the gate is **`not badge.showing`**, not "is not
+already the share". A mob taken past the threshold by its first hit shows a
+checkmark, which slams on its own — without that gate the two animations would
+land on top of each other on exactly the pull where the badge matters most.
+
+Consequences: `PlayBadgeStamp` decides nothing about what is on screen, the
+callers do; `ShowBadgeCheck` and `BlankBadge` exist so the bookkeeping cannot be
+forgotten at one of the several sites that show or clear a badge; and anything
+new that puts something on a badge has to set `showing`, or the next thing to
+arrive will pop in when it should not.
+
+The box is deliberately **not** tall enough for the ±100 offsets. One that was
+would be mostly empty every other minute of its life; `SetClipsChildren` is what
+shows an extreme offset leaving instead of drawing it over the rows below.
+
+### The font dropdown
+
+`SHIPPED_FONTS` is the game's own four, which are on every client. Anything
+beyond that comes from **LibSharedMedia-3.0 if some other addon you run has
+loaded it** — that library is how nearly every addon with a font dropdown fills
+one, so borrowing its list when it is there gets the same fonts as the rest of
+your UI for no dependency of ours, and its absence costs a shorter list and
+nothing else.
+
+`db.badgeFont` stores a **path, never a library key**: a path is what `SetFont`
+takes and is the half that still means something once the addon that registered
+the name is uninstalled. When it stops resolving, `SetBadgeFont` puts
+`STANDARD_TEXT_FONT` back — checked by asking `GetFont` afterwards, because a
+`FontString` whose `SetFont` failed renders *nothing at all*, and `SetFont`'s own
+return value reports success on some clients and nothing on others. `""` is the
+game font rather than a fifth path, so "Default" follows the client's locale.
+
+**Long lists go into submenus, and that is not decoration.** Blizzard's dropdown
+draws its buttons in one column and **does not scroll them**, so a list past the
+screen edge has a bottom nobody can reach — which is exactly what happened the
+first time this shipped as a flat list with a cap on it. `UI.CreateDropdown`
+understands an entry carrying `entries` instead of a `value` as a submenu;
+*which* entries get grouped is `FontChoices`' business, since only it knows the
+list means fonts. Do not "fix" a too-long dropdown by raising a cap.
+
+**Every row is drawn in the font it names**, with `" - 25%"` on the end of it —
+the same share the preview holds at while the list is open. A name in a uniform
+font tells you what a font is called; it does not tell you whether its digits
+are legible at speed over a mob's head, which is the only question being asked.
+A dropdown button takes a **Font object** and nothing else, so `SampleFont`
+builds one per row off a counter (`CreateFont` needs a global name) and
+`UI.CreateDropdown` passes it through as `info.fontObject`. Same `GetFont`
+fallback as the badge: a font object whose `SetFont` did not take draws nothing
+at all, which would turn a row into a blank line.
+
+### Where the badge sits, and what faces the plate
+
+`SetBadgePosition` is the only way the position moves — `/tag pos` and the
+dropdown both go through it — and it carries two consequences that must not be
+split off:
+
+- **The offsets go back to zero.** They are a nudge measured against one side.
+  A `+40` that lined the badge up beside a health bar means nothing above it.
+- **`db.badgeTextFirst` follows the side.** It is really a preference about
+  which end of the badge faces the plate, so `left` sets it and the others clear
+  it. It stays a checkbox so somebody can disagree.
+
+`C.BADGE_JUSTIFY` pins the badge's contents to the edge facing the plate —
+`RIGHT` when the badge is left of the plate, `LEFT` when it is right, `CENTER`
+above and below. The text is whatever width the number is, so a centred string
+grows *both* ways: fine over the plate, wrong beside it, where one side is up
+against the nameplate and the other has the rest of the screen.
+
+Defaults are **right, percent sign on, warning icon on**, with sizes at 26/30
+and a 1px gap — a configuration somebody arrived at by using the thing, not a
+set of round numbers. Both size ranges run well past them: a badge is read at a
+glance from across a pull, on whatever resolution and UI scale somebody happens
+to run, so the top of each is set by what stays legible rather than by what
+looks sensible in the options window. `badgeTextFirst` is not defaulted flat: it follows the
+position, so the shipped `right` gives `false`. No migration was written for the
+move off `above` and none is wanted — anyone who set a position already has one
+saved, so the default only decides for somebody who never said.
+
+### LayoutBadgeContents measures nothing, and cannot
+
+The warning icon is a real `Texture` beside the number, not a `|T…|t` run inside
+it — a run inside a font string can be given neither a size nor a gap of its
+own, and both are sliders. That buys the layout a problem: two regions have to
+be arranged relative to each other **on a frame parented to a nameplate**, where
+`GetStringWidth` throws for the whole of combat like every other measurement.
+
+So the two are chained to each other and the only number in the arithmetic is
+`db.badgeIconSize`, which is a setting we already hold. **Centring the pair
+falls out of that**: stepping the text half an icon plus half a gap off centre
+leaves exactly the room the icon then fills on the other side, whatever width
+the text turned out to be. Do not "improve" this with a width lookup.
+
+`withIcon` is memoised on the badge as `laidOut`, because it flips as a share
+crosses `SHARE_MIN` and re-anchoring on every 4 Hz pass would be four `SetPoint`
+calls per plate for nothing. **Anything that hides the icon by hand must clear
+`laidOut`**, or the memo refuses to bring it back and the icon never returns;
+`HideBadgeShare` is the one place that does, and every site that hides the
+number goes through it.
+
+`db.badgeIconSize` sizes the badge FRAME, so the checkmark, the X and the
+warning icon move together. They are three faces of one mark, and a slider
+called "Icon Size" that moved one of them would be lying.
 
 ## The window decides nothing
 
@@ -353,7 +552,7 @@ same way — `Pets`.
   also the only range where the addon would have displayed anything.
 - Worthless mobs — grey, `UnitClassification == "minus"`, critters, more than
   `C.IGNORE_LEVEL_GAP` levels below the lowest tagger, and banned names — get no
-  ding, float, XP, marker or steal warning; only a plain checkmark. `IsGrey` and
+  ding, float, XP or steal warning; only a plain checkmark. `IsGrey` and
   `IsFarBelowTagger` are kept apart on purpose: the first is Blizzard's zero-XP
   formula, the second is a preference about what the session is for.
 - **Every worthless test needs a unit token first.** They all read a level or a
