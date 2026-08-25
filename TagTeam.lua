@@ -3324,7 +3324,7 @@ local function CheckFocusNag()
 
     lastFocusNagAt = GetTime()
     Print("|cffff8080No focus set.|r Press your TagTeam keybind, or /focus a tagger - "
-        .. "out-of-range detection needs it. |cffffff00/tag focuswarn|r to silence.")
+        .. "out-of-range detection needs it. |cffffff00/tag ui|r to silence.")
 end
 
 -- Ask for an invite once we've lost contact. Rate limited twice over - a latch

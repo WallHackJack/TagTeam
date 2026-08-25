@@ -122,10 +122,7 @@ styling, the XP zone, which cues play, and the two by-name mob lists (Ignore).
 | `/tag stats` | Session totals, estimated and actual |
 | `/tag link` | Pair with the other client over the addon channel |
 | `/tag inv` (`/tag invite`) | Ask your tagger — or your carry — to invite you now |
-| `/tag autoinvite` / `/tag autoleave` / `/tag loot` | Party handling |
-| `/tag focus` / `/tag focuswarn` / `/tag marks` (`/tag triangle`) | Finding your tagger |
 | `/tag sound` (`/tag audio`, `/tag mute`) | Master mute. Which cues play, and what each is set to, are on the Audio tab |
-| `/tag steal` / `/tag groupwarn` | The stolen-tag and grouped-in-combat warnings |
 | `/tag diag` | Runtime picture: what was detected, what is cached, and the last cosmetic error |
 
 ## Requirements

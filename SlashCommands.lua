@@ -45,10 +45,8 @@ local UsingOutlandBase          = ns.UsingOutlandBase
 local LowestTaggerLevel         = ns.LowestTaggerLevel
 local TaggerUnit                = ns.TaggerUnit
 local TaggerInRange             = ns.TaggerInRange
-local GroupedWithTagger         = ns.GroupedWithTagger
 local Suspended                 = ns.Suspended
 local MultiplierText            = ns.MultiplierText
-local CheckLootMethod           = ns.CheckLootMethod
 local AskForInvite              = ns.AskForInvite
 local SendAddon                 = ns.SendAddon
 local Roster                    = ns.Roster
@@ -140,42 +138,11 @@ local function Status()
                 (info and info.pet) and format("  pet |cff00ff00%s|r", info.pet) or ""))
         end
     end
-    -- Once any report has arrived, the confirmed total replaces the estimate
-    -- rather than sitting beside it. Two totals for one session invites reading
-    -- the wrong one, and the estimate is the wrong one.
-    Print(format("XP base: %s | session: %d tags, %s",
-        UsingOutlandBase() and "Outland" or "Azeroth",
-        state.sessionTags,
-        state.reportedKills > 0
-            and format("|cff00ff00%d|r XP confirmed", state.reportedXP)
-            or format("~%d XP estimated", state.sessionXP)))
-    Print(format("pvp mobs: %s | kill line: %s | quest progress: %s | steal warning: %s",
-        db.ignorePvP and "ignored" or "tracked",
-        db.announce and "on" or "off",
-        db.questProgress and "on" or "off",
-        db.stealWarning and "on" or "off"))
     -- Loud, because a suspended addon looks exactly like a broken one.
     if Suspended() then
         Print("|cffff8080SUSPENDED|r - dungeon or raid. The Ignore tab on "
             .. "|cffffff00/tag ui|r has the switch to run here anyway.")
     end
-    Print(format("auto-invite: %s | marks: %s | focus: %s | grouped: %s",
-        db.autoInvite and "on" or "off",
-        db.taggerMarker and "on" or "off",
-        C.HAS_FOCUS and (db.autoFocus and "on" or "off") or "n/a",
-        IsInGroup() and (GroupedWithTagger() and "|cffff2020with tagger|r" or "yes")
-            or "no"))
-    Print(format("auto-leave: %s | group warning: %s | focus reminder: %s",
-        db.autoLeave and "on" or "off",
-        db.groupWarning and "on" or "off",
-        db.focusWarning and "on" or "off"))
-    Print(format("badge position: |cffffff00%s|r the nameplate", db.badgePos))
-    -- Per-cue settings are not listed. There are seven of them now and they live
-    -- on the window's Audio tab; a status line that reprints all seven every
-    -- time you type /tag is worse than a pointer to where they are.
-    Print(format("sound: %s | miss notice: %s",
-        db.audio and "|cff00ff00on|r" or "|cffff2020MUTED|r",
-        db.missAlert and "on" or "off"))
 end
 
 
@@ -198,10 +165,8 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag link|r - pair with the other client over the addon channel")
     Print("|cffffff00/tag sound|r (|cffffff00/tag audio|r) - master mute. Which cues play is on the window's Audio tab.")
-    Print("|cffffff00/tag stats|r  |cffffff00/tag steal|r  |cffffff00/tag reset|r  |cffffff00/tag diag|r")
+    Print("|cffffff00/tag stats|r  |cffffff00/tag diag|r")
     Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
-    Print("|cffffff00/tag autoinvite|r  |cffffff00/tag marks|r  |cffffff00/tag focus|r  |cffffff00/tag focuswarn|r - party handling")
-    Print("|cffffff00/tag autoleave|r  |cffffff00/tag groupwarn|r  |cffffff00/tag loot|r - grouping")
 end
 commands["status"] = commands[""]
 
@@ -401,28 +366,6 @@ commands["link"] = function(rest, cmd)
     Print(format("pairing request sent to |cff00ff00%s|r.", target))
 end
 
-commands["loot"] = function(rest, cmd)
-    db.autoLoot = not db.autoLoot
-    Print("free-for-all loot in a two-person tag group: " ..
-        (db.autoLoot and "on." or "off."))
-    if db.autoLoot then CheckLootMethod() end
-end
-
-commands["autoleave"] = function(rest, cmd)
-    db.autoLeave = not db.autoLeave
-    Print("auto-leave the tagger's party when back in range: " ..
-        (db.autoLeave and "on." or "off."))
-end
-
-commands["groupwarn"] = function(rest, cmd)
-    db.groupWarning = not db.groupWarning
-    Print("grouped-in-combat warning " .. (db.groupWarning and "on." or "off."))
-end
-
-commands["focuswarn"] = function(rest, cmd)
-    db.focusWarning = not db.focusWarning
-    Print("no-focus reminder " .. (db.focusWarning and "on." or "off."))
-end
 -- The master switch, and the only sound command left. The seven individual cues
 -- - which one plays, and what each is set to - are the Audio tab's job now;
 -- there were five commands for it and nobody could hold them in their head.
@@ -435,12 +378,6 @@ commands["sound"] = function(rest, cmd)
     end
 end
 commands["audio"], commands["mute"] = commands["sound"], commands["sound"]
-commands["autoinvite"] = function(rest, cmd)
-    db.autoInvite = not db.autoInvite
-    Print(format("ask for an invite when out of range: %s",
-        db.autoInvite and "on." or "off."))
-end
-
 commands["inv"] = function(rest, cmd)
     -- Asks THEM to invite US, which is the same exchange the automatic
     -- out-of-range path runs - this is just the manual trigger for it.
@@ -481,29 +418,6 @@ commands["inv"] = function(rest, cmd)
     AskForInvite(target)
 end
 commands["invite"] = commands["inv"]
-
-commands["triangle"] = function(rest, cmd)
-    db.taggerMarker = not db.taggerMarker
-    Print("markers on taggers while ungrouped " ..
-        (db.taggerMarker and "on." or "off."))
-end
-commands["marks"] = commands["triangle"]
-
-commands["focus"] = function(rest, cmd)
-    if not C.HAS_FOCUS then
-        Print("|cffff8080This client has no focus unit|r - out-of-range falls back to a timer.")
-        return
-    end
-    db.autoFocus = not db.autoFocus
-    state.focusEverSet = false
-    Print("use focus for range detection: " .. (db.autoFocus and "on." or "off."))
-    Print("|cff808080Setting focus is protected. Bind a key under Key Bindings > TagTeam.|r")
-end
-
-commands["steal"] = function(rest, cmd)
-    db.stealWarning = not db.stealWarning
-    Print("tag-steal warning " .. (db.stealWarning and "on." or "off."))
-end
 
 local function HandleSlash(input)
     -- The core assigns this in ADDON_LOADED, after this file has loaded, so
