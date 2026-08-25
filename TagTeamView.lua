@@ -33,7 +33,7 @@ local NormalizeName = ns.NormalizeName
 local Print = ns.Print
 local C = ns.C
 
-local WIDTH, HEIGHT = 560, 470
+local WIDTH, HEIGHT = 560, 510
 
 -- Narrower than the name prompt, not wider. It used to be half again as wide,
 -- because a sound path is a long thing to read - but the path now gets a line
@@ -42,6 +42,9 @@ local WIDTH, HEIGHT = 560, 470
 -- card, where a wide flat one read as a dialog box.
 local SOUND_PROMPT_W = 320
 local PREVIEW_GAP    = 0.3   -- seconds between previews while a slider moves
+-- Wide enough for "TagTeam volume: 100%", the longest this caption gets, so
+-- the slider anchored to its right never moves. See BuildSoundsPage.
+local VOLUME_LABEL_W = 150
 local THRESHOLD_SEND_GAP = 0.6   -- settle time before the threshold is whispered
 
 -- The tabs, in display order. Adding one is adding a line: the strip lays
@@ -378,7 +381,7 @@ end
 -- the game is both the default and the only setting that touches nothing.
 --------------------------------------------------------------------------------
 
-local sounds = { boxes = {} }   -- the page's widgets, built once
+local sounds = { boxes = {}, cueBoxes = {} }   -- the page's widgets, built once
 
 -- A cue by its key. The Popups tab's audio buttons name a cue in a row spec,
 -- and C.CUES is a list rather than a map because its ORDER is what the Audio
@@ -397,8 +400,50 @@ local function Preview(key)
     local now = GetTime()
     if now - lastPreview < PREVIEW_GAP then return end
     lastPreview = now
-    Cues.Play(key)
+    -- No key means the global controls, which preview the addon's own sound at
+    -- full strength rather than borrowing a cue - see Cues.PlayMaster.
+    if key then Cues.Play(key) else Cues.PlayMaster() end
 end
+
+-- Blizzard's confirm rather than the addon's own prompt: that one is a form
+-- with a field in it, and this is a yes/no on something that cannot be undone.
+-- Spelled out in full because "reset audio" could mean the master block, the
+-- cues, or both, and the button is next to the master block only.
+StaticPopupDialogs["TAGTEAM_RESET_AUDIO"] = {
+    -- "100%%", not "100%". StaticPopup_Show puts this string through
+    -- SetFormattedText whether or not it was given arguments, so a lone % is a
+    -- format directive that has nothing to consume - it throws, and the pop-up
+    -- never appears. The doubled one prints as a single percent sign.
+    text = "Reset ALL audio settings to their defaults?\n\n"
+        .. "Every cue goes back to its shipped sound, its own volume returns to "
+        .. "100%%, and each cue's on/off switch returns to how it ships. The "
+        .. "TagTeam volume, the follow-the-game setting and the master switch "
+        .. "are reset too.\n\n"
+        .. "Nothing outside the Audio tab is changed. This cannot be undone.",
+    -- SWAPPED, on purpose. StaticPopup draws button1 on the left and button2 on
+    -- the right, and the way out belongs on the left with the accept on the
+    -- right - the same order the addon's own prompt uses. So Cancel is the
+    -- "accept" slot and the reset hangs off OnCancel.
+    button1 = CANCEL,
+    button2 = ACCEPT,
+    -- No timeout and no escape route into OnCancel: with the handler on that
+    -- side, either one would fire the reset without anybody pressing anything.
+    -- Escape still closes the window, it just closes it silently.
+    timeout = 0,
+    noCancelOnEscape = true,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,   -- avoids tainting Blizzard's popup stack
+    OnAccept = function() end,   -- button1 is Cancel now: nothing to do
+    -- `reason` is "clicked" only for the button. Belt and braces with the two
+    -- flags above: a reset this size should need a press, not a dismissal.
+    OnCancel = function(_, _, reason)
+        if reason ~= "clicked" then return end
+        Cues.ResetAll()
+        Print("all audio settings reset to their defaults.")
+        ns.RefreshView()
+    end,
+}
 
 -- The gear's pop-up: which sound, how loud, and a way back to the default.
 local function AskSound(cue)
@@ -439,14 +484,16 @@ local function AskSound(cue)
             label = "Volume: %.0f%%",
             min = 0, max = 100, step = 5,
             value = (ns.db.cueVolume and ns.db.cueVolume[cue.key]) or 100,
-            -- Saved as it moves rather than on accept, and played: the point of
-            -- a volume slider is hearing the difference, and Cancel on a volume
-            -- you have already listened to would be a strange thing to want.
+            -- Saved as it moves rather than on accept: the point of a volume
+            -- slider is hearing the difference, and Cancel on a volume you have
+            -- already listened to would be a strange thing to want.
             OnChange = function(value)
                 Cues.SetVolume(cue.key, value)
-                Preview(cue.key)
                 ns.RefreshView()
             end,
+            -- Heard on release only. A drag reports every step, and previewing
+            -- each one stacked the cue on top of itself all the way across.
+            OnRelease = function() Preview(cue.key) end,
         },
         reset = function()
             Cues.Reset(cue.key)
@@ -518,31 +565,78 @@ local function DressCueRow(box, index, cue)
 end
 
 local function BuildSoundsPage(page)
-    -- The three controls that govern everything below them, so they sit above
-    -- the boxes rather than inside one.
-    sounds.master = UI.CreateCheckbox(page, "Enable sounds", "Enable sounds",
+    -- The scroll owns the WHOLE page, master box included. Anchored above it,
+    -- the master box sat still while everything under it moved, and the bar
+    -- reported the height of two sections out of three.
+    local scroll = UI.CreateScroll(page, "TagTeamViewSoundsScroll")
+    scroll:SetPoint("TOPLEFT")
+    scroll:SetPoint("BOTTOMRIGHT", -UI.SCROLLBAR_W, 0)
+    sounds.scroll = scroll
+
+    -- The three controls that govern everything below them, in a box of their
+    -- own above the cue boxes. Loose on the page they read as page furniture;
+    -- boxed and titled they read as what they are - a section whose settings
+    -- multiply every section under it. Stacked with the others, so it is
+    -- boxes[1] rather than a thing on the side.
+    local master = UI.CreateSectionBox(scroll:GetScrollChild(), "Master Audio")
+    sounds.boxes[1] = master
+    sounds.masterBox = master
+
+    -- Deliberately NOT disabled when audio is off: it is the way back from a
+    -- settings mess, and one of the things it fixes is the switch that would
+    -- have greyed it out.
+    UI.AddHeaderTextButton(master, "Reset All Audio to Default",
+        "Reset all audio",
+        "Every cue's sound, volume and switch, and the master settings in this "
+        .. "box, back to how the addon ships. Asks first.",
+        function() StaticPopup_Show("TAGTEAM_RESET_AUDIO") end)
+    UI.LayoutHeaderChain(master)
+
+    -- One control per row, on the same alternating stripes every other box in
+    -- the window uses. Hand-placed they were three loose controls that happened
+    -- to be near each other; on rows they line up with the cue rows below, and
+    -- the checkboxes are ROW_CHECK like every other checkbox on a row.
+    local switchRow = UI.CreateSectionRow(master, 1)
+    sounds.master = UI.CreateCheckbox(switchRow, "Enable TagTeam Audio",
+        "Enable TagTeam Audio",
         "Every cue below is silenced while this is off. The on-screen marks "
         .. "are unaffected. Same switch as |cffffff00/tag sound|r.",
         function()
             ns.db.audio = not ns.db.audio
+            -- After the flag, not before: PlayCue checks it, so a preview on
+            -- the way ON would be silenced by the value it is confirming.
+            -- Turning sounds off says so by making none.
+            Preview()
             ns.RefreshView()
         end)
-    sounds.master:SetPoint("TOPLEFT", 2, -2)
+    sounds.master:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
+    sounds.master:SetPoint("LEFT", 4, 0)
 
-    -- Caption then handle, on one line and left aligned - the same row shape
-    -- the per-cue volume uses in its pop-up, so the two read as one control in
-    -- two places rather than two different ideas.
-    sounds.volumeLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sounds.volumeLabel:SetPoint("TOPLEFT", sounds.master, "BOTTOMLEFT", 4, -14)
+    -- Caption then handle, on one line and left aligned, the caption starting
+    -- where a row's label starts so the three rows share a left edge.
+    --
+    -- FIXED WIDTH on the caption, and left-justified: the caption carries the
+    -- value, so its text is narrower at 5% than at 100% - and a handle anchored
+    -- to the right of a font string that sizes to its own text walks sideways
+    -- as you drag it, which is the one control where that is unbearable.
+    local volumeRow = UI.CreateSectionRow(master, 2)
+    sounds.volumeLabel = volumeRow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    sounds.volumeLabel:SetWidth(VOLUME_LABEL_W)
+    sounds.volumeLabel:SetJustifyH("LEFT")
+    -- At the row's own left edge, where the checkboxes above and below start -
+    -- NOT indented to where their labels start. There is no box in front of
+    -- this one, so the indent read as a stray gap rather than as alignment.
+    sounds.volumeLabel:SetPoint("LEFT", 4, 0)
 
-    sounds.volume = UI.CreateSlider(page, "TagTeamViewVolume", 0, 100, 5,
+    sounds.volume = UI.CreateSlider(volumeRow, "TagTeamViewVolume", 0, 100, 5,
         function(_, value)
             ns.db.volume = value
-            -- Played as it moves. A volume you cannot hear while setting it is
-            -- a number you are guessing at.
-            Preview("tag")
             ns.RefreshView()
         end)
+    -- Heard when the handle is let go, not at every step of the drag: a drag
+    -- across the slider fired this twenty times, each one landing on top of the
+    -- last. See UI.CreateSlider's OnMouseUp.
+    sounds.volume.OnRelease = function() Preview() end
     sounds.volume:SetWidth(160)
     sounds.volume:SetPoint("LEFT", sounds.volumeLabel, "RIGHT", 12, 0)
     if sounds.volume.title then sounds.volume.title:SetText("") end
@@ -550,26 +644,31 @@ local function BuildSoundsPage(page)
         "How loud this addon's own cues are. The game's Sound Effects slider "
         .. "and each cue's own volume both multiply this one.")
 
-    sounds.followGame = UI.CreateCheckbox(page, "", "Follow the game's volume",
+    local followRow = UI.CreateSectionRow(master, 3)
+    -- Label left empty here: RefreshSounds writes it, because it carries the
+    -- game's current Sound Effects percentage.
+    sounds.followGame = UI.CreateCheckbox(followRow, "",
+        "Follow the game's volume",
         "Multiply everything by your Sound Effects slider as well. Off, this "
         .. "addon plays at its own volume whatever the game is set to.",
         function()
             ns.db.useGameVolume = not ns.db.useGameVolume
-            Preview("tag")
+            Preview()
             ns.RefreshView()
         end)
-    sounds.followGame:SetSize(UI.ROW_ICON, UI.ROW_ICON)
-    sounds.followGame:SetPoint("TOPLEFT", sounds.volumeLabel, "BOTTOMLEFT", -4, -12)
+    sounds.followGame:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
+    sounds.followGame:SetPoint("LEFT", 4, 0)
 
-    local scroll = UI.CreateScroll(page, "TagTeamViewSoundsScroll")
-    scroll:SetPoint("TOPLEFT", sounds.followGame, "BOTTOMLEFT", -2, -10)
-    scroll:SetPoint("BOTTOMRIGHT", -UI.SCROLLBAR_W, 0)
-    sounds.scroll = scroll
+    -- Three rows, and the box sizes itself to them the way every other section
+    -- does. Fixed here rather than in RefreshSounds: this box's row count is
+    -- decided by the code above, not by anything in the saved variables.
+    UI.SetSectionRowCount(master, 3)
 
     for i, group in ipairs(C.CUE_SECTIONS) do
         local box = UI.CreateSectionBox(scroll:GetScrollChild(), group.title)
         UI.LayoutHeaderChain(box)   -- no header buttons; keeps the call uniform
-        sounds.boxes[i] = box
+        sounds.cueBoxes[i] = box
+        sounds.boxes[i + 1] = box   -- master is boxes[1]; these stack under it
     end
 end
 
@@ -596,7 +695,7 @@ local function RefreshSounds()
         sounds.volume, sounds.volumeLabel)
 
     for i, group in ipairs(C.CUE_SECTIONS) do
-        local box, index = sounds.boxes[i], 0
+        local box, index = sounds.cueBoxes[i], 0
         for _, cue in ipairs(C.CUES) do
             if cue.section == group.key then
                 index = index + 1
@@ -616,8 +715,8 @@ local function RefreshSounds()
                 end
                 row.note:SetText(note)
 
-                row.check.disabledReason = "Sounds are off. Turn on Enable sounds."
-                row.gear.disabledReason = "Sounds are off. Turn on Enable sounds."
+                row.check.disabledReason = "Sounds are off. Turn on Enable TagTeam Audio."
+                row.gear.disabledReason = "Sounds are off. Turn on Enable TagTeam Audio."
 
                 UI.SetEnabled(on, row.icon, row.label, row.note, row.gear,
                     row.check)

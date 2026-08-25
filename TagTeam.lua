@@ -2101,8 +2101,8 @@ state.cueOk = {}
 -- about: the three that price the pull you are in, and the four that report
 -- what your partner is getting on with.
 C.CUE_SECTIONS = {
-    { key = "pull",     title = "Tagging" },
-    { key = "progress", title = "Progress" },
+    { key = "pull",     title = "Tagging Audio" },
+    { key = "progress", title = "Progress Audio" },
 }
 
 C.CUES = {
@@ -2138,6 +2138,10 @@ C.CUES = {
     { key = "qprogress", section = "progress", label = "Quest progress",
       about  = "An objective of theirs ticked over. Off by default - it fires "
             .. "as often as their quest log updates.",
+      -- The one cue that ships off. Written down here rather than only in the
+      -- loader's defaults so Cues.ResetAll can put the switches back too - a
+      -- reset that turned this one ON would not be a reset.
+      defaultOn = false,
       enable = "questProgressSound", file = "qProgFile", id = "qProgId",
       fixedId = C.QUEST_UPDATE_CUE },
 
@@ -2242,26 +2246,10 @@ function Cues.Volume(key)
     return game * ours * per
 end
 
--- Play it, if it is on. The master mute is checked inside PlayCue, so nothing
--- here can bypass it.
--- A cue that is switched off makes no sound, and that holds for the PREVIEWS
--- too - the volume slider, the Test buttons, the lot. Off means off; a preview
--- that played anyway would be the one place in the addon where a silenced cue
--- still made noise.
---
--- The consequence to know: quest progress ships off, so its volume slider does
--- nothing until the cue is enabled. That is why the sound pop-up carries its
--- own "Enable this Audio Queue" box, right above the slider.
-function Cues.Play(key)
-    local cue = Cues.Def(key)
-    if not cue or not db[cue.enable] then return end
-    -- `~= nil` rather than `or`: a saved `false` means the user picked an id and
-    -- the default path must not come back.
-    local file = db[cue.file]
-    if file == nil then file = cue.files end
-    local id = db[cue.id] or cue.fixedId
-
-    local volume = Cues.Volume(key)
+-- The volume-and-play half of the job, with no cue behind it: the global
+-- controls preview themselves the same way a cue plays, and only the sound and
+-- the volume differ.
+local function PlayAt(volume, file, id)
     if not volume or not SetCVarValue then
         -- This one wants the channel as the user left it. If a previous cue is
         -- still holding it, give it back FIRST - otherwise a cue that needs no
@@ -2297,6 +2285,47 @@ function Cues.Play(key)
         if state.sfxHold ~= mine then return end
         Cues.ReleaseVolume()
     end)
+end
+
+-- Play it, if it is on. The master mute is checked inside PlayCue, so nothing
+-- here can bypass it.
+-- A cue that is switched off makes no sound, and that holds for the PREVIEWS
+-- too - its own volume slider, the Test buttons, the lot. Off means off; a
+-- preview that played anyway would be the one place in the addon where a
+-- silenced cue still made noise.
+--
+-- The consequence to know: quest progress ships off, so its volume slider does
+-- nothing until the cue is enabled. That is why the sound pop-up carries its
+-- own "Enable this Audio Queue" box, right above the slider.
+function Cues.Play(key)
+    local cue = Cues.Def(key)
+    if not cue or not db[cue.enable] then return end
+    -- `~= nil` rather than `or`: a saved `false` means the user picked an id and
+    -- the default path must not come back.
+    local file = db[cue.file]
+    if file == nil then file = cue.files end
+    local id = db[cue.id] or cue.fixedId
+
+    return PlayAt(Cues.Volume(key), file, id)
+end
+
+-- The preview behind the GLOBAL controls - the addon volume slider and the
+-- follow-the-game box. Those two move every cue at once, so previewing one
+-- particular cue folded that cue's own switch, sound and volume into a
+-- demonstration of a setting that has nothing to do with it: with Kill Ready
+-- switched off, or turned down to 20%, the volume slider went silent or lied
+-- about how loud it was. This plays the shipped meepmerp flat out, scaled by
+-- the two global sliders and nothing else. The master mute still applies, from
+-- inside PlayCue.
+function Cues.PlayMaster()
+    local ours = (db.volume or 100) / 100
+    local volume
+    -- Same cheap path as Cues.Volume: following the game at our full volume is
+    -- what the SFX channel already does, so there is nothing to set or restore.
+    if not (db.useGameVolume and ours >= 1) then
+        volume = (db.useGameVolume and Cues.GameVolume() or 1) * ours
+    end
+    PlayAt(volume, C.DEFAULT_MISS_FILE, nil)
 end
 
 -- Put the Sound Effects slider back where the user had it. Safe to call when
@@ -2420,7 +2449,7 @@ end
 -- Point a cue at a different sound. A number is a SOUNDKIT id, anything else is
 -- a file path - and the path is VALIDATED BY PLAYING IT, because that is the
 -- only thing on this client that answers whether the file is there. Cut short
--- again straight away while muted, so the master really does cover everything.
+-- again straight away, so setting a sound makes no noise of its own.
 --
 -- Returns ok, message.
 function Cues.Forget(key) state.cueOk[key] = nil end
@@ -2444,6 +2473,22 @@ function Cues.Reset(key)
     if db.cueVolume then db.cueVolume[key] = nil end
 end
 
+-- Everything the Audio tab owns, back to how the addon ships: every cue's
+-- sound, volume and switch, plus the master block above them. Nothing outside
+-- audio is touched - the on-screen marks, the pop-ups and the roster are not
+-- this button's business.
+function Cues.ResetAll()
+    for i = 1, #C.CUES do
+        local cue = C.CUES[i]
+        Cues.Reset(cue.key)
+        db[cue.enable] = cue.defaultOn ~= false
+    end
+    db.audio, db.volume, db.useGameVolume = true, 100, true
+    -- A hold in flight belongs to the volume we just threw away, and its timer
+    -- would restore a CVar we are no longer the author of.
+    Cues.ReleaseVolume()
+end
+
 function Cues.SetSound(key, text)
     local cue = Cues.Def(key)
     if not cue then return false, "no such cue." end
@@ -2460,15 +2505,20 @@ function Cues.SetSound(key, text)
         -- false, not nil: nil would be re-defaulted to the bundled file on load.
         db[cue.file], db[cue.id] = false, num
         Cues.Forget(key)
-        PlayCue(false, num)
         return true, format("%s set to #%d.", cue.label, num)
     end
 
+    -- SILENT, always. The check has to start the sound to learn whether the
+    -- file is there, so it is cut short in the same call - the same trick Probe
+    -- uses. Every caller plays the cue itself afterwards, through Cues.Play,
+    -- which is the only path that applies the cue's volume; leaving this one
+    -- audible put a second unscaled copy underneath it and the pair read as one
+    -- sound played too loud.
     local willPlay, handle = PlaySoundFile(text, C.SOUND_CHANNEL)
+    if handle and StopSound then StopSound(handle) end
     if not willPlay then
         return false, format("couldn't play %s - check the path.", text)
     end
-    if not db.audio and handle then StopSound(handle) end
     db[cue.file] = text
     Cues.Forget(key)
     return true, format("%s set to %s.", cue.label, text)

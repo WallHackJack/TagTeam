@@ -558,6 +558,14 @@ function UI.CreateSlider(parent, globalName, minValue, maxValue, step, OnChange)
         if self.settingValue then return end
         if OnChange then OnChange(self, value) end
     end)
+
+    -- Let go of the handle. A drag reports every step it passes through, so
+    -- anything expensive or audible hangs off this rather than off OnChange:
+    -- dragging 0 to 100 is twenty values and one release. Fires on a click on
+    -- the track too, which is a jump to a value and equally a release.
+    s:SetScript("OnMouseUp", function(self)
+        if self.OnRelease then self:OnRelease(self:GetValue()) end
+    end)
     return s
 end
 
@@ -1135,6 +1143,11 @@ function UI.CreatePrompt(globalName)
             self.slider:SetMinMaxValues(opts.slider.min or 0, opts.slider.max or 100)
             self.slider:SetValueStep(opts.slider.step or 5)
             self.slider.OnChange = opts.slider.OnChange
+            -- Wrapped so a prompt's handlers all take just the value, the way
+            -- OnChange above does; the kit hands its own sliders (self, value).
+            self.slider.OnRelease = opts.slider.OnRelease and function(_, value)
+                opts.slider.OnRelease(value)
+            end or nil
             self.slider:SetScript("OnValueChanged", function(s, value)
                 if s.settingValue then return end
                 if opts.slider.label then
