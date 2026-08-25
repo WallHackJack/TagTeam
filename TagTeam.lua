@@ -93,7 +93,7 @@ C.SUGGEST_LOW = 36.5
 C.DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
 -- Shipped with the addon rather than borrowed from WeakAuras: the cue you hear
 -- most often is the one that must not be able to go missing.
-C.DEFAULT_MISS_FILE  = [[Interface\AddOns\TagTeam\meepmerp.mp3]]
+C.DEFAULT_MISS_FILE  = [[Interface\AddOns\TagTeam\Media\meepmerp.ogg]]
 -- The near miss, between the fanfare and the error beep and sounding like
 -- neither: a kill that fell short of the threshold but cleared SHARE_MIN paid
 -- most of its XP, so scolding it with the miss beep overstates what happened.
@@ -103,6 +103,10 @@ C.DEFAULT_SHORT_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Glass.mp3]]
 C.LEGACY_MISS_FILES = {
     [ [[Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg]] ]      = true,
     [ [[Interface\AddOns\WeakAuras\Media\Sounds\ErrorBeep.ogg]] ] = true,
+    -- Same cue, before it became an ogg under Media\. Nothing about the sound
+    -- changed, only where it ships from, so an old saved setting is pointing at
+    -- a file that no longer exists.
+    [ [[Interface\AddOns\TagTeam\meepmerp.mp3]] ]                 = true,
 }
 
 -- "SFX" rather than "Master": Master ignores your sound sliders entirely and
@@ -4459,6 +4463,9 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.shortFile == nil then db.shortFile = C.DEFAULT_SHORT_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
         if C.LEGACY_MISS_FILES[db.missFile] then db.missFile = C.DEFAULT_MISS_FILE end
+        -- mistagFile defaults to the same file, so it inherits the same stale
+        -- paths and needs the same sweep.
+        if C.LEGACY_MISS_FILES[db.mistagFile] then db.mistagFile = C.DEFAULT_MISS_FILE end
         if C.LEGACY_THRESHOLDS[db.threshold] then db.threshold = C.THRESHOLD_DEFAULT end
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
