@@ -348,6 +348,10 @@ UI.SECTION_TITLE_H  = 22   -- box interior reserved for the title strip
 UI.BOX_PAD          = 8    -- section box inner margin
 UI.ROW_H            = 24
 UI.ROW_ICON         = 18   -- gear/action icons on a row
+UI.ROW_CHECK        = 22   -- a checkbox on a row. Bigger than the icons beside
+                           -- it on purpose: it is the control, they are
+                           -- shortcuts, and it is the one thing on the row that
+                           -- has to be hittable without aiming.
 UI.HEADER_BTN_SIZE  = 22
 UI.HEADER_STRIP_TOP = 5    -- box top to the top of the header button strip
 UI.EMPTY_ROWS_H     = 22   -- rows area height while the list is empty
@@ -583,6 +587,14 @@ function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
     dd:SetFrameLevel(parent:GetFrameLevel() + 1)
     UI.StyleDropdown(dd, true)
 
+    -- `choices` may be a function, and then it is called EVERY time rather than
+    -- resolved once: an entry whose label reports something that moves - where
+    -- you currently are, what a setting currently costs - is frozen and wrong
+    -- otherwise. A caller whose list is expensive to build memoises it itself.
+    local function List()
+        return type(choices) == "function" and choices() or choices
+    end
+
     -- Depth first: the label for the box has to be found wherever in the tree
     -- the value ended up, and the caller does not tell us where that was.
     local function Find(value, list)
@@ -597,14 +609,14 @@ function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
     end
 
     local function Label(value)
-        return Find(value, choices) or tostring(value)
+        return Find(value, List()) or tostring(value)
     end
 
     -- `menuList` is whatever the parent button put in info.menuList, and comes
     -- back here when a submenu opens - so one initialiser serves every level.
     UIDropDownMenu_Initialize(dd, function(_, level, menuList)
         local current = Selected()
-        for _, entry in ipairs(menuList and menuList.entries or choices) do
+        for _, entry in ipairs(menuList and menuList.entries or List()) do
             local info = UIDropDownMenu_CreateInfo()
             info.text = entry.label
             if entry.entries then
@@ -636,13 +648,17 @@ function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
 end
 
 UI.GEAR_ICON = "Interface\\Buttons\\UI-OptionsButton"
+-- The old voice-chat speaker, which is the only plain volume glyph the client
+-- ships outside an ability icon. If it ever comes up blank this is the one line
+-- to change - a missing texture draws as nothing rather than erroring.
+UI.SPEAKER_ICON = "Interface\\COMMON\\VoiceChat-Speaker"
 
--- The gear. A framed button with the icon sitting inside it rather than a bare
--- texture, so it matches the [x] and the text buttons beside it and lands in
--- the same column - a naked icon in a row of framed buttons reads as a
--- different kind of control. The 14px icon inside a 22px button is what leaves
--- it room to look like a button at all.
-function UI.CreateGearButton(parent, tooltipTitle, tooltipText, OnClick)
+-- A framed button with an icon inside it rather than a bare texture, so it
+-- matches the [x] and the text buttons beside it and lands in the same column -
+-- a naked icon in a row of framed buttons reads as a different kind of control.
+-- The 14px icon inside a 22px button is what leaves it room to look like a
+-- button at all.
+function UI.CreateIconButton(parent, iconPath, tooltipTitle, tooltipText, OnClick)
     local btn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
     btn:SetFrameLevel(parent:GetFrameLevel() + 1)
     btn:SetSize(UI.HEADER_BTN_SIZE, UI.HEADER_BTN_SIZE)
@@ -650,10 +666,50 @@ function UI.CreateGearButton(parent, tooltipTitle, tooltipText, OnClick)
     local icon = btn:CreateTexture(nil, "OVERLAY")
     icon:SetSize(14, 14)
     icon:SetPoint("CENTER", 0, 0)
-    icon:SetTexture(UI.GEAR_ICON)
+    icon:SetTexture(iconPath)
     btn.icon = icon
     btn:SetScript("OnClick", OnClick)
     UI.AddTooltip(btn, tooltipTitle, tooltipText)
+    return btn
+end
+
+-- The gear, by far the commonest of these. Kept as its own name because every
+-- caller of it means "settings" rather than "a button with a picture on".
+function UI.CreateGearButton(parent, tooltipTitle, tooltipText, OnClick)
+    return UI.CreateIconButton(parent, UI.GEAR_ICON,
+        tooltipTitle, tooltipText, OnClick)
+end
+
+-- The icon and nothing else - no frame, no fill. For a row that already has a
+-- framed button on it: two of those side by side read as a button bar, where
+-- the point is one control and one shortcut.
+--
+-- It highlights on hover instead, which is what says it can be clicked. The
+-- click target is the button, so it stays the full size whatever the art does.
+function UI.CreateBareIconButton(parent, iconPath, size, tooltipTitle,
+                                 tooltipText, OnClick)
+    local btn = CreateFrame("Button", nil, parent)
+    btn:SetFrameLevel(parent:GetFrameLevel() + 1)
+    btn:SetSize(size, size)
+
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints()
+    icon:SetTexture(iconPath)
+    btn.icon = icon
+
+    btn:SetScript("OnClick", OnClick)
+    UI.AddTooltip(btn, tooltipTitle, tooltipText)
+
+    -- Dimmed until you point at it, so a row of them does not shout over the
+    -- labels they sit beside. HOOKED rather than set: AddTooltip owns OnEnter
+    -- and OnLeave, and setting them after it would take the tooltip with them.
+    icon:SetVertexColor(0.75, 0.75, 0.75)
+    btn:HookScript("OnEnter", function(self)
+        self.icon:SetVertexColor(1, 1, 1)
+    end)
+    btn:HookScript("OnLeave", function(self)
+        self.icon:SetVertexColor(0.75, 0.75, 0.75)
+    end)
     return btn
 end
 
@@ -665,14 +721,21 @@ function UI.CreateSectionRow(box, index)
     local row = box.rows[index]
     if row then return row end
 
-    local top = UI.BOX_PAD + UI.SECTION_TITLE_H + (box.rowsInset or 0)
+    -- Rows normally hang off the box itself, below its title and whatever strip
+    -- has been reserved. A box given its own scroll area (ScrollSectionRows)
+    -- puts them in the scroll child instead, where neither offset applies -
+    -- the child IS the rows area.
+    local host = box.rowHost or box
+    local pad  = box.rowHost and 0 or UI.BOX_PAD
+    local top  = (box.rowHost and 0
+        or (UI.BOX_PAD + UI.SECTION_TITLE_H + (box.rowsInset or 0)))
         + (index - 1) * UI.ROW_H
 
-    row = CreateFrame("Frame", nil, box)
-    row:SetFrameLevel(box:GetFrameLevel() + 1)
+    row = CreateFrame("Frame", nil, host)
+    row:SetFrameLevel(host:GetFrameLevel() + 1)
     row:SetHeight(UI.ROW_H)
-    row:SetPoint("TOPLEFT", UI.BOX_PAD, -top)
-    row:SetPoint("TOPRIGHT", -UI.BOX_PAD, -top)
+    row:SetPoint("TOPLEFT", pad, -top)
+    row:SetPoint("TOPRIGHT", -pad, -top)
 
     local color = box.rowColors[index % 2 == 1 and 1 or 2]
     local bg = row:CreateTexture(nil, "BACKGROUND")
@@ -687,7 +750,7 @@ end
 function UI.CreateEmptyHint(box)
     local hint = box:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("TOPLEFT", UI.BOX_PAD + 4,
-        -(UI.BOX_PAD + UI.SECTION_TITLE_H + 4))
+        -(UI.BOX_PAD + UI.SECTION_TITLE_H + (box.rowsInset or 0) + 4))
     hint:SetTextColor(0.55, 0.55, 0.55)
     return hint
 end
@@ -701,13 +764,41 @@ function UI.ReserveSectionStrip(box, height)
     box.rowsInset = height
 end
 
+-- Give a box its own scroll area for its rows, capped at `maxRows` tall.
+--
+-- For a list with no natural ceiling. Without it a box simply grows and the
+-- PAGE scrolls, which is right for a handful of settings and wrong for a list
+-- somebody can keep adding to: one long list otherwise pushes everything under
+-- it off the bottom, and you scroll the whole tab to reach the next section.
+--
+-- Must be called before any row is created - a row anchors once, at creation,
+-- and rows made before this belong to the box rather than to the scroll child.
+--
+-- `globalName` is required by UIPanelScrollFrameTemplate; see CreateScroll.
+function UI.ScrollSectionRows(box, globalName, maxRows)
+    local scroll = UI.CreateScroll(box, globalName)
+    scroll:SetPoint("TOPLEFT", UI.BOX_PAD,
+        -(UI.BOX_PAD + UI.SECTION_TITLE_H + (box.rowsInset or 0)))
+    scroll:SetPoint("BOTTOMRIGHT", -(UI.BOX_PAD + UI.SCROLLBAR_W), UI.BOX_PAD)
+    box.rowScroll, box.rowHost, box.maxRows = scroll, scroll:GetScrollChild(), maxRows
+end
+
 -- Size a box to hold `count` rows, and hide any pooled row past that count.
 -- An empty list still gets EMPTY_ROWS_H so the hint has somewhere to sit.
 function UI.SetSectionRowCount(box, count)
     for i = count + 1, #box.rows do box.rows[i]:Hide() end
     local rowsH = count > 0 and count * UI.ROW_H or UI.EMPTY_ROWS_H
+
+    -- A scrolling box stops growing at its cap and lets the bar take over. The
+    -- scroll child keeps the FULL height either way - that is what there is to
+    -- scroll through.
+    local shown = rowsH
+    if box.rowHost then
+        UI.SetScrollHeight(box.rowScroll, rowsH)
+        shown = min(rowsH, box.maxRows * UI.ROW_H)
+    end
     box:SetHeight(UI.BOX_PAD * 2 + UI.SECTION_TITLE_H
-        + (box.rowsInset or 0) + rowsH)
+        + (box.rowsInset or 0) + shown)
 end
 
 -- Stack visible section boxes down a parent, chaining each to the one above so
@@ -746,10 +837,16 @@ end
 
 local PROMPT_W        = 300   -- default; opts.width widens one that needs it
 local PROMPT_PAD      = UI.BOX_PAD + 6
-local PROMPT_BASE_H   = 104   -- heading + edit box + buttons
+local PROMPT_BASE_H   = 112   -- heading + edit box + buttons
 local PROMPT_ROW_H    = 40    -- added when the dropdown is in play
-local PROMPT_SLIDER_H = 34    -- added when the slider is in play
+local PROMPT_SLIDER_H = 50    -- added when the slider is in play: caption over
+                              -- handle, so two lines rather than one
+local PROMPT_TOGGLE_H = 26    -- and when the checkbox is
 local PROMPT_CHECK_MS = 0.4   -- typing settles this long before Validate runs
+local PROMPT_BTN_W    = 84    -- all three of them, so the pair on the right lines up
+local PROMPT_FIELD_H  = 22    -- added when the field carries a caption line
+local PROMPT_EDIT_H   = 30    -- the edit box row itself
+local PROMPT_HEADING_H = 22   -- the heading line, at GameFontNormalLarge
 
 -- opts:
 --   title    the heading, in the prompt itself - there is no title bar
@@ -777,15 +874,27 @@ function UI.CreatePrompt(globalName)
     -- Above DIALOG so it lands on top of the window that opened it.
     p:SetFrameStrata("FULLSCREEN_DIALOG")
 
-    local heading = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    -- Centred and a size up: it is the only thing on the pop-up that says WHAT
+    -- you are editing, and left-aligned at body size it read as another label.
+    local heading = p:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     heading:SetPoint("TOPLEFT", PROMPT_PAD, -(UI.INSET + 10))
+    heading:SetPoint("TOPRIGHT", -PROMPT_PAD, -(UI.INSET + 10))
+    heading:SetJustifyH("CENTER")
     p.heading = heading
+
+    -- A caption in front of the box, for a prompt whose field needs naming.
+    -- Hidden when there is nothing to say, and then the box takes the full
+    -- width as before.
+    local editLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    -- Same width as the slider caption below it, so the field and the handle
+    -- start in the same column.
+    editLabel:SetJustifyH("CENTER")
+    p.editLabel = editLabel
 
     -- Anchored to both edges rather than given a width, so opts.width is the
     -- only place a size is decided.
     local edit = CreateFrame("EditBox", nil, p, "InputBoxTemplate")
     edit:SetHeight(20)
-    edit:SetPoint("TOPLEFT", heading, "BOTTOMLEFT", 6, -8)
     edit:SetPoint("RIGHT", p, "RIGHT", -PROMPT_PAD, 0)
     edit:SetAutoFocus(true)
     p.edit = edit
@@ -814,7 +923,13 @@ function UI.CreatePrompt(globalName)
 
     -- Caption and handle on one line, left aligned. A slider stretched across
     -- the whole pop-up reads as the main event; this one is a detail on a row.
-    local sliderLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    --
+    -- FIXED WIDTH, left-justified. The caption carries the value, so its text
+    -- gets shorter at 5% than at 100% - and a handle anchored to the right of a
+    -- font string that sizes to its text slides left and right as you drag it,
+    -- which is exactly the one control where that is unbearable.
+    local sliderLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    sliderLabel:SetJustifyH("CENTER")
     p.sliderLabel = sliderLabel
 
     local slider = UI.CreateSlider(p, globalName .. "Slider", 0, 100, 5, nil)
@@ -825,26 +940,34 @@ function UI.CreatePrompt(globalName)
     if slider.title then slider.title:SetText("") end
     p.slider = slider
 
-    -- Cancel left, Reset middle, accept right: the destructive-ish one is
-    -- nowhere near the one people reach for, and Reset is not a third option in
-    -- the same sentence as the other two.
+    -- A switch on the pop-up itself, for the setting somebody came here to
+    -- change but would otherwise have to close this and find on another tab.
+    p.toggle = UI.CreateCheckbox(p, "", "", "", nil)
+    p.toggle:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
+
+    -- Cancel alone on the left; Reset and the accept button paired on the
+    -- right, all three the same width.
+    --
+    -- Reset next to accept rather than marooned in the middle because it is one
+    -- of the two things you can do to the thing you are editing - Cancel is the
+    -- way out, and the way out belongs at the far end on its own.
     local cancel = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
-    cancel:SetSize(84, 22)
+    cancel:SetSize(PROMPT_BTN_W, 22)
     cancel:SetPoint("BOTTOMLEFT", PROMPT_PAD, UI.INSET + 8)
     cancel:SetText(CANCEL)
     cancel:SetScript("OnClick", function() p:Hide() end)
     p.cancel = cancel
 
-    local reset = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
-    reset:SetSize(70, 22)
-    reset:SetPoint("BOTTOM", 0, UI.INSET + 8)
-    reset:SetText("Reset")
-    p.reset = reset
-
     local accept = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
-    accept:SetSize(84, 22)
+    accept:SetSize(PROMPT_BTN_W, 22)
     accept:SetPoint("BOTTOMRIGHT", -PROMPT_PAD, UI.INSET + 8)
     p.accept = accept
+
+    local reset = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
+    reset:SetSize(PROMPT_BTN_W, 22)
+    reset:SetPoint("RIGHT", accept, "LEFT", -6, 0)
+    reset:SetText("Reset")
+    p.reset = reset
 
     local function Accept()
         local text = strtrim(edit:GetText() or "")
@@ -915,6 +1038,48 @@ function UI.CreatePrompt(globalName)
             self.reset:Hide()
         end
 
+        -- Laid out top down with a RUNNING OFFSET rather than by chaining each
+        -- row to the one above it.
+        --
+        -- Chaining is fine while everything is left aligned. These rows are
+        -- centred, and a centred row chained to the row above centres on THAT
+        -- row - so a caption under the toggle would centre on a checkbox
+        -- sitting at the left edge rather than on the frame. Anchoring every
+        -- row to the frame keeps the two things independent: `y` decides how
+        -- far down, the frame decides where across.
+        local y = -(UI.INSET + 10 + PROMPT_HEADING_H)
+
+        -- The toggle goes ABOVE the field: it decides whether the thing below
+        -- it matters at all, and a switch found under the setting it governs is
+        -- a switch found second.
+        if opts.toggle then
+            self.toggle:ClearAllPoints()
+            self.toggle:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 2, y)
+            y = y - PROMPT_TOGGLE_H
+        end
+
+        -- A labelled field is a CAPTION OVER A BOX, both centred; an unlabelled
+        -- one is the box on its own. Stacked rather than inline because these
+        -- pop-ups are narrow and a sound path is long - side by side, the
+        -- caption ate a third of the width the value needed.
+        self.edit:ClearAllPoints()
+        if opts.label then
+            self.editLabel:SetText(opts.label)
+            self.editLabel:ClearAllPoints()
+            -- Both corners at the SAME y: two points that fix the width and one
+            -- height between them, which is what a centred line of text needs.
+            -- A third point for the vertical would fight these two.
+            self.editLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y)
+            self.editLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
+            self.editLabel:Show()
+            y = y - PROMPT_FIELD_H
+        else
+            self.editLabel:Hide()
+        end
+        self.edit:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y - 4)
+        self.edit:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 4)
+        y = y - PROMPT_EDIT_H
+
         self.choices = opts.choices
         self.choice = opts.choice or (opts.choices and opts.choices[1].value)
         if opts.choices then
@@ -939,21 +1104,33 @@ function UI.CreatePrompt(globalName)
                 end
             end
             self:SetHeight(PROMPT_BASE_H + PROMPT_ROW_H)
+            -- Chained to the edit box at build time rather than placed off `y`,
+            -- because it is left aligned and has nothing to centre. The running
+            -- offset still has to step past it for anything below.
+            y = y - PROMPT_ROW_H
         else
             self.dropdown:Hide()
             self:SetHeight(PROMPT_BASE_H)
         end
+        -- The caption above the field is a line the base height does not know
+        -- about. Added here, before the slider and toggle add theirs.
+        if opts.label then self:SetHeight(self:GetHeight() + PROMPT_FIELD_H) end
 
-        -- The slider row hangs off whatever the last thing above it is, so its
-        -- anchor is set here rather than at build time.
+        -- Placed off `y` like the field above it; see the note there.
         if opts.slider then
-            local above = opts.choices and self.dropdown or self.edit
-            local dx = opts.choices and 22 or 2
-
+            -- Caption over the handle, both centred, same as the field above.
+            -- The caption carries the value, so inline it changed width as you
+            -- dragged and walked the handle sideways with it; stacked, there is
+            -- nothing for the digits to push.
+            --
+            -- The handle takes ONE point: a Slider has a width of its own, so
+            -- TOP against the frame centres it across and places it down in the
+            -- same anchor.
             self.sliderLabel:ClearAllPoints()
-            self.sliderLabel:SetPoint("TOPLEFT", above, "BOTTOMLEFT", dx, -14)
+            self.sliderLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y - 10)
+            self.sliderLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 10)
             self.slider:ClearAllPoints()
-            self.slider:SetPoint("LEFT", self.sliderLabel, "RIGHT", 10, 0)
+            self.slider:SetPoint("TOP", self, "TOP", 0, y - 10 - PROMPT_FIELD_H)
 
             self.slider:SetMinMaxValues(opts.slider.min or 0, opts.slider.max or 100)
             self.slider:SetValueStep(opts.slider.step or 5)
@@ -978,9 +1155,36 @@ function UI.CreatePrompt(globalName)
             self.slider:Hide()
         end
 
+        -- Anchored above, with the rest of the layout. Only its state and its
+        -- handler are set here.
+        if opts.toggle then
+            self.toggle:SetChecked(opts.toggle.checked and true or false)
+            if self.toggle.label then
+                self.toggle.label:SetText(opts.toggle.label or "")
+            end
+            -- Applied as it is clicked rather than on Accept: it is a switch,
+            -- not part of the answer being typed, and Cancel on a box you have
+            -- already watched take effect would be a strange thing to want -
+            -- the same reasoning the volume slider above it uses.
+            self.toggle:SetScript("OnClick", function(box)
+                if opts.toggle.OnClick then
+                    opts.toggle.OnClick(box:GetChecked() and true or false)
+                end
+            end)
+            self.toggle:Show()
+            self:SetHeight(self:GetHeight() + PROMPT_TOGGLE_H)
+        else
+            self.toggle:Hide()
+        end
+
         self.edit:SetText(opts.text or "")
         self:Show()
         self.edit:SetFocus()
+        -- Taking focus selects whatever is in the box, and a name handed to the
+        -- prompt is a starting point rather than something to type over - a
+        -- selected one is gone on the first keystroke. Cleared explicitly
+        -- rather than by not focusing: the box should still be ready to type in.
+        self.edit:HighlightText(0, 0)
         -- After SetText, or the caret sits in front of the name they were
         -- handed and typing prepends to it.
         self.edit:SetCursorPosition(strlen(opts.text or ""))

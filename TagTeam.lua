@@ -19,9 +19,9 @@
 -- can see a mob sitting at 20% and hold off instead of guessing.
 --
 -- There are two thresholds, and the percentage is graded between them. Under
--- SHARE_MIN the share is a write-off however the kill ends, so it wears a warning
--- icon and sits at orange; from there it climbs through to green at db.threshold,
--- where the number gives way to the checkmark.
+-- the minimum the share is a write-off however the kill ends, so it wears a
+-- warning icon and sits at orange; from there it climbs through to green at
+-- db.threshold, where the number gives way to the checkmark.
 --
 -- If a mob the tagger was working on dies before it hits the threshold,
 -- a burst of red Xs fades out where the checkmark should have been, with its own
@@ -44,25 +44,41 @@ local ADDON_NAME, ns = ...
 local C = {}       -- constants and tunables, set once at load
 local state = {}   -- per-pull scratch, all cleared by Forget/ResetAll
 
-C.THRESHOLD_DEFAULT = 38   -- damage share needed to tag a mob
+-- The two damage targets, and the band between them.
+--
+--   db.shareMin    the MINIMUM. Under it the kill is a write-off whatever else
+--                  happens, so the badge wears a warning icon and the number
+--                  sits flat orange.
+--   db.threshold   the IDEAL. At it the badge becomes a checkmark, the ding
+--                  fires, and the kill counts. Between the two the number
+--                  climbs orange to green.
+--
+-- Both are clamped to TARGET_MIN..TARGET_MAX, which is the range where the XP
+-- curve actually bends - see XP_CURVE below. Outside it there is nothing to
+-- tune: under the floor every kill is a write-off and over the ceiling the mob
+-- pays in full whatever you do.
+--
+-- The ideal is SYNCHRONISED with the other client (see PushThreshold); the
+-- minimum is not, because nothing on the wire is measured against it.
+C.THRESHOLD_DEFAULT = 40   -- the ideal damage target
+C.SHARE_MIN_DEFAULT = 31   -- the minimum
+C.TARGET_MIN, C.TARGET_MAX = 31, 40
+
+-- The flat part of the TBC mob-XP formula, per continent: mobLevel * 5 + this.
+-- Named because the Levelling Zone dropdown quotes both of them - a zone option
+-- that did not say what it was worth would be asking somebody to guess.
+C.XP_BASE_AZEROTH = 45
+C.XP_BASE_OUTLAND = 235
+
 -- Anyone whose saved threshold is still an old default gets moved to the current
 -- one at load. A saved 36 can't be told apart from a deliberate 36, so the cost
--- of being wrong is one `/tag threshold 36` for whoever meant it. Every
+-- of being wrong is one nudge of the threshold slider for whoever meant it. Every
 -- superseded default stays listed rather than only the most recent: someone who
 -- skipped a release is still sitting on the one before it.
-C.LEGACY_THRESHOLDS = { [31] = true, [36] = true }
-
--- The share below which a kill is simply a failure, whatever the threshold is
--- set to. Not the same knob as db.threshold: the threshold is where YOU decide a
--- kill counts, the minimum is where the kill stops being worth the pull at all.
--- The two together are what makes a share readable at a glance: under the
--- minimum it wears a warning icon, between them it is a number climbing towards
--- green, at the threshold it becomes a checkmark.
 --
--- Fixed, with no slash command, on purpose - it is a statement about the game's
--- XP curve rather than a preference, and it should mean the same thing on every
--- client before anyone is invited to move it.
-C.SHARE_MIN = 34
+-- 31 is deliberately NOT listed any more: it is the minimum's default now, and
+-- clamping would have moved it anyway.
+C.LEGACY_THRESHOLDS = { [36] = true, [38] = true }
 
 -- XP paid against damage share, measured on live kills rather than derived.
 -- Ascending by share; at and above the last sample the mob pays in full.
@@ -80,10 +96,10 @@ C.XP_CURVE = {
 -- sample past 40 and the advice moves with it.
 C.FULL_XP_SHARE = C.XP_CURVE[#C.XP_CURVE][1]
 
--- The bottom of what /tag threshold suggests. Not a limit - anything is allowed -
--- but below this a kill pays under three quarters, and the point of a threshold
--- is to stop before that, not to record that it happened. Comfortably above
--- SHARE_MIN, so the graded band between them has somewhere to live.
+-- The bottom of what the threshold slider suggests. Not a limit - anything is
+-- allowed - but below this a kill pays under three quarters, and the point of a
+-- threshold is to stop before that, not to record it. Comfortably above
+-- the minimum, so the graded band between them has somewhere to live.
 C.SUGGEST_LOW = 36.5
 
 -- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
@@ -95,7 +111,7 @@ C.DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
 -- most often is the one that must not be able to go missing.
 C.DEFAULT_MISS_FILE  = [[Interface\AddOns\TagTeam\Media\meepmerp.ogg]]
 -- The near miss, between the fanfare and the error beep and sounding like
--- neither: a kill that fell short of the threshold but cleared SHARE_MIN paid
+-- neither: a kill that fell short of the threshold but cleared the minimum paid
 -- most of its XP, so scolding it with the miss beep overstates what happened.
 C.DEFAULT_SHORT_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Glass.mp3]]
 -- Superseded defaults, all of them kept: someone who skipped a release is still
@@ -107,6 +123,14 @@ C.LEGACY_MISS_FILES = {
     -- changed, only where it ships from, so an old saved setting is pointing at
     -- a file that no longer exists.
     [ [[Interface\AddOns\TagTeam\meepmerp.mp3]] ]                 = true,
+}
+
+-- The quest-progress cue briefly defaulted to these. They resolve to the
+-- engine's objective-complete flourish, which is far too much noise for
+-- something that fires once per mob on a kill quest - see C.QUEST_UPDATE_CUE.
+C.LEGACY_QPROG_FILES = {
+    [ [[Sound\Interface\iQuestUpdate.ogg]] ] = true,
+    [ [[Sound\Interface\iQuestUpdate.wav]] ] = true,
 }
 
 -- "SFX" rather than "Master": Master ignores your sound sliders entirely and
@@ -122,7 +146,7 @@ C.X_TEXTURE     = "Interface\\RaidFrame\\ReadyCheck-NotReady"
 C.CHECK_TEXTURE = "Interface\\RaidFrame\\ReadyCheck-Ready"
 
 -- The third verdict, between the other two: a share that fell short of the
--- threshold but cleared SHARE_MIN, so the kill paid most of what it should have.
+-- threshold but cleared the minimum, so the kill paid most of what it should have.
 -- Deliberately not the X - an X on a kill that banked three quarters of its XP
 -- reads as a failure, and this is the band where it is worth telling the two
 -- apart. Borrowed from WhoDoesWhat, which uses the same icon to mean "look at
@@ -168,6 +192,46 @@ C.WARN_ICON  = "|T" .. C.WARN_TEXTURE .. ":0|t"
 -- three badge marks in a tooltip, which is the one place they are talked about
 -- as a set rather than drawn as a verdict.
 C.CHECK_ICON = "|T" .. C.CHECK_TEXTURE .. ":0|t"
+
+-- The game's own quest marks, which is the whole reason to use them: everybody
+-- already reads ! as "take this" and ? as "hand this in" without being told.
+-- Grey ? for an objective ticking over, gold ? for a hand-in, exactly the
+-- distinction the gossip frame draws.
+--
+-- These four paths have shipped since vanilla. If a client ever lacks one the
+-- inline texture draws as a blank square rather than erroring, so a wrong guess
+-- here is ugly and not fatal.
+-- The gossip-frame set is 16px art, which is soft blown up to an 18px row icon.
+-- The atlas versions are the modern high-resolution ones and look right at any
+-- size, but they are not on every client - so each kind names both, and
+-- SetQuestIcon below takes the atlas when there is one.
+C.QUEST_TEXTURES = {
+    accepted = "Interface\\GossipFrame\\AvailableQuestIcon",
+    progress = "Interface\\GossipFrame\\IncompleteQuestIcon",
+    complete = "Interface\\GossipFrame\\ActiveQuestIcon",
+}
+C.QUEST_ATLAS = {
+    accepted = "QuestNormal",
+    progress = "QuestArrow",
+    complete = "QuestTurnin",
+}
+
+-- Dress a texture as one of the three quest marks.
+--
+-- Asked for by NAME rather than handed a path, because which of the two sources
+-- to use is decided here and nowhere else. GetAtlasInfo is the guard: SetAtlas
+-- on a name the client does not have is not something to find out about at
+-- runtime, and every member of it is checked individually like any other
+-- optional API.
+local function SetQuestIcon(texture, kind)
+    local atlas = C.QUEST_ATLAS[kind]
+    if atlas and texture.SetAtlas and C_Texture and C_Texture.GetAtlasInfo
+        and C_Texture.GetAtlasInfo(atlas) then
+        texture:SetAtlas(atlas)
+        return
+    end
+    texture:SetTexture(C.QUEST_TEXTURES[kind])
+end
 
 -- The tagger claims its OWN kills to print the same line the carry does. Claims
 -- are keyed per tagger, so this needs a key no character can normalize to - and a
@@ -368,7 +432,6 @@ state.inOutland = false     -- recomputed on zone change; picks the XP base cons
 state.sessionXP, state.sessionTags = 0, 0
 local playerGUID            -- our own GUID, for spotting mobs we tapped ourselves
 local trackedActiveAt = 0   -- last time we saw the tagger do anything
-state.lastRawXP, state.lastXPInfo = nil, nil -- last unscaled estimate, for /tag calibrate
 local pendingKills = {}     -- tagged kills awaiting an XP report, oldest first
 state.matchedEst, state.matchedXP = 0, 0  -- paired totals, for the session multiplier
 local askedForInvite = false
@@ -401,9 +464,9 @@ end
 -- mid-dungeon and the auto-invite check would whisper for one.
 --
 -- Read live rather than cached on a zone event. IsInInstance is a cheap client-
--- state lookup, and asking each time means /tag instance takes effect the moment
--- it's typed, with nothing to invalidate. It's also a global, which costs no
--- upvalue in its callers, which mattered when this file was one 200-local chunk.
+-- state lookup, and asking each time means the Ignore tab's switch takes effect
+-- the moment it is set, with nothing to invalidate. It is also a global, which
+-- costs no upvalue in its callers - it mattered when this file was one chunk.
 local function Suspended()
     if not db or db.instanceOff == false then return false end
     local inside, kind = IsInInstance()
@@ -958,6 +1021,95 @@ local function IsAutoTagged(guid)
     return ListHas(db.autotag, C.AUTOTAG_DEFAULT, state.mobName[guid])
 end
 
+--------------------------------------------------------------------------------
+-- The two named-mob lists, as lists
+--
+-- Everything above answers "is this mob on it". This answers "what is on it"
+-- and "put this on it", which is what the Ignore tab needs and what /tag ban used
+-- do inline. Here rather than in the view for the usual reason: the tri-state
+-- storage below has one correct way to be written, and two front ends each
+-- implementing their own half of it is how they drift.
+--
+-- One table so a caller spends one upvalue rather than one per entry point -
+-- the same reason Roster and Pets are tables.
+--------------------------------------------------------------------------------
+
+local Mobs = {}
+
+-- The user's own entries first, alphabetically, then the shipped ones.
+--
+-- Not one alphabetical run: the shipped entries are the part nobody has to
+-- think about, and a name somebody added themselves is the part they came here
+-- to find. Sorting them together buries it in the middle of ours.
+--
+-- **Defaults are always listed.** They used to be removable, stored as an
+-- explicit `false` so the removal outlived the next login; they are not any
+-- more, so a stale `false` in saved data is simply ignored and the default
+-- comes back. Reset is what clears an entire list back to the shipped set.
+local function NamedList(saved, defaults)
+    local out = {}
+    for key, display in pairs(saved) do
+        -- Only a string is an entry of their own. `false` is the retired
+        -- "default turned off" marker, and there is nothing to show for it.
+        if display and not defaults[key] then
+            out[#out + 1] = { key = key, name = display }
+        end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+
+    local shipped = {}
+    for key, display in pairs(defaults) do
+        shipped[#shipped + 1] = { key = key, name = display, default = true }
+    end
+    table.sort(shipped, function(a, b) return a.name < b.name end)
+
+    for i = 1, #shipped do out[#out + 1] = shipped[i] end
+    return out
+end
+
+-- Only ever an entry of their own: the window does not offer to remove a
+-- shipped one, and this is the other half of that.
+local function DropNamed(saved, defaults, key)
+    if not defaults[key] then saved[key] = nil end
+end
+
+function Mobs.Banned() return NamedList(db.banlist, C.BANNED_DEFAULT) end
+function Mobs.AutoTagged() return NamedList(db.autotag, C.AUTOTAG_DEFAULT) end
+
+-- Adding clears the whole per-mob cache: a name banned mid-pull has damage,
+-- a tap owner and a badge on the books that all now mean something different.
+function Mobs.Ban(name)
+    if not name or name == "" then return end
+    db.banlist[strlower(name)] = name
+    ResetAll()
+end
+
+function Mobs.Unban(key)
+    DropNamed(db.banlist, C.BANNED_DEFAULT, key)
+    ResetAll()
+end
+
+function Mobs.AddAutoTag(name)
+    if not name or name == "" then return end
+    db.autotag[strlower(name)] = name
+end
+
+function Mobs.DropAutoTag(key)
+    DropNamed(db.autotag, C.AUTOTAG_DEFAULT, key)
+end
+
+-- Back to the shipped list: everything they added goes, everything we ship
+-- stays. Wiping the saved table is the whole of it, because the defaults were
+-- never copied into it - which is the point of keeping them in code.
+function Mobs.ResetBanned()
+    wipe(db.banlist)
+    ResetAll()
+end
+
+function Mobs.ResetAutoTagged()
+    wipe(db.autotag)
+end
+
 -- The carry tapped it first AND that actually cost the tagger something. The
 -- four places that used to test tapOwner directly now ask this instead, so the
 -- auto-tag exception cannot be applied in one of them and forgotten in another:
@@ -1027,35 +1179,35 @@ end
 -- "close" means:
 --
 --   "tagged"  at or above the threshold. The kill counts and pays in full.
---   "short"   cleared SHARE_MIN but not the threshold. It still paid most of its
+--   "short"   cleared the minimum but not the threshold. It still paid most of its
 --             XP, which is why it gets its own icon and its own sound instead of
 --             being lumped in with a write-off.
---   "failed"  under SHARE_MIN. Whatever the threshold is set to, this one was
+--   "failed"  under the minimum. Whatever the threshold is set to, this one was
 --             not worth the pull.
 --
 -- `need` is the threshold to grade against. Callers holding a kill pass the one
 -- pinned when it died, so nothing disagrees after someone retunes mid-pull.
 local function ShareBand(pct, need)
     if pct >= (need or db.threshold) then return "tagged" end
-    if pct >= C.SHARE_MIN then return "short" end
+    if pct >= db.shareMin then return "short" end
     return "failed"
 end
 
--- The colour a share has earned: flat orange up to SHARE_MIN, then climbing
+-- The colour a share has earned: flat orange up to the minimum, then climbing
 -- through yellow to green at the threshold. Both legs hold one channel at full,
 -- which is what makes the middle read as bright yellow rather than as mud - the
 -- same trick RatioHex uses, from a different starting colour.
 --
--- Nothing under SHARE_MIN is redder than anything else under it: below the
+-- Nothing under the minimum is redder than anything else under it: below the
 -- minimum the kill is a write-off either way, and the warning icon beside the
 -- number is what says so. The gradient is for the part you can still act on.
 local function ShareColor(pct, need)
     if ShareBand(pct, need) == "tagged" then return 0, 1, 0 end
 
-    local span = (need or db.threshold) - C.SHARE_MIN
+    local span = (need or db.threshold) - db.shareMin
     if span <= 0 then return 1, 0.5, 0 end   -- threshold set under the minimum
 
-    local t = (pct - C.SHARE_MIN) / span
+    local t = (pct - db.shareMin) / span
     if t < 0 then t = 0 end
     if t < 0.5 then return 1, 0.5 + t, 0 end
     return (1 - t) * 2, 1, 0
@@ -1205,7 +1357,7 @@ end
 -- side, whatever width the text turned out to be.
 --
 -- `withIcon` is memoised on the badge, because it changes as a share crosses
--- SHARE_MIN and re-anchoring on every 4 Hz pass would be four SetPoints per
+-- the minimum and re-anchoring on every 4 Hz pass would be four SetPoints per
 -- plate for nothing. Anything that hides the icon by hand must clear `laidOut`
 -- or the memo will refuse to bring it back; HideBadgeShare is the one place
 -- that does.
@@ -1529,9 +1681,9 @@ end
 -- It stays a checkbox because somebody may disagree, and setting it here rather
 -- than deriving it is what leaves them the room to.
 --
--- In the core rather than in the window, because /tag pos is the other way in
--- and two front ends that each apply their own half of this is exactly the
--- drift the window is meant not to have.
+-- In the core rather than in the window, because the defaults and the window
+-- must not each apply their own half of this - that is exactly the drift the
+-- window exists not to have.
 local function SetBadgePosition(mode)
     if not C.BADGE_ANCHORS[mode] then return false end
     db.badgePos = mode
@@ -1685,6 +1837,58 @@ local function SpawnBurst(texture, label, r, g, b)
     LaunchMark(f, C.MARK_RISE)
 end
 
+--------------------------------------------------------------------------------
+-- The five screen bursts, as one table
+--
+-- Mark, colour and the flag that silences it, per kind. One table because the
+-- Popups tab both LISTS these and offers a Test button for each: a window that
+-- picked its own texture and colour for a preview would drift from the thing it
+-- was previewing, and nobody would notice until the real one fired.
+--
+-- The first three are the verdict on a kill and are chosen by ShareBand, so
+-- their keys are its return values. The last two are their own events.
+--------------------------------------------------------------------------------
+
+-- `cue` names the row in C.CUES that fires with it, and is what the Popups tab
+-- puts an audio button on. Only the checkmark has none: the sound for clearing
+-- the threshold is `tag`, and that fires when the mob CROSSES it rather than
+-- when it dies - a second one on the kill would be the same news twice.
+C.BURSTS = {
+    tagged  = { tex = C.CHECK_TEXTURE, r = 1, g = 0.86, b = 0.3,
+                flag = "fullAlert" },
+    short   = { tex = C.WARN_TEXTURE,  r = 1, g = 0.62, b = 0.1,
+                flag = "nearAlert",    cue = "near" },
+    failed  = { tex = C.X_TEXTURE,     r = 1, g = 0.35, b = 0.35,
+                flag = "missAlert",    cue = "miss" },
+    -- These two carry their own label: it is the same word every time, where a
+    -- verdict's label is whatever the kill line worked out.
+    --
+    -- A mistag is a LOSS - the tag went somewhere it cannot come back from - so
+    -- it takes the X and the red. Being grouped is a mistake you are still
+    -- standing in and can walk out of, so it takes the warning mark and orange,
+    -- the same pairing the badge uses for a share that has not failed yet.
+    mistag  = { tex = C.X_TEXTURE,     r = 1, g = 0.2,  b = 0.2,
+                flag = "stealWarning", cue = "mistag", label = "TAGGED" },
+    grouped = { tex = C.WARN_TEXTURE,  r = 1, g = 0.55, b = 0.1,
+                flag = "groupWarning", label = "GROUPED" },
+}
+
+-- The quest notices, in the same shape, so the Popups tab can treat all eight
+-- rows alike rather than special-casing three of them.
+C.QUEST_NOTICES = {
+    progress = { cue = "qprogress", verb = "is working on" },
+    complete = { cue = "qdone",     verb = "completed", xp = true },
+    accepted = { cue = "qaccept",   verb = "accepted" },
+}
+
+-- Draw one, if its flag is on. `label` overrides the fixed one, for the
+-- verdicts, whose text is built per kill.
+local function Burst(kind, label)
+    local b = C.BURSTS[kind]
+    if not b or not db[b.flag] then return end
+    SafeCall(SpawnBurst, b.tex, label or b.label, b.r, b.g, b.b)
+end
+
 -- Quest progress relayed by the tagger. Text only, no icon: the burst below it is
 -- the one carrying a texture, and two icons stacked up the screen read as clutter
 -- rather than as two separate notices.
@@ -1726,7 +1930,6 @@ end
 local function MatchesCarry(guid, name)
     if not InTaggerMode() then
         if guid == playerGUID then return true end
-        if not db.includePets then return false end
         -- Our own pet needs no summon and no name: the client will tell us its
         -- GUID outright. petOwner stays as the fallback for the frame or two
         -- before UNIT_PET has been round.
@@ -1738,13 +1941,12 @@ local function MatchesCarry(guid, name)
         state.isCarryGuid[guid] = true
         return true
     end
-    if db.includePets then
-        local owner = state.petOwner[guid]
-        if owner and state.isCarryGuid[owner] then return true end
-        if db.carryPetKey and Pets.IsPetGuid(guid)
-            and NormalizeName(name) == db.carryPetKey then
-            return true
-        end
+
+    local owner = state.petOwner[guid]
+    if owner and state.isCarryGuid[owner] then return true end
+    if db.carryPetKey and Pets.IsPetGuid(guid)
+        and NormalizeName(name) == db.carryPetKey then
+        return true
     end
     return false
 end
@@ -1761,17 +1963,13 @@ local function MatchesTracked(guid, name)
         return key
     end
 
-    if db.includePets then
-        local owner = state.petOwner[guid]
-        if owner and state.isTracked[owner] then return state.isTracked[owner] end
-        -- Deliberately not cached into isTracked: that table means "this GUID is
-        -- the tagger themselves", and SampleTrackedLevel reads it to decide whose
-        -- level it just saw. A pet in there would write the pet's level onto its
-        -- owner and hang the triangle on the pet.
-        return Pets.TaggerKey(guid, name)
-    end
-
-    return nil
+    local owner = state.petOwner[guid]
+    if owner and state.isTracked[owner] then return state.isTracked[owner] end
+    -- Deliberately not cached into isTracked: that table means "this GUID is
+    -- the tagger themselves", and SampleTrackedLevel reads it to decide whose
+    -- level it just saw. A pet in there would write the pet's level onto its
+    -- owner and hang the triangle on the pet.
+    return Pets.TaggerKey(guid, name)
 end
 
 -- A cue is either a file path or a SOUNDKIT id; the file wins when both are set,
@@ -1855,21 +2053,22 @@ C.QUEST_DONE_FILES = {
 }
 C.QUEST_DONE_CUE = SOUNDKIT and (SOUNDKIT.IG_QUEST_LIST_COMPLETE or SOUNDKIT.IG_QUEST_LIST_OPEN)
 
--- An objective ticking over. The odd one out until now - it was the only
--- progress cue with no file behind it, so it was the only one whose "Default"
--- meant something different from the other three.
+-- An objective ticking over, and the ONLY one of the four with no file behind
+-- it. That is deliberate and it is a correction: it briefly had
+-- `Sound\Interface\iQuestUpdate.ogg`, on the reasoning that the other two live
+-- in that directory under that naming, and the reasoning was sound but the
+-- result was wrong. That path resolves to the engine's objective-complete
+-- flourish - the same weight of noise as accepting a quest.
 --
--- LESS certain than the two above: the accept and complete paths are confirmed
--- working in game, this one is inferred from them living in the same directory
--- under the same naming. If the id is what you hear, the paths both missed.
--- Verify the same way:
---   /run print(PlaySoundFile([[Sound\Interface\iQuestUpdate.ogg]]))
-C.QUEST_UPDATE_FILES = {
-    [[Sound\Interface\iQuestUpdate.ogg]],
-    [[Sound\Interface\iQuestUpdate.wav]],
-}
+-- This cue fires once per MOB on a kill quest. It is a tick, not an
+-- announcement, and it wants the small paper sound the quest list makes when
+-- you click a line in it. Anything with horns in it is unusable at that rate.
+--
+-- If a file is ever wanted here, the test is not whether it plays - it is
+-- whether you could stand thirty of them in a minute.
 C.QUEST_UPDATE_CUE = SOUNDKIT
-    and (SOUNDKIT.IG_QUEST_LIST_SELECT or SOUNDKIT.IG_MAINMENU_OPTION) or 851
+    and (SOUNDKIT.IG_QUEST_LIST_SELECT or SOUNDKIT.IG_QUEST_LIST_OPEN
+        or SOUNDKIT.IG_MAINMENU_OPTION) or 851
 
 --------------------------------------------------------------------------------
 -- Cues
@@ -1940,7 +2139,7 @@ C.CUES = {
       about  = "An objective of theirs ticked over. Off by default - it fires "
             .. "as often as their quest log updates.",
       enable = "questProgressSound", file = "qProgFile", id = "qProgId",
-      files  = C.QUEST_UPDATE_FILES, fixedId = C.QUEST_UPDATE_CUE },
+      fixedId = C.QUEST_UPDATE_CUE },
 
     { key = "qdone", section = "progress", label = "Quest completed",
       about  = "Your partner handed a quest in. This one is an XP report, so it "
@@ -1988,12 +2187,38 @@ end
 
 C.SFX_CVAR = "Sound_SFXVolume"
 
+-- How long the CVar stays moved after a cue starts.
+--
+-- There is exactly one volume lever on this client, and it is the whole SFX
+-- channel - so for as long as we hold it, the GAME's own sound effects ride our
+-- number too. That is the cost of the feature and it cannot be designed away;
+-- what it can be is short. Long enough to cover a cue (ours are beeps, not
+-- fanfares), and no longer.
+--
+-- It is also why Cues.Volume returning nil for the default configuration
+-- matters so much: somebody who has not asked for a different volume never pays
+-- this at all.
+C.CUE_VOLUME_HOLD = 1.2
+
 -- Both of these moved onto C_CVar with the globals kept as aliases. Resolve
 -- each member on its own rather than assuming the pair travels together.
 local GetCVarValue = (C_CVar and C_CVar.GetCVar) or GetCVar
 local SetCVarValue = (C_CVar and C_CVar.SetCVar) or SetCVar
 
+-- The user's OWN Sound Effects setting, never the one we are borrowing.
+--
+-- This is the single most important line in the volume code. While a cue holds
+-- the CVar, reading it back gives our scaled value - so computing the next
+-- cue's volume from it multiplies our own scaling in a second time, and the one
+-- after that a third. Every cue came out quieter than the last until they
+-- vanished, the "follow the game's volume (40%)" label counted itself down to
+-- 1%, and nothing could raise it again because the number it was scaling from
+-- had already been scaled.
+--
+-- db.sfxRestore is what the user had before we touched anything, so while it is
+-- set it IS the answer.
 function Cues.GameVolume()
+    if db.sfxRestore ~= nil then return tonumber(db.sfxRestore) or 1 end
     local v = GetCVarValue and tonumber(GetCVarValue(C.SFX_CVAR))
     return v or 1
 end
@@ -2019,6 +2244,14 @@ end
 
 -- Play it, if it is on. The master mute is checked inside PlayCue, so nothing
 -- here can bypass it.
+-- A cue that is switched off makes no sound, and that holds for the PREVIEWS
+-- too - the volume slider, the Test buttons, the lot. Off means off; a preview
+-- that played anyway would be the one place in the addon where a silenced cue
+-- still made noise.
+--
+-- The consequence to know: quest progress ships off, so its volume slider does
+-- nothing until the cue is enabled. That is why the sound pop-up carries its
+-- own "Enable this Audio Queue" box, right above the slider.
 function Cues.Play(key)
     local cue = Cues.Def(key)
     if not cue or not db[cue.enable] then return end
@@ -2029,16 +2262,50 @@ function Cues.Play(key)
     local id = db[cue.id] or cue.fixedId
 
     local volume = Cues.Volume(key)
-    if not volume or not SetCVarValue then return PlayCue(file, id) end
+    if not volume or not SetCVarValue then
+        -- This one wants the channel as the user left it. If a previous cue is
+        -- still holding it, give it back FIRST - otherwise a cue that needs no
+        -- volume of its own would play at the last one's, and a hold that never
+        -- got its release would leave the channel down for good.
+        Cues.ReleaseVolume()
+        return PlayCue(file, id)
+    end
 
-    local was = GetCVarValue(C.SFX_CVAR)
+    -- HELD for the length of the cue, not put back on the next line.
+    --
+    -- The mixer reads this CVar continuously - that is how the game's own
+    -- slider changes a sound already playing - so setting it, starting the
+    -- sound and restoring microseconds later played every cue at the ORIGINAL
+    -- volume. The slider appeared to do nothing, which is exactly what it did.
+    --
+    -- Saved rather than kept in state: a reload or a disconnect inside the hold
+    -- would otherwise leave somebody's Sound Effects slider where we put it
+    -- with no record of where it was. See the restore at ADDON_LOADED.
+    if db.sfxRestore == nil then db.sfxRestore = GetCVarValue(C.SFX_CVAR) end
     SetCVarValue(C.SFX_CVAR, volume)
-    -- pcall, and the restore outside it: a sound is cosmetic, and leaving
-    -- somebody's Sound Effects slider moved because a cue threw would be a far
-    -- worse bug than a missing beep.
+
+    -- pcall: a sound is cosmetic, and a cue that throws must not skip the
+    -- restore below.
     local ok, err = pcall(PlayCue, file, id)
-    SetCVarValue(C.SFX_CVAR, was)
     if not ok then state.lastCosmeticError = err end
+
+    -- Only the LAST cue to start puts it back. An earlier one's timer firing
+    -- part way through this one would jump the volume mid-sound.
+    state.sfxHold = (state.sfxHold or 0) + 1
+    local mine = state.sfxHold
+    C_Timer.After(C.CUE_VOLUME_HOLD, function()
+        if state.sfxHold ~= mine then return end
+        Cues.ReleaseVolume()
+    end)
+end
+
+-- Put the Sound Effects slider back where the user had it. Safe to call when
+-- nothing is held, which is what makes it usable both from the timer above and
+-- from ADDON_LOADED after a session that ended mid-cue.
+function Cues.ReleaseVolume()
+    if db.sfxRestore == nil then return end
+    if SetCVarValue then SetCVarValue(C.SFX_CVAR, db.sfxRestore) end
+    db.sfxRestore = nil
 end
 
 -- What the cue is set to, in one line, for a tooltip or a row.
@@ -2265,8 +2532,8 @@ local function RefreshContinent()
     state.inOutland = false
 end
 
--- Both places that report detection state print this - /tag diag and /tag zone,
--- which must not disagree about what was detected.
+-- What /tag diag prints about detection state, in one place so the line cannot
+-- drift from the values behind it.
 local function MapDiag()
     return format("%s (instance %s)", tostring(currentMapID), tostring(currentInstanceID))
 end
@@ -2317,7 +2584,7 @@ local function EstimateXP(guid)
     -- system often isn't ready, so GetBestMapForUnit returns nil and we latch on
     -- "Azeroth", which under-reports every Outland kill by the gap between the
     -- two base constants - about 1.5x at level 63.
-    local base = ml * 5 + (UsingOutlandBase() and 235 or 45)
+    local base = ml * 5 + (UsingOutlandBase() and C.XP_BASE_OUTLAND or C.XP_BASE_AZEROTH)
     local xp
 
     if ml >= pl then
@@ -2343,7 +2610,7 @@ local function QueueKillForReport(name, pct, est, missed)
         name = name, pct = pct, est = est, missed = missed,
         rested = RestedFactor() > 1,   -- pinned like `need`: the pool can empty
                                        -- before the report gets back to us
-        need = db.threshold,   -- pinned: /tag threshold can move under a pending kill
+        need = db.threshold,   -- pinned: the slider can move under a pending kill
         at = GetTime(), claimed = {},
     }
     pendingKills[#pendingKills + 1] = kill
@@ -2417,14 +2684,7 @@ local function FloatKill(kill, actual)
     -- Three verdicts, three marks. The middle one exists because an X over a
     -- kill that banked three quarters of its XP is a lie about what happened:
     -- that is a share worth tightening, not a pull worth regretting.
-    local band = ShareBand(kill.pct, kill.need)
-    if band == "failed" then
-        SafeCall(SpawnBurst, C.X_TEXTURE, label, 1, 0.35, 0.35)
-    elseif band == "short" then
-        SafeCall(SpawnBurst, C.WARN_TEXTURE, label, 1, 0.62, 0.1)
-    else
-        SafeCall(SpawnBurst, C.CHECK_TEXTURE, label, 1, 0.86, 0.3)
-    end
+    Burst(ShareBand(kill.pct, kill.need), label)
 end
 
 -- Draw it now, or wait for the tagger to say what it was worth.
@@ -2481,6 +2741,47 @@ local function FloatQuest(key, who, verb, title, xp)
     SpawnQuestFloat(text)
 end
 
+-- Fire one notice as if it had just happened, for the Test buttons on the
+-- Popups tab.
+--
+-- In the core, and going through the same Burst and FloatQuest the real events
+-- do, so a test cannot show something the event would not. It deliberately
+-- IGNORES the flag - you press Test to find out what a thing looks like, often
+-- while deciding whether to leave it on, and a button that silently did nothing
+-- because the box beside it is unticked reads as broken.
+-- What a verdict mark says under it on a test.
+--
+-- The same shapes FloatKill builds: an earned kill shows what it paid, a miss
+-- shows what came back as a fraction of what it should have, graded by the same
+-- RatioHex. Random inside the band the mark is claiming, so pressing Test twice
+-- does not look like one frozen screenshot - it is a demonstration, not a
+-- measurement, and nothing reads it afterwards.
+local function TestKillLabel(kind)
+    local xp = math.random(120, 380)
+    if kind == "tagged" then return format("+%d XP", xp) end
+
+    -- No tilde on a test. On a real miss it marks the number as an ESTIMATE,
+    -- which is a distinction worth drawing when a report might still arrive;
+    -- here nothing is coming and the mark would only be noise.
+    local pct = kind == "short" and math.random(72, 94) or math.random(28, 62)
+    return format("%d XP |c%s%d%%|r", xp, RatioHex(pct / 100), pct)
+end
+
+local function TestNotice(kind)
+    local quest = C.QUEST_NOTICES[kind]
+    if quest then
+        Cues.Play(quest.cue)
+        FloatQuest(nil, UnitName("player"), quest.verb, "a quest",
+            quest.xp and math.random(80, 400) or nil)
+        return
+    end
+
+    local b = C.BURSTS[kind]
+    if not b then return end
+    if b.cue then Cues.Play(b.cue) end
+    SafeCall(SpawnBurst, b.tex, b.label or TestKillLabel(kind), b.r, b.g, b.b)
+end
+
 -- Hand one reporting tagger the oldest kill it has not already claimed. Claims
 -- are per tagger because damage is pooled against one threshold but XP is not: a
 -- single kill draws one report from every linked tagger, and each of those wants
@@ -2517,7 +2818,7 @@ end
 -- share is graded against the floor and the threshold, the ratio against what the
 -- kill should have paid. Nothing else on the line changes colour.
 local function PrintKillLine(nameTag, kill, amount)
-    -- /tag announce. This line IS the per-kill chat announcement now - it took
+    -- db.announce. This line IS the per-kill chat announcement now - it took
     -- over from the MISSED alert that the toggle used to gate - so the toggle
     -- points here, or it would toggle nothing at all.
     if not db.announce then return end
@@ -2855,9 +3156,9 @@ local function WarnGroupedCombat()
     if (GetTime() - lastGroupWarnAt) < C.GROUPED_WARN_INTERVAL then return end
 
     lastGroupWarnAt = GetTime()
-    Print("|cffff2020GROUPED WITH YOUR TAGGER|r - this kill earns them almost nothing. "
-        .. "|cffffff00/tag leave|r to drop the party.")
-    SafeCall(SpawnBurst, C.X_TEXTURE, "GROUPED", 1, 0.2, 0.2)
+    Print("|cffff2020GROUPED WITH YOUR TAGGER|r - this kill earns them almost "
+        .. "nothing. Drop the party for the tag to count.")
+    Burst("grouped")
 end
 
 local function LeaveTaggerParty()
@@ -3043,7 +3344,7 @@ local function WarnTagStolen()
 
     if not db.stealWarning then return end
     if GetTime() - trackedActiveAt > C.NEAR_SECONDS then return end
-    SafeCall(SpawnBurst, C.X_TEXTURE, "TAGGED", 1, 0.55, 0.1)
+    Burst("mistag")
 end
 
 -- Fires only for mobs the tagger actually damaged. A mob they never
@@ -3103,22 +3404,15 @@ local function HandleDeath(guid, name)
     -- it crossed the threshold, and a second cue on every kill would be noise.
     if pct >= db.threshold then
         local raw = EstimateXP(guid)
-        local shown   -- scaled estimate; stays nil when either level was unknown
+        local shown   -- the estimate; stays nil when either level was unknown
 
         if raw and raw > 0 then
-            -- Rested is part of the ESTIMATE, not of the user-tunable scale, so it
-            -- goes in before it - which also keeps /tag calibrate honest, since
-            -- that solves against lastRawXP and would otherwise read a rested
-            -- kill as a scale of 2.
-            local base = raw * RestedFactor()
-            shown = floor(base * (db.xpScale or 1) + 0.5)
+            -- Rested doubles what the kill actually pays, so it belongs in the
+            -- estimate rather than beside it - the multiplier on the kill line
+            -- exists to surface what the formula CANNOT see, and anything we
+            -- can see turns that one number into noise.
+            shown = floor(raw * RestedFactor() + 0.5)
             state.sessionXP = state.sessionXP + shown
-
-            -- Held before db.xpScale so /tag calibrate can solve for it directly.
-            state.lastRawXP = base
-            state.lastXPInfo = format("%s, mob %d vs their %d%s",
-                name or "target", state.mobLevel[guid] or 0, LowestTaggerLevel() or 0,
-                RestedFactor() > 1 and ", rested x2" or "")
         end
         state.sessionTags = state.sessionTags + 1
 
@@ -3137,12 +3431,13 @@ local function HandleDeath(guid, name)
         else
             -- A grey. It pays nothing and no report can ever come, so there is
             -- nothing to wait for and nothing to put a number on.
-            SafeCall(SpawnBurst, C.CHECK_TEXTURE, "grey", 0.62, 0.62, 0.62)
+            Burst("tagged", "grey")
         end
         return
     end
 
-    if not db.missAlert then return end
+    -- Either burst on the missed path keeps it alive; FloatKill picks which.
+    if not (db.missAlert or db.nearAlert) then return end
 
     -- A missed mob still pays the tagger - the tap decides that, not the damage
     -- share - so its report is coming and has to be queued like any other kill.
@@ -3155,7 +3450,7 @@ local function HandleDeath(guid, name)
     local raw = EstimateXP(guid)
     -- A missed mob still pays the tagger, so rested still applies to it.
     local est = (raw and raw > 0)
-        and floor(raw * RestedFactor() * (db.xpScale or 1) + 0.5) or nil
+        and floor(raw * RestedFactor() + 0.5) or nil
     local kill
     if raw ~= 0 then
         kill = QueueKillForReport(name, pct, est, true)
@@ -3192,7 +3487,7 @@ end
 -- contested Outland ground - Halaa, the Hellfire towers - and unlike a player's
 -- pet they DO pay XP, so this one is a preference rather than a fact: hitting one
 -- flags the tagger for PvP, which on a defenceless low-level alt ends the session
--- rather than advancing it. /tag pvp for anyone who wants to grind them anyway.
+-- rather than advancing it. db.ignorePvP is off for anyone grinding them anyway.
 --
 -- Both token checks are blind past nameplate range. That is also the only range
 -- where the addon would have displayed anything, so the gap is invisible.
@@ -3767,6 +4062,18 @@ local function PushThreshold(pct)
     return SendToPartners("THRESH:" .. pct)
 end
 
+-- The Tracking box's Reset. Down here rather than beside ResetBadgeOptions
+-- because it needs PushThreshold: the ideal target is SYNCHRONISED, and a reset
+-- that moved only our end would be the one way to desync it in silence. The
+-- minimum is ours alone - nothing on the wire is measured against it.
+local function ResetTrackingOptions()
+    db.shareMin  = C.SHARE_MIN_DEFAULT
+    db.continent = nil
+    db.announce  = true
+    UpdateAllPlates()
+    SafeCall(PushThreshold, C.THRESHOLD_DEFAULT)   -- writes db.threshold too
+end
+
 local function OnAddonMessage(msg, sender)
     local who = strsplit("-", sender or "")
     if not who or who == "" then return end
@@ -3938,6 +4245,11 @@ local function OnAddonMessage(msg, sender)
             return
         end
 
+        -- The XP is banked above, before this gate: db.questComplete decides
+        -- whether the hand-in is ANNOUNCED, never whether it counted. A session
+        -- total that moved with a notice setting would be a lie.
+        if not db.questComplete then return end
+
         if title and title ~= "" then
             Print(format("|cff00ff00%s|r gained |cffffff00%d|r XP by completing \"%s\".",
                 who, amount, title))
@@ -3946,10 +4258,8 @@ local function OnAddonMessage(msg, sender)
                 who, amount))
         end
         -- Handing one in gets its own fanfare, the counterpart to the accept cue.
-        -- Not gated on /tag quests: that toggle is for the running commentary on
-        -- their quest log, and this is an XP report, which is the whole job.
         Cues.Play("qdone")
-        -- Ungated for the same reason the cue is. Cosmetic, so it goes last.
+        -- Cosmetic, so it goes last.
         SafeCall(FloatQuest, key, who, "completed", title, amount)
 
     elseif cmd == "QACC" or cmd == "QDROP" then
@@ -3959,9 +4269,9 @@ local function OnAddonMessage(msg, sender)
         -- a stranger has no business filling your chat frame with their quest log.
         --
         -- Gated on the RECEIVING side, because that is the chat frame filling
-        -- up: /tag quests takes effect on the client you type it on, without
+        -- up: db.questAccepted takes effect on the client that holds it, without
         -- needing the other end to agree or even to have the setting.
-        if not db.questNotices then return end
+        if not db.questAccepted then return end
         if not IsPartner(who) then return end
         if not arg or arg == "" then return end
 
@@ -3979,7 +4289,7 @@ local function OnAddonMessage(msg, sender)
         -- An objective ticking over, exactly as it appeared on their screen -
         -- their client formatted it, so it is printed rather than rebuilt.
         -- Partners only, like the rest of the quest notices.
-        if not db.questNotices then return end
+        if not db.questProgress then return end
         if not IsPartner(who) then return end
         if not arg or arg == "" then return end
         Print(format("|cff00ff00%s|r - |cffffff00%s|r", who, arg))
@@ -4149,7 +4459,7 @@ local function Flush()
     end
     lastXP, lastXPMax = cur, max
 
-    -- /tag xpdebug. This exact ordering is what two separate misreports came
+    -- db.xpDebug. This exact ordering is what two separate misreports came
     -- down to, so it is worth being able to watch rather than infer.
     if db.xpDebug then
         Print(format("|cff808080xp: flush gained=%d kills=%d quest=%s disc=%s|r",
@@ -4611,17 +4921,35 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         TagTeamDB = TagTeamDB or {}
         db = TagTeamDB
         ns.db = db   -- SlashCommands.lua reads it from here; see the exports
-        if db.enabled     == nil then db.enabled     = true end
+        -- A session that ended while a cue was holding the Sound Effects CVar
+        -- left it moved. This is the only place that can know, because the
+        -- value it has to put back is the one we saved before moving it.
+        Cues.ReleaseVolume()
+        -- Forced on rather than defaulted: the master switch has no control
+        -- any more. Turning tracking off means clearing the roster, and a saved
+        -- `false` from before would leave somebody with a dead addon and no way
+        -- to find the switch that killed it.
+        db.enabled = true
         if db.instanceOff == nil then db.instanceOff = true end
         if db.ignorePvP   == nil then db.ignorePvP   = true end
-        if db.includePets == nil then db.includePets = true end
         if db.audio       == nil then db.audio       = true end
         if db.announce    == nil then db.announce    = true end
-        if db.questNotices == nil then db.questNotices = true end
+        -- One flag per kind of quest notice. They were one flag, which meant
+        -- silencing the objective spam - the chattiest thing on the channel -
+        -- also silenced the hand-ins, which are XP reports.
+        if db.questProgress  == nil then db.questProgress  = db.questNotices ~= false end
+        if db.questAccepted  == nil then db.questAccepted  = db.questNotices ~= false end
+        if db.questComplete  == nil then db.questComplete  = true end
         -- The miss NOTICE: the on-screen mark and the queued report, not just
         -- the sound. Splitting the sound off it (db.missSound, below) is what
-        -- lets the Sounds tab be about sounds, so this one keeps /tag miss.
+        -- lets the Audio tab be about sounds and the Popups tab about marks.
         if db.missAlert   == nil then db.missAlert   = true end
+        -- The other two verdict bursts. They were ungated (full) and folded into
+        -- the miss flag (acceptable), which meant the one verdict worth
+        -- celebrating could not be turned off and the one worth tightening
+        -- could not be turned off separately from the one worth regretting.
+        if db.fullAlert   == nil then db.fullAlert   = true end
+        if db.nearAlert   == nil then db.nearAlert   = db.missAlert end
         -- One flag per cue in C.CUES. A cue with no flag of its own is a cue
         -- nobody can turn off, which is how the quest and ding fanfares got out
         -- the door ungated. Quest progress is the one default-off: it fires as
@@ -4649,7 +4977,6 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         db.cueVolume = db.cueVolume or {}
         if db.stealWarning == nil then db.stealWarning = true end
         if db.autoInvite   == nil then db.autoInvite   = true end
-        if db.autoAccept   == nil then db.autoAccept   = true end
         if db.taggerMarker == nil then db.taggerMarker = true end
         if db.autoFocus    == nil then db.autoFocus    = C.HAS_FOCUS end
         if db.focusWarning == nil then db.focusWarning = true end
@@ -4689,7 +5016,10 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         -- run every login: Remember is a no-op once the key is there.
         if db.carry then Roster.RememberCarry(db.carry) end
         db.banlistSeed = nil   -- retired with the scheme that used it
-        if db.comms == nil then db.comms = true end
+        -- Both forced on. The link IS the addon working: without it there is no
+        -- pairing, no real XP, and no pet names - and a partner who quietly has
+        -- it off looks like a partner whose addon is broken.
+        db.comms, db.autoAccept = true, true
         if db.autoLoot == nil then db.autoLoot = true end
         -- To the side by default: the badge is a number, and a number beside
         -- the name is read without moving your eyes off the plate the way one
@@ -4710,6 +5040,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         end
         lastXP, lastXPMax = UnitXP("player"), UnitXPMax("player")
         db.threshold = db.threshold or C.THRESHOLD_DEFAULT
+        db.shareMin  = db.shareMin  or C.SHARE_MIN_DEFAULT
         db.soundId   = db.soundId or (SOUNDKIT and SOUNDKIT.LEVELUP) or 888
         db.missId    = db.missId or (SOUNDKIT and SOUNDKIT.IG_QUEST_FAILED) or 847
         db.shortId   = db.shortId or (SOUNDKIT and SOUNDKIT.IG_MAINMENU_OPTION) or 851
@@ -4721,7 +5052,15 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         -- mistagFile defaults to the same file, so it inherits the same stale
         -- paths and needs the same sweep.
         if C.LEGACY_MISS_FILES[db.mistagFile] then db.mistagFile = C.DEFAULT_MISS_FILE end
+        -- The quest-progress path that briefly shipped as this cue's default.
+        -- Cleared rather than replaced: it has no file any more, and `nil` is
+        -- what sends it back to the id. See C.QUEST_UPDATE_CUE.
+        if C.LEGACY_QPROG_FILES[db.qProgFile] then db.qProgFile = nil end
         if C.LEGACY_THRESHOLDS[db.threshold] then db.threshold = C.THRESHOLD_DEFAULT end
+        -- Clamped after the legacy sweep, so a saved value from before the range
+        -- existed lands inside it rather than pinning a slider to its end.
+        db.threshold = min(max(db.threshold, C.TARGET_MIN), C.TARGET_MAX)
+        db.shareMin  = min(max(db.shareMin,  C.TARGET_MIN), C.TARGET_MAX)
         -- Migrate the single-tagger fields from before the list existed.
         db.taggers = db.taggers or {}
         if db.name then
@@ -4784,6 +5123,10 @@ ns.PrimaryTaggerKey             = PrimaryTaggerKey
 ns.ReassignMarkers              = ReassignMarkers
 ns.AddTagger, ns.SetCarryTo     = AddTagger, SetCarryTo
 ns.Roster                       = Roster
+-- The two named-mob lists as lists, for the Ignore tab. The window adds and
+-- removes through here rather than writing db.banlist itself: the tri-state
+-- storage has one correct way to be written and no second implementation.
+ns.Mobs                         = Mobs
 ns.RebuildDynamicTaggers        = RebuildDynamicTaggers
 ns.ResetAll                     = ResetAll
 ns.UpdateAllPlates              = UpdateAllPlates
@@ -4794,6 +5137,7 @@ ns.UpdateAllPlates              = UpdateAllPlates
 ns.ApplyBadgeStyle              = ApplyBadgeStyle
 ns.SetBadgePosition             = SetBadgePosition
 ns.ResetBadgeOptions            = ResetBadgeOptions
+ns.ResetTrackingOptions         = ResetTrackingOptions
 ns.DrawBadgeShare               = DrawBadgeShare
 ns.ShowBadgeCheck               = ShowBadgeCheck
 ns.BlankBadge                   = BlankBadge
@@ -4817,3 +5161,8 @@ ns.PushThreshold                = PushThreshold
 ns.PlayCue                      = PlayCue
 ns.Cues                         = Cues
 ns.SpawnBurst                   = SpawnBurst
+-- What the Popups tab's Test buttons fire. Every one goes through the same
+-- code the real event does; see TestNotice.
+ns.TestNotice                   = TestNotice
+-- Which of the two quest-mark sources this client has; see SetQuestIcon.
+ns.SetQuestIcon                 = SetQuestIcon

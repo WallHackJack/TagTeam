@@ -16,13 +16,13 @@ Type `/tag` for all options.
 
 - **Live percentage on every nameplate.** Watch a mob climb toward the threshold
   and hold off until it's there. The number is graded against two marks: below
-  34% it wears a warning icon and sits orange, because the kill is a write-off
-  however it ends; above that the warning comes off and it climbs orange to green
-  as it reaches your threshold, where it becomes a checkmark. The kill line in
-  chat and the death float use the same three verdicts, and a kill that lands
-  between the two gets its own sound rather than the miss beep.
-- **A sound and a stamped checkmark at 38%**, so you never have to stare at
-  numbers mid-pull.
+  your minimum target it wears a warning icon and sits orange, because the kill
+  is a write-off however it ends; above that the warning comes off and it
+  climbs orange to green as it reaches your ideal target, where it becomes a
+  checkmark. The kill line in chat and the death float use the same three
+  verdicts, and a kill that lands between the two gets its own sound.
+- **A sound and a stamped checkmark at your ideal target**, so you never have
+  to stare at numbers mid-pull.
 - **Real XP reporting, checked against the estimate.** When both sides run
   TagTeam, your alt's client sends its actual XP gain — rested included — and it
   prints on yours next to what TagTeam predicted, the multiplier between the two,
@@ -38,9 +38,9 @@ Type `/tag` for all options.
 - **A buzz and a red X when a mob dies short.** Most misses are incidental — your
   tagger clipped something you were killing anyway — so the cue is deliberately
   just "that one got away", with no number to read mid-pull. The exact share it
-  reached is in the chat line. A kill that got past 34% but not to your threshold
-  is a near miss instead: a softer sound and a warning icon, because it still
-  banked most of its XP and an X over that would be a lie.
+  reached is in the chat line. A kill that got past the minimum but not to your
+  ideal target is a near miss instead: a softer sound and a warning icon,
+  because it still banked most of its XP and an X over that would be a lie.
 - **Warnings when *you* steal the tag**, with a standing X on mobs you tapped
   first and the threshold ding suppressed, because nothing can be earned there.
   The mob still gets the failure sound when it dies — the warning at tap time
@@ -56,7 +56,7 @@ Type `/tag` for all options.
   so it counts even when it was summoned before you logged in — and a tagger who
   isn't running TagTeam is placed from the pet's own tooltip the first time it
   crosses your target, your mouseover, or your target's target. `/tag` lists who
-  owns what, and `/tag pets` turns the whole thing off.
+  owns what.
 - **One keybind to target, follow and focus your partner.** It builds itself from
   whoever you've set up, tries each of them in priority order, and falls back to
   following your current target if nobody's configured. Bind it under
@@ -106,22 +106,27 @@ out of range, and it can't set focus for you — that action is protected.
 
 ## Useful commands
 
+Most settings live in the window — `/tag ui` — and the commands below are the
+ones worth having on a hotkey or in a macro. Anything that is purely a
+preference is on a tab rather than here: the threshold, badge position and
+styling, the XP zone, which cues play, and the two by-name mob lists (Ignore).
+
 | Command | Does |
 |---|---|
-| `/tag` | Full status and command list |
-| `/tag add <name>` / `/tag remove <name>` | Manage taggers |
-| `/tag carry <name>` | Run on a tagger's client |
-| `/tag threshold <1-100>` (`/tag thresh`) | Change the tag threshold from 38%, on both linked clients. Decimals allowed (`37.5`). Bare, it explains what your threshold costs you in XP |
-| `/tag xp` | Session totals, estimated and actual |
-| `/tag macro` | Copyable target/follow/focus macro |
-| `/tag ban <mob>` | Ignore a mob by name entirely |
-| `/tag autotag <mob>` | Mobs your tagger keeps credit on without tapping first — no stolen-tag warning |
-| `/tag audio` | Mute all cues |
-| `/tag near <id|path>` (`/tag testnear`) | The near-miss cue, for a kill past 34% that still missed your threshold. `/tag miss` silences near misses and misses together |
-| `/tag reset` (`/tag clear`) | Clear all roles |
-| `/tag pvp` | Track PvP-flagged mobs instead of ignoring them (ignored by default) |
-| `/tag instance` | Stop the addon entirely inside dungeons and raids (on by default) |
-| `/tag zone` | Force the XP base constant (`auto`, `outland`, `azeroth`) when auto-detect is wrong |
+| `/tag` (`/tag status`) | Full status and command list |
+| `/tag ui` (`/tag window`) | Open the settings window |
+| `/tag add <name>` / `/tag remove <name>` (`/tag rem`, `/tag del`) | Manage taggers |
+| `/tag carry <name>` | Run on a tagger's client: you and your party become the taggers |
+| `/tag pair <name>` | Open the window on the pairing prompt |
+| `/tag reset` (`/tag clear`, `/tag off`, `/tag none`) | Clear all roles |
+| `/tag stats` | Session totals, estimated and actual |
+| `/tag link` | Pair with the other client over the addon channel |
+| `/tag inv` (`/tag invite`) | Ask your tagger — or your carry — to invite you now |
+| `/tag autoinvite` / `/tag autoleave` / `/tag loot` | Party handling |
+| `/tag focus` / `/tag focuswarn` / `/tag marks` (`/tag triangle`) | Finding your tagger |
+| `/tag sound` (`/tag audio`, `/tag mute`) | Master mute. Which cues play, and what each is set to, are on the Audio tab |
+| `/tag steal` / `/tag groupwarn` | The stolen-tag and grouped-in-combat warnings |
+| `/tag diag` | Runtime picture: what was detected, what is cached, and the last cosmetic error |
 
 ## Requirements
 

@@ -53,10 +53,18 @@ has **not** happened yet: it still has its own `CreateWindowFrame`,
 
 ## The tabs
 
-`Players`, `General`, `Popups`, `Nameplate`, `Sounds`, then `About` pushed to
-the far right by `right = true` on its tab spec — the kit anchors that run from
-the other end, so the gap is whatever is left over rather than a number somebody
-has to keep correct.
+`Players`, `General`, `Popups`, `Nameplate`, `Ignore`, `Sounds`, then `About`
+pushed to the far right by `right = true` on its tab spec — the kit anchors that
+run from the other end, so the gap is whatever is left over rather than a number
+somebody has to keep correct.
+
+**The window is where settings live now, and `/tag` is not.** Commands that were
+only a toggle in disguise are gone — the threshold, badge position, the XP zone,
+pet damage, the miss notice, PvP mobs, instances, announce, quests, the two mob
+lists. What is left is the things you do rather than the things you set: adding
+a tagger, pairing, asking for an invite, the master mute, status. Adding a
+*setting* means adding a row to `OPTION_PAGES`, not a command; adding a command
+is for something that happens rather than something that is.
 
 **General, Popups and Nameplate are declared, not built.** `OPTION_PAGES` in
 `TagTeamView.lua` is a table of boxes, each a list of rows naming the `db` key
@@ -91,6 +99,29 @@ Two fields carry the things that bit:
 Every option value is in the window's refresh signature, because most of them
 still have a `/tag` command and a window showing the opposite of what you just
 typed is worse than no window.
+
+**A box can be a list of names instead of rows of settings.** `mobs` on a group
+carries `List`/`Add`/`Drop` and gets a `[+]` in its header, a bin on every row,
+and its own scroll area capped at `MOB_ROWS_MAX`. The Ignore tab's two lists are
+the only ones, and three things about them are deliberate:
+
+- Every call goes through `ns.Mobs`. Saved data holds **only what the user
+  added**; the defaults live in code and are never copied into it, which is what
+  lets a new one reach an existing install with nothing to migrate.
+- **A shipped entry cannot be removed one at a time**, and its bin is disabled
+  with a reason rather than hidden — a row missing the button every other row
+  has reads as a rendering fault. This replaced a tri-state where `false` meant
+  "one of ours, turned off"; a stale `false` in saved data is now ignored and
+  the default comes back. `Reset` is the way out, and it only has to `wipe` the
+  saved table.
+- **User entries sort first, shipped ones last and dimmer.** Not one
+  alphabetical run: the shipped part is what nobody has to think about, and a
+  name somebody added themselves is what they came here to find — sorting them
+  together buries it in the middle of ours.
+- They **scroll inside the box** rather than growing it. Two lists with no
+  ceiling on one page, and without that a long one pushes the other off the
+  bottom. `UI.ScrollSectionRows` has to be called before any row exists, for the
+  same reason `ReserveSectionStrip` does.
 
 **A box can bring a picture as well as rows.** `Build` and `Refresh` on a group
 sit alongside `rows`, and the builder calls `UI.ReserveSectionStrip` to leave
@@ -227,9 +258,8 @@ at all, which would turn a row into a blank line.
 
 ### Where the badge sits, and what faces the plate
 
-`SetBadgePosition` is the only way the position moves — `/tag pos` and the
-dropdown both go through it — and it carries two consequences that must not be
-split off:
+`SetBadgePosition` is the only way the position moves, and it carries two
+consequences that must not be split off:
 
 - **The offsets go back to zero.** They are a nudge measured against one side.
   A `+40` that lined the badge up beside a health bar means nothing above it.
@@ -277,6 +307,73 @@ number goes through it.
 `db.badgeIconSize` sizes the badge FRAME, so the checkmark, the X and the
 warning icon move together. They are three faces of one mark, and a slider
 called "Icon Size" that moved one of them would be lying.
+
+## Every screen burst is a row in C.BURSTS
+
+Mark, colour, and the flag that silences it, per kind — the same shape `C.CUES`
+has and for the same reason. The Popups tab both **lists** these and offers a
+**Test** button for each, so a window picking its own texture and colour for a
+preview would drift from the thing it was previewing and nobody would notice
+until the real one fired.
+
+`Burst(kind, label)` is the only way one is drawn. The first three keys are
+`ShareBand`'s return values, so a verdict picks its own mark; the last two are
+their own events and carry a fixed label.
+
+- **The three verdicts have three flags now**, where the full-XP burst had none
+  at all and the acceptable one rode the miss flag. The one verdict worth
+  celebrating could not be switched off, and the one worth *tightening* could
+  not be switched off separately from the one worth regretting.
+- The missed path in `HandleDeath` stays alive if **either** of its two flags is
+  on, and `FloatKill` picks which mark to draw. Gating the path on one of them
+  would silence the other.
+- **`TestNotice` deliberately ignores the flag.** You press Test to find out
+  what a thing looks like, usually while deciding whether to leave it on, and a
+  button that quietly did nothing because the box beside it is unticked reads as
+  broken. It fires the **sound too** — half of what somebody is judging is what
+  it sounds like — and the three verdicts get a random plausible label off
+  `TestKillLabel`, in the shapes `FloatKill` builds. Random so two presses do
+  not look like one frozen screenshot; nothing reads the number afterwards.
+- **`cue` on a burst names its row in `C.CUES`**, which is what the Popups tab
+  hangs an audio button on. `tagged` has none on purpose: the sound for clearing
+  the threshold is `tag`, and that fires when the mob *crosses* it rather than
+  when it dies. A second one on the kill would be the same news twice.
+- `C.QUEST_NOTICES` is the same shape for the three quest rows, so the tab can
+  treat all eight alike instead of special-casing three of them.
+
+The audio button opens the Audio tab's own `AskSound` pop-up, which now carries
+an **Enabled** checkbox (`opts.toggle` on the kit's prompt). Two tabs list
+overlapping things, and sending somebody to the other one to switch off what
+they just listened to is a round trip for one tick box. It applies on click
+rather than on Accept, like the volume slider beside it and for the same reason.
+
+Row order is the same on both tabs and worth keeping that way — they list
+overlapping things, and a control that changed sides between them would have to
+be found twice:
+
+    [✓] [mark] Label ……………… [speaker] [Test!]
+
+The **box first**, because a column of them down the left edge is what makes a
+list of settings scannable. **Test outermost**, because it is the one you press
+repeatedly while tuning. The row's mark is a real `ROW_ICON`-sized texture, not
+an inline `|T…|t` — that sizes to the FONT, and came out half the size of the
+same icon one tab over.
+
+Rows carry the mark they draw, because that is how somebody arrives: they saw a
+thing over a mob and want to know which switch it was.
+
+The quest marks are the game's own — `!` for accepted, `?` for an objective,
+gold `?` for a hand-in — which is the whole point of using them: everybody
+already reads those. **`SetQuestIcon` picks the source**, because the
+gossip-frame set is 16px art and soft at an 18px row icon while the atlas
+versions are the modern high-resolution ones and are not on every client.
+`C_Texture.GetAtlasInfo` is the guard: `SetAtlas` on a name this client does not
+have is not something to discover at runtime.
+
+**X for a loss, `!` for a mistake you are still standing in.** A mistag is gone
+and cannot come back, so it takes the X and red; being grouped is something you
+can walk out of, so it takes the warning mark and orange — the same pairing the
+badge already uses for a share that has not failed yet.
 
 ## The window decides nothing
 
@@ -342,18 +439,35 @@ picked an id, do not put the default path back" and `nil` means "nothing saved,
 use `files`". That distinction is load-bearing — `nil` gets re-defaulted at
 `ADDON_LOADED` and `false` does not.
 
+**A cue that is off makes no sound, previews included** — the volume slider, the
+Test buttons, all of it. Off means off, and a preview that played anyway would
+be the one place in the addon where a silenced cue still made noise. The
+consequence to know before "fixing" it: quest progress ships off, so its volume
+slider does nothing until the cue is enabled, which is why the sound pop-up
+carries its own **Enable this Audio Queue** box directly above the slider.
+
+**Quest progress has no `files`, and that is a correction rather than an
+oversight.** It briefly defaulted to `Sound\Interface\iQuestUpdate.ogg`, on the
+reasoning that the accept and complete cues live in that directory under that
+naming — the reasoning was right and the result was wrong. That path resolves to
+the engine's objective-complete flourish, the same weight of noise as accepting
+a quest, for something that fires **once per mob** on a kill quest. It is a tick,
+not an announcement. `C.LEGACY_QPROG_FILES` sweeps the saved path back off
+anyone who ran that build. The test for a file here is not whether it plays; it
+is whether you could stand thirty of them in a minute.
+
 Two things that look like sound flags and are not:
 
-- **`db.missAlert` is the miss NOTICE**, not the miss sound. It gates the
-  on-screen mark and the queued XP report as well, which is why `/tag miss`
-  survives the sound-command cull. The audio half is `db.missSound`.
+- **`db.missAlert` is the low-XP NOTICE**, not its sound — one of the five
+  entries in `C.BURSTS`, which is why it sits on Popups rather than Audio. The
+  audio half is `db.missSound`.
 - **The near miss has no flag of its own.** It rides `db.missSound` because it
   and the miss are one notice graded two ways, and somebody who silenced misses
   did not mean "except the near ones". The window shows that as a checkbox
   disabled with a reason rather than hiding it.
 
 `/tag` keeps exactly one sound command, `/tag sound`, which toggles the master
-`db.audio`. Which cue plays and what each is set to belong to the Sounds tab.
+`db.audio`. Which cue plays and what each is set to belong to the Audio tab.
 
 `C.CUE_SECTIONS` groups the rows into the boxes the tab draws — `pull` for the
 four verdicts, `progress` for what your partner is getting on with. A cue's
@@ -389,9 +503,42 @@ id backstop now, so "Default" means the same thing on every row.
 
 This client's `PlaySoundFile` takes no volume. The only lever is
 `Sound_SFXVolume`, the CVar the "SFX" channel already rides, so a cue that wants
-to be quieter is played with that CVar moved and moved straight back — inside a
-`pcall`, with the restore *outside* it, because leaving somebody's Sound Effects
-slider moved would be far worse than a missing beep.
+to be quieter is played with that CVar moved and put back after.
+
+**It has to stay moved for the length of the cue, and this was the bug.** The
+mixer reads that CVar *continuously* — that is how the game's own slider changes
+a sound already playing — so setting it, starting the sound and restoring on the
+next line played every cue at the original volume. The per-cue volume slider
+appeared to do nothing, which is precisely what it did.
+
+**`Cues.GameVolume` must never read the CVar while we are holding it.** This is
+the subtle one and it bit hard: during a hold the CVar *is* our scaled value, so
+computing the next cue from it multiplies our own scaling in a second time, and
+the one after that a third. Every cue came out quieter than the last until they
+vanished, the "follow the game's volume (40%)" label counted itself down to 1%,
+and nothing could raise it again because the number being scaled had already
+been scaled. `db.sfxRestore` is what the user actually set, so while it is
+non-nil it *is* the answer. Do not "simplify" that branch away.
+
+The formula, in order: **game SFX (1 when not following it) × `db.volume` ×
+`db.cueVolume[key]`**, all as 0..1 scalars.
+
+The hold has a cost that cannot be designed away: there is one volume lever on
+this client and it is the whole SFX channel, so while we hold it the **game's
+own sound effects ride our number too**. That is why the hold is kept to roughly
+one cue, and why `Cues.Volume` returning nil for the default configuration
+matters — somebody who has not asked for a different volume never pays it.
+
+The restore runs on a `C_Timer` after `C.CUE_VOLUME_HOLD`, and two things guard
+it:
+
+- **Only the last cue to start puts it back.** `state.sfxHold` is a token; an
+  earlier cue's timer firing part way through a later one would jump the volume
+  mid-sound.
+- **The value to restore lives in `db`, not `state`.** A reload or a disconnect
+  inside the hold would otherwise leave somebody's Sound Effects slider where we
+  put it with no record of where it was. `Cues.ReleaseVolume` runs at
+  `ADDON_LOADED` for exactly that, and is a no-op when nothing is held.
 
 **All three volumes multiply**: the game's Sound Effects slider (while
 `db.useGameVolume` is on), `db.volume`, and the cue's own `db.cueVolume[key]`.
@@ -441,7 +588,11 @@ opposite characters. Do not reintroduce any of them.
 
 - **carry** — the high-level character doing the killing.
 - **tagger** — a low-level character being levelled, who must deal `db.threshold`
-  percent (default **38%**) of a mob's max health to earn credit for the kill.
+  percent of a mob's max health to earn credit for the kill — the **ideal
+  target**, default 40%. `db.shareMin` (default 31%) is the **minimum**, under
+  which the kill is a write-off however it ends. Both are clamped to
+  `C.TARGET_MIN..C.TARGET_MAX`, the range the XP curve actually bends over;
+  outside it there is nothing to tune. Only the ideal is on the wire.
 
 There can be several taggers. **Their damage is pooled** against the one
 threshold, which is correct when they are grouped with each other, since a party
@@ -544,7 +695,7 @@ same way — `Pets`.
   `IgnoredUnit()` gates the damage path: enemy players by GUID prefix, their
   hunter/warlock pets by `Pet-`, and guardians and totems — ordinary `Creature-`
   GUIDs — by `UnitPlayerControlled` when a nameplate gives us a unit token.
-  `db.ignorePvP` (default on, `/tag pvp`) adds `UnitIsPVP`, which catches the
+  `db.ignorePvP` (default on, Ignore tab) adds `UnitIsPVP`, which catches the
   faction guards on contested Outland ground. Player-driven units are a **fact**:
   they pay no XP, so tracking them only ever produced badges and buzzes on
   non-tags. PvP-flagged NPCs are a **preference**: they do pay, but hitting one
@@ -678,13 +829,13 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `OK` / `NO` | reply | Pairing accepted / declined. |
 | `HELLO` / `HI` | either | Silent handshake, sent 5 s after login to re-verify saved links. |
 | `INV` | either | Ask the other end to invite *us*. Sent by the carry's out-of-range check and by `/tag inv` from either side. **Only honoured from an established pair.** |
-| `THRESH:<n>` | either | New tag threshold, pushed by `/tag threshold`. Applied silently, **partners only**. Not relayed onward. |
+| `THRESH:<n>` | either | New tag threshold, pushed by the General tab's slider. Applied silently, **partners only**. Not relayed onward. |
 | `XP:<n>` | tagger → carry | Real XP from a **kill**, read off `UnitXP`. **One message per mob, not per event** — see the tick-splitting note under XP estimate. `0` means max level. |
 | `XPQ:<n>:<title>` | tagger → carry | Quest turn-in. Title may be empty. Printed, tallied in `state.offTagXP`, and claims **no** pending kill. |
 | `XPD:<n>` | tagger → carry | Zone discovery. Same handling as `XPQ`. |
 | `QACC:<title>` | tagger → carry | Quest accepted. No XP rides on it and nothing is tallied — it prints and plays the accept fanfare. **Partners only**, and never sent without a title. |
 | `QDROP:<title>` | tagger → carry | Quest abandoned. Same handling, **no cue** — see the `QUEST_REMOVED` note below for why it arrives a second late. |
-| `QPROG:<text>` | tagger → carry | An objective ticking over — the yellow centre-screen text, forwarded verbatim. **Partners only**, no cue. Printing is gated on the receiver's `db.questNotices` (`/tag quests`), as are `QACC` and `QDROP`. |
+| `QPROG:<text>` | tagger → carry | An objective ticking over — the yellow centre-screen text, forwarded verbatim. **Partners only**, no cue. Printing is gated on the receiver's `db.questProgress`; `QACC` and `QDROP` are gated on `db.questAccepted`. |
 | `REST:<pct>` | tagger → carry | Rested pool left, as a **percentage of their level's XP** (`0` = none). Feeds `state.taggerRested` and so `RestedFactor`. **Partners only** — it decides whether every estimate doubles. Pushed on the crossings, every `C.REST_STEP` of drift, and forced at the handshake and on a ding. |
 | `LEVEL:<n>` | tagger → carry | They dinged. Feeds `NoteTaggerLevel` and plays `C.DING_CUE`. **Partners only** — it writes the number every XP estimate is measured against. |
 | `PET:<name>` | either | Our own pet, by name. Empty name clears. **Partners only** — it writes into damage accounting. Sent on `UNIT_PET`, at login, and on every link established or re-verified; broadcasts are deduped against the last one sent, direct sends are not. |
@@ -726,9 +877,15 @@ for as a SOUNDKIT key. Its backstop is `IG_QUEST_LIST_COMPLETE` rather than the
 page-turn: a completion cue that lands on the wrong sound should at least be a
 completion sound.
 
-The completion cue is **not** gated on `db.questNotices`. That toggle is for the
-running commentary on the tagger's quest log; `XPQ` is an XP report, which is the
-addon's whole job.
+**Three quest flags, not one.** `db.questProgress`, `db.questAccepted` and
+`db.questComplete` are separate because they are three different volumes of
+noise: objectives tick over once per mob, accepts happen a few times an hour,
+and hand-ins are XP reports. One flag meant silencing the first also silenced
+the last, which is the one nobody wants silenced.
+
+`db.questComplete` gates the **announcement only**. `state.offTagXP` is banked
+above the gate, deliberately — a session total that moved with a notice setting
+would be a lie.
 
 **`QUEST_REMOVED` cannot tell a hand-in from an abandon**, and it can arrive
 *before* the `QUEST_TURNED_IN` that would have distinguished them — both facts
@@ -817,7 +974,7 @@ is dark enough to vanish against a night sky.
 `Suspended()` is the single predicate: `db.instanceOff` (default on) and
 `IsInInstance()` reporting `party` or `raid`. Deliberately **not** cached on a
 zone event — `IsInInstance` is a cheap client-state lookup, so reading it live
-means `/tag instance` takes effect the moment it's typed with nothing to
+means the Ignore tab's switch takes effect the moment it is set with nothing to
 invalidate, and it's a *global*, which costs no upvalue in its callers.
 
 It is enforced in one place that matters — the `OnEvent` dispatcher drops every
@@ -851,11 +1008,11 @@ which has meant 530 = Outland since the Burning Crusade shipped; that is checked
 first, and it also answers before the map system is ready. The parent-map walk
 stays as the fallback for Outland instances, which report their own id.
 
-**One session total, never two.** `/tag` and `/tag xp` print the *confirmed*
+**One session total, never two.** `/tag` and `/tag stats` print the *confirmed*
 total the moment `state.reportedKills > 0`, and stop printing the estimate
 entirely — not beside it, not in brackets. Two totals for one session invites
 reading the wrong one, and the estimate is the wrong one. `state.sessionXP` keeps
-accumulating either way, because `/tag calibrate` and the pairing line still need
+accumulating either way, because the pairing line still needs
 it; it is only the *display* that goes.
 
 The pairing line (`expected N, actual M, 1.02x`) still shows both, and that is a
@@ -890,7 +1047,7 @@ wherever both exist.
 **Rested is no longer invisible, because the tagger tells us.** `GetXPExhaustion`
 is on their client, not ours, so it arrives as `REST:<pct>` and lands in
 `state.taggerRested`; `RestedFactor()` turns that into the ×2 and it goes into
-the estimate **before** `db.xpScale`. The point is not decoration: a rested kill
+the estimate itself. The point is not decoration: a rested kill
 used to print `2.00x`, and the multiplier exists to surface what the formula
 *cannot* see. Anything we can see belongs in the estimate instead, or the one
 number worth reading becomes noise.
@@ -903,8 +1060,8 @@ number worth reading becomes noise.
   instant the mob died, which is on the other client and a message behind.
 - `kill.rested` is **pinned at queue time**, like `need`, because the pool can
   empty between the kill and the report coming back.
-- It goes into `state.lastRawXP` too, so `/tag calibrate` does not read a rested
-  kill as a scale of 2. `lastXPInfo` says `rested x2` when it applied.
+- It is folded into the estimate itself rather than shown beside it, for the
+  reason above: the multiplier is for what the formula cannot see.
 - `RestedFactor` doubles if **any** tagger is rested. Damage pools against one
   threshold but XP does not, so with several taggers that is a guess — the same
   simplification `LowestTaggerLevel` already makes.
@@ -1065,7 +1222,7 @@ the xp lands, it just fires later. That is why both exist.
 stamps `evidenceAt` as well as booking the flush. Adding a new evidence source
 means calling `Noted`, or the TTL cannot see it.
 
-**`/tag xpdebug`, run on the tagger**, prints each scrap as it lands and every
+**`db.xpDebug`, set on the tagger**, prints each scrap as it lands and every
 flush with what it had in hand. The ordering is not inferable after the fact, and
 guessing at it cost two wrong fixes; use this before theorising about a third.
 
@@ -1163,7 +1320,7 @@ stays backward compatible in both directions: a partner on an older build drops
 an unknown command silently, where `XP:250:Some Quest` would have failed
 `tonumber` and been dropped anyway — or worse, paired. Neither touches
 `reportedKills`, `reportedXP` or `matchedEst`/`matchedXP`; they land in
-`state.offTagXP`, which `/tag xp` prints on its own line.
+`state.offTagXP`, which `/tag stats` prints on its own line.
 
 **Pairing an estimate with its report.** The kill and the `XP:<n>` that follows it
 are separate events on separate clients, so the carry queues each tagged kill in

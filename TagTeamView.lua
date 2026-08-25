@@ -27,7 +27,7 @@ local UpdateAllPlates   = ns.UpdateAllPlates
 local UpdateMacroButton = ns.UpdateMacroButton
 local ReassignMarkers   = ns.ReassignMarkers
 local PushThreshold     = ns.PushThreshold
-local Roster, Cues = ns.Roster, ns.Cues
+local Roster, Cues, Mobs = ns.Roster, ns.Cues, ns.Mobs
 local TaggersByPriority = ns.TaggersByPriority
 local NormalizeName = ns.NormalizeName
 local Print = ns.Print
@@ -35,9 +35,12 @@ local C = ns.C
 
 local WIDTH, HEIGHT = 560, 470
 
--- The sound pop-up is half again as wide as the default: a sound path is a long
--- thing to read in a box sized for a character name.
-local SOUND_PROMPT_W = 450
+-- Narrower than the name prompt, not wider. It used to be half again as wide,
+-- because a sound path is a long thing to read - but the path now gets a line
+-- of its own rather than sharing one with its caption, so the width it needed
+-- came out of the height instead. A tall narrow panel also reads as a settings
+-- card, where a wide flat one read as a dialog box.
+local SOUND_PROMPT_W = 320
 local PREVIEW_GAP    = 0.3   -- seconds between previews while a slider moves
 local THRESHOLD_SEND_GAP = 0.6   -- settle time before the threshold is whispered
 
@@ -51,7 +54,8 @@ local TABS = {
     { page = "general",   label = "General" },
     { page = "popups",    label = "Popups" },
     { page = "nameplate", label = "Nameplate" },
-    { page = "sounds",    label = "Sounds" },
+    { page = "ignore",    label = "Ignore" },
+    { page = "sounds",    label = "Audio" },
     -- Anchored from the right instead of chained onto the run above, so the
     -- gap between it and Sounds is whatever is left over rather than a number
     -- somebody has to keep correct.
@@ -255,9 +259,9 @@ local function DressRow(section, index)
 
         row.check = UI.CreateCheckbox(row, nil, "Make this your carry",
             "Sets who is levelling you. Switching modes still asks first.", Pick)
-        row.check:SetSize(UI.ROW_ICON, UI.ROW_ICON)
+        row.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
         row.check:SetPoint("LEFT", 4, 0)
-        textLeft = 4 + UI.ROW_ICON + 6
+        textLeft = 4 + UI.ROW_CHECK + 6
 
         row:EnableMouse(true)
         row:SetScript("OnMouseUp", Pick)
@@ -376,6 +380,15 @@ end
 
 local sounds = { boxes = {} }   -- the page's widgets, built once
 
+-- A cue by its key. The Popups tab's audio buttons name a cue in a row spec,
+-- and C.CUES is a list rather than a map because its ORDER is what the Audio
+-- tab draws - so the lookup lives here rather than the list being reshaped.
+local function CueByKey(key)
+    for _, cue in ipairs(C.CUES) do
+        if cue.key == key then return cue end
+    end
+end
+
 -- Previewing, throttled. Every one of these hangs off a slider, and a slider
 -- reports every step of a drag - without this, dragging from 0 to 100 would
 -- fire the cue twenty times on top of itself.
@@ -391,10 +404,9 @@ end
 local function AskSound(cue)
     if not prompt then prompt = UI.CreatePrompt("TagTeamPromptFrame") end
     prompt:Ask({
-        title = cue.label,
-        -- Half again as wide as the name prompt: a sound path is a long thing
-        -- to read in a box sized for "Meepmerp".
+        title = cue.label .. " Audio Queue",
         width = SOUND_PROMPT_W,
+        label = "Sound Path",
         hint  = "Sound id, or a file path",
         -- Pre-filled with what it is actually playing. An empty box would make
         -- somebody guess the shape of the thing they are meant to replace.
@@ -402,6 +414,19 @@ local function AskSound(cue)
         accept = "Save",
         -- Blank is an answer here: it puts the cue back to its default.
         allowEmpty = true,
+        -- The same switch the Audio tab's row carries, on the pop-up itself.
+        -- This opens from the Popups tab too, and sending somebody to another
+        -- tab to turn off the thing they just listened to is a round trip for
+        -- one tick box.
+        toggle = {
+            label   = "Enable this Audio Queue",
+            checked = Cues.Enabled(cue.key),
+            OnClick = function(on)
+                if on ~= Cues.Enabled(cue.key) then Cues.Toggle(cue.key) end
+                if on then Cues.Play(cue.key) end
+                ns.RefreshView()
+            end,
+        },
         -- Nothing to save if the path is not there. A number is always fine -
         -- an id resolves to something or to silence, never to an error - and an
         -- empty box means reset, so both abstain.
@@ -426,6 +451,10 @@ local function AskSound(cue)
         reset = function()
             Cues.Reset(cue.key)
             Print(format("%s reset to its default.", cue.label))
+            -- Played, like Save is. Reset changes the sound AND the volume, so
+            -- it is exactly as much of a change as saving one, and hearing the
+            -- result is the point of both.
+            Cues.Play(cue.key)
             ns.RefreshView()
         end,
         OnAccept = function(text)
@@ -443,6 +472,18 @@ local function DressCueRow(box, index, cue)
     local row = UI.CreateSectionRow(box, index)
     if row.label then return row end
 
+    -- Box first, same as every other settings row in the window. The Popups tab
+    -- lists overlapping things, and a control that changed sides between the
+    -- two would have to be found twice.
+    row.check = UI.CreateCheckbox(row, nil, cue.label, cue.about, function()
+        -- Ticking one on plays it. The /tag test* commands are gone, and this
+        -- is the moment somebody wants to hear what they just switched on.
+        if Cues.Toggle(cue.key) then Cues.Play(cue.key) end
+        ns.RefreshView()
+    end)
+    row.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
+    row.check:SetPoint("LEFT", 4, 0)
+
     row.gear = UI.CreateGearButton(row, "Change the sound",
         "Pick a SOUNDKIT id or a file path, set this cue's own volume, or "
         .. "reset it. A path is checked by playing it.",
@@ -450,24 +491,15 @@ local function DressCueRow(box, index, cue)
     row.gear:SetSize(UI.ROW_ICON, UI.ROW_ICON)
     row.gear:SetPoint("RIGHT", -4, 0)
 
-    row.check = UI.CreateCheckbox(row, nil, cue.label, cue.about, function()
-        -- Ticking one on plays it. The /tag test* commands are gone, and this
-        -- is the moment somebody wants to hear what they just switched on.
-        if Cues.Toggle(cue.key) then Cues.Play(cue.key) end
-        ns.RefreshView()
-    end)
-    row.check:SetSize(UI.ROW_ICON, UI.ROW_ICON)
-    row.check:SetPoint("RIGHT", row.gear, "LEFT", -6, 0)
-
     -- The verdict marks are the same textures the death burst draws, so the
     -- row and the thing it makes a noise about are unmistakably the same event.
-    local textLeft = 6
+    local textLeft = 4 + UI.ROW_CHECK + 6
     if cue.icon then
         row.icon = row:CreateTexture(nil, "ARTWORK")
         row.icon:SetSize(UI.ROW_ICON, UI.ROW_ICON)
-        row.icon:SetPoint("LEFT", 4, 0)
+        row.icon:SetPoint("LEFT", row.check, "RIGHT", 6, 0)
         row.icon:SetTexture(cue.icon)
-        textLeft = 4 + UI.ROW_ICON + 6
+        textLeft = textLeft + UI.ROW_ICON + 6
     end
 
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -477,7 +509,7 @@ local function DressCueRow(box, index, cue)
     -- What it is currently set to, grey and to the right of the name. The gear
     -- changes it, and this is how you see that the change took.
     row.note = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.note:SetPoint("RIGHT", row.check, "LEFT", -8, 0)
+    row.note:SetPoint("RIGHT", row.gear, "LEFT", -8, 0)
     row.note:SetPoint("LEFT", row.label, "RIGHT", 8, 0)
     row.note:SetJustifyH("RIGHT")
     row.note:SetTextColor(0.55, 0.55, 0.55)
@@ -642,6 +674,48 @@ local BADGE_CHOICES = {
     { value = "right", label = "Right" },
 }
 
+-- Which XP base an estimate is built on. Auto is the detection in
+-- RefreshContinent, and the other two override it for the case where the map
+-- system is not answering - the reason the setting exists at all.
+--
+-- A FUNCTION rather than a table, because "Auto" has to say what it currently
+-- resolves to and that changes when you fly to Outland. The kit re-resolves a
+-- callable `choices` on every menu open and every Sync, so the label is live
+-- instead of frozen at whichever continent the window was first built on.
+--
+-- Each option carries what it is worth: the flat term in mobLevel * 5 + base.
+-- An option that did not say would be asking somebody to guess which way it
+-- moves their estimate. Greyed, because it is a note rather than the name.
+local function ZoneNote(text)
+    return " |cff808080(" .. text .. ")|r"
+end
+
+local function ZoneChoices()
+    return {
+        { value = "auto",
+          label = "Auto" .. ZoneNote(ns.state.inOutland and "Outland" or "Azeroth") },
+        { value = "azeroth",
+          label = "Azeroth" .. ZoneNote("+" .. C.XP_BASE_AZEROTH .. "xp") },
+        { value = "outland",
+          label = "Outland" .. ZoneNote("+" .. C.XP_BASE_OUTLAND .. "xp") },
+    }
+end
+
+-- What a damage target is worth in XP, beside the slider that sets it.
+--
+-- Off C.XP_CURVE through the core's own ExpectedXP, which is the curve measured
+-- from real kills - so this is the actual answer rather than a placeholder. It
+-- is what makes the pair of sliders legible: XP climbs with the share instead
+-- of switching on at a line, and 31 against 40 means nothing until you can see
+-- what each one pays.
+--
+-- Tilde because it IS an estimate, and the XP purple because that is what this
+-- addon has always coloured xp.
+local function TargetXPNote(value)
+    return format("|c%s~%d%% XP|r", C.HEX_XP,
+        floor((ns.ExpectedXP(value) or 0) * 100 + 0.5))
+end
+
 --------------------------------------------------------------------------------
 -- The fonts the badge can be drawn in
 --
@@ -713,9 +787,18 @@ local function Sampled(entry)
              font  = SampleFont(entry.value) }
 end
 
--- Resolved when the window is first built, not at load: which addons have
--- registered fonts is not settled while this file is still being read.
+-- Resolved on first use, not at load: which addons have registered fonts is not
+-- settled while this file is still being read.
+--
+-- MEMOISED, and that is not an optimisation. The dropdown calls a callable
+-- `choices` on every open so a live label stays live; this list builds a Font
+-- object per row, and a fresh set of those on every open would be a permanent
+-- global per font per look. Built once, then handed back.
+local fontChoices
+
 local function FontChoices()
+    if fontChoices then return fontChoices end
+
     local out, seen = {}, {}
     for _, entry in ipairs(SHIPPED_FONTS) do
         out[#out + 1] = Sampled(entry)
@@ -768,6 +851,8 @@ local function FontChoices()
         out[#out + 1] = Sampled({ value = saved,
                                   label = saved:match("([^\\/]+)$") or "Custom" })
     end
+
+    fontChoices = out
     return out
 end
 
@@ -1008,61 +1093,62 @@ local OPTION_PAGES = {
     general = {
         {
             title = "Tracking",
+            Reset = function() ns.ResetTrackingOptions() end,
             rows = {
-                { db = "enabled", label = "TagTeam running",
-                  about = "The master switch. Off means no tracking, no badges "
-                       .. "and no cues, without losing any of your setup.",
-                  after = "plates" },
-                { db = "threshold", label = "Damage share needed: %.1f%%",
-                  slider = { min = 5, max = 100, step = 0.5 },
-                  about = "How much of a mob's maximum health your taggers have "
-                       .. "to deal between them to earn the kill. Sent to your "
-                       .. "partner too - both clients have to agree on it.",
+                -- Both targets share one range, and it is the range the XP
+                -- curve actually bends over. Outside it there is nothing to
+                -- tune: under the floor every kill is a write-off, over the
+                -- ceiling the mob pays in full whatever you do.
+                -- White on the number alone: the caption is the same on every
+                -- pass and the figure is the part that just moved.
+                { db = "shareMin",
+                  label = "Minimum Damage Target: |cffffffff%.1f%%|r",
+                  slider = { min = C.TARGET_MIN, max = C.TARGET_MAX, step = 0.5 },
+                  after = "plates", Note = TargetXPNote,
+                  about = "Under this a kill is a write-off however it ends." },
+                { db = "threshold",
+                  label = "Ideal Damage Target: |cffffffff%.1f%%|r",
+                  Note = TargetXPNote,
+                  slider = { min = C.TARGET_MIN, max = C.TARGET_MAX, step = 0.5 },
+                  -- Repainted on every step rather than waiting for the push
+                  -- below to land: the badges are what somebody is watching
+                  -- while they drag this.
+                  after = "plates",
+                  about = "The share your taggers have to deal between them to "
+                       .. "earn the kill.",
                   -- Throttled, because this one does not just write a db field:
-                  -- it whispers the other client. A drag from 38 to 60 steps
-                  -- forty-odd times, and forty addon messages to say what the
+                  -- it whispers the other client. A drag across the range steps
+                  -- a dozen times, and a dozen addon messages to say what the
                   -- last one says is how you get muted by the server.
                   Set = function(value) PushThresholdSoon(value) end },
-                { db = "includePets", label = "Count pet damage",
-                  about = "A hunter's or warlock's pet does a large share of a "
-                       .. "tagger's damage. Off, a pet class looks like it "
-                       .. "cannot reach the threshold." },
-                { db = "ignorePvP", label = "Ignore PvP-flagged mobs",
-                  about = "Mobs another player has tagged in a PvP context are "
-                       .. "not yours to measure." },
-                { db = "instanceOff", label = "Suspend in dungeons and raids",
-                  about = "Inside an instance the carry and the tagger are "
-                       .. "necessarily grouped, so a tag earns almost nothing "
-                       .. "and every cue fires into a run you cannot act on." },
-            },
-        },
-        {
-            title = "Partner link",
-            rows = {
-                { db = "comms", label = "Addon-to-addon link",
-                  about = "Pairing, threshold sync and real XP reporting, over "
-                       .. "the hidden whisper channel. Off, everything falls "
-                       .. "back to estimates." },
-                { db = "announce", label = "Announce each tagged kill in chat",
+                { db = "announce",
+                  label = "Show full xp breakdown in chat upon kill",
                   about = "One line per kill, with what it paid." },
-                { db = "questNotices",
-                  label = "Show your partner's quest log activity",
-                  about = "What they accept, abandon and tick over. The "
-                       .. "chattiest thing on the channel." },
+                -- Saved as nil for auto, because "no opinion" is what auto
+                -- means and a stored "auto" would be a third state to keep in
+                -- step with the two real ones. Get/Set carry the translation.
+                { db = "continent", label = "Levelling Zone:", width = 150,
+                  choices = ZoneChoices,
+                  Get = function() return ns.db.continent or "auto" end,
+                  Set = function(value)
+                      ns.db.continent = value ~= "auto" and value or nil
+                      SafeCall(ns.RefreshContinent)
+                  end,
+                  about = "Which continent's XP formula an estimate is built "
+                       .. "on. Auto follows the zone you are in." },
             },
         },
         {
-            title = "Party",
+            title = "Grouping rules",
             rows = {
                 { db = "autoInvite", label = "Ask for an invite when out of range",
                   about = "Out of combat-log range nothing can be measured, so "
                        .. "the addon asks to be grouped rather than going quiet." },
-                { db = "autoAccept", label = "Accept invites from your partner",
-                  about = "Only from a name on your own list." },
                 { db = "autoLeave", label = "Leave the party once back in range",
                   about = "Being grouped splits the XP, so the group is dropped "
                        .. "the moment it stops being needed." },
-                { db = "autoLoot", label = "Free-for-all loot in a tag group",
+                { db = "autoLoot",
+                  label = "Auto-set FFA loot when partied via TagTeam (/tag inv)",
                   about = "A two-person tag group wants everything lootable by "
                        .. "whoever gets there." },
                 -- Here rather than on the Nameplate tab, which is about the
@@ -1078,28 +1164,76 @@ local OPTION_PAGES = {
                        .. "under Key Bindings > TagTeam.",
                   -- Classic Era has no focus unit at all.
                   requires = "HAS_FOCUS", after = "macro" },
+                -- Beside the setting it is a reminder about, rather than over
+                -- on Popups with the things drawn over mobs. It is a chat line,
+                -- and it is only ever about the row above it.
+                { db = "focusWarning", label = "Set Focus Reminders",
+                  about = "Says so when no focus is set, because without one "
+                       .. "range falls back to a timer.",
+                  requires = "HAS_FOCUS" },
             },
         },
     },
 
     popups = {
         {
-            title = "On screen",
+            -- Labelled by the mark each one draws, because that is how somebody
+            -- arrives here: they saw a thing over a mob and want it gone, or
+            -- want to know which switch it was. The row and the burst carry the
+            -- same icon so there is nothing to translate.
+            title = "Screen Bursts",
+            -- Icon, flag, test and sound all come off C.BURSTS, so a row here
+            -- names the kind and nothing else can drift from what fires.
             rows = {
-                { db = "missAlert", label = "Miss notice",
-                  about = "The mark drawn over a kill that paid too little, and "
-                       .. "the report queued behind it. This is the notice "
-                       .. "itself - its sound is on the Sounds tab." },
-                { db = "stealWarning", label = "Warn when a tag is stolen",
+                { db = "fullAlert", test = "tagged",
+                  icon = C.BURSTS.tagged.tex,
+                  label = "Full XP Kill",
+                  about = "The mark over a kill that reached your ideal "
+                       .. "target." },
+                { db = "nearAlert", test = "short",
+                  icon = C.BURSTS.short.tex, cue = C.BURSTS.short.cue,
+                  label = "Acceptable XP Kill",
+                  about = "Short of the ideal target but past the minimum - it "
+                       .. "still banked most of its XP." },
+                { db = "missAlert", test = "failed",
+                  icon = C.BURSTS.failed.tex, cue = C.BURSTS.failed.cue,
+                  label = "Low XP Kill",
+                  about = "A kill that came in under the minimum." },
+                { db = "stealWarning", test = "mistag",
+                  icon = C.BURSTS.mistag.tex, cue = C.BURSTS.mistag.cue,
+                  label = "Mistag Warning",
                   about = "Somebody else tapped the mob first. Nothing your "
                        .. "tagger does to it after that can pay." },
-                { db = "groupWarning",
-                  label = "Warn when grouped with your tagger in combat",
+                { db = "groupWarning", test = "grouped",
+                  icon = C.BURSTS.grouped.tex,
+                  label = "Grouped Warning",
                   about = "Being grouped splits the XP. In carry mode that is "
                        .. "almost always a mistake, and an expensive one." },
-                { db = "focusWarning", label = "Remind you when no focus is set",
-                  about = "Without a focus, range falls back to a timer.",
-                  requires = "HAS_FOCUS" },
+            },
+        },
+        {
+            -- One flag per kind, not one for the lot. They were one, which
+            -- meant silencing the objective spam - the chattiest thing on the
+            -- channel - also silenced hand-ins, which are XP reports.
+            title = "Quests",
+            rows = {
+                { db = "questProgress", test = "progress",
+                  questIcon = "progress",
+                  cue = C.QUEST_NOTICES.progress.cue,
+                  label = "Quest Progress",
+                  about = "Your partner's objectives ticking over, as they "
+                       .. "appear on their screen." },
+                { db = "questComplete", test = "complete",
+                  questIcon = "complete",
+                  cue = C.QUEST_NOTICES.complete.cue,
+                  label = "Quest Completion",
+                  about = "Hand-ins, and what they paid. The XP is counted "
+                       .. "either way - this is only whether it is announced." },
+                { db = "questAccepted", test = "accepted",
+                  questIcon = "accepted",
+                  cue = C.QUEST_NOTICES.accepted.cue,
+                  label = "Quest Accepted",
+                  about = "What your partner picks up and abandons." },
             },
         },
         {
@@ -1109,6 +1243,53 @@ local OPTION_PAGES = {
                   about = "The event the whole addon exists to produce. Off, it "
                        .. "is still announced in chat." },
             },
+        },
+    },
+
+    ignore = {
+        -- The two blanket switches first, then the two by-name lists: broadest
+        -- rule at the top, exceptions under it.
+        {
+            title = "Skip entirely",
+            rows = {
+                { db = "ignorePvP", label = "Ignore PvP-flagged mobs",
+                  about = "Mobs another player has tagged in a PvP context are "
+                       .. "not yours to measure." },
+                { db = "instanceOff",
+                  label = "Ignore in dungeons and raids",
+                  about = "Inside an instance the carry and the tagger are "
+                       .. "necessarily grouped, so a tag earns almost nothing." },
+            },
+        },
+        {
+            title = "Ignored mobs",
+            mobs = {
+                noun  = "an ignored mob",
+                empty = "No mobs ignored.",
+                add   = "Ignore a mob by name - no badge, no cue, no XP, "
+                     .. "no stolen-tag warning.",
+                List  = function() return Mobs.Banned() end,
+                Add   = function(name) Mobs.Ban(name) end,
+                Drop  = function(key) Mobs.Unban(key) end,
+            },
+            Reset = function() Mobs.ResetBanned() end,
+        },
+        {
+            title = "Auto-tagged mobs",
+            mobs = {
+                noun  = "an auto-tagged mob",
+                empty = "No mobs auto-tagged.",
+                -- The distinction that matters, and the reason these are two
+                -- lists rather than one: an ignored mob pays nothing and is
+                -- dropped; an auto-tagged one pays in full and still has to
+                -- clear the threshold. Only the TAP stops mattering.
+                add   = "Mobs your tagger keeps credit on without tapping "
+                     .. "first. They still have to reach the threshold.",
+                List  = function() return Mobs.AutoTagged() end,
+                Add   = function(name) Mobs.AddAutoTag(name) end,
+                Drop  = function(key) Mobs.DropAutoTag(key) end,
+            },
+            Reset = function() Mobs.ResetAutoTagged() end,
         },
     },
 
@@ -1137,8 +1318,9 @@ local OPTION_PAGES = {
                 { db = "badgePos", label = "Badge Position",
                   choices = BADGE_CHOICES,
                   -- Through the core, which also zeroes the offsets and flips
-                  -- "Text before Icon" to suit the new side. /tag pos goes the
-                  -- same way, so the two cannot apply different halves of it.
+                  -- "Text before Icon" to suit the new side - all of it in one
+                  -- place, rather than half here and half wherever else the
+                  -- position ever gets set from.
                   Set = function(value) ns.SetBadgePosition(value) end,
                   about = "Which side of the nameplate the damage-share badge "
                        .. "sits on." },
@@ -1208,6 +1390,103 @@ local OPTION_PAGES = {
     },
 }
 
+--------------------------------------------------------------------------------
+-- The two named-mob lists
+--
+-- A box of names with a [+] in its header and a bin on every row. The lists
+-- themselves are ns.Mobs' business - the tri-state storage behind them has one
+-- correct way to be written, and this file writing db.banlist directly would be
+-- the second implementation of it.
+--
+-- No "clear all". These are lists somebody curates a name at a time over
+-- weeks, and the shipped entries are in them; one mis-click emptying the lot is
+-- a worse outcome than removing four names by hand.
+--
+-- Their own scroll rather than letting the box grow: two lists with no natural
+-- ceiling on one page, and without it a long one pushes the other off the
+-- bottom and you scroll the whole tab to reach it.
+--------------------------------------------------------------------------------
+
+local MOB_ROWS_MAX = 5   -- rows before the box stops growing and scrolls
+
+local function AskMob(spec)
+    if not prompt then prompt = UI.CreatePrompt("TagTeamPromptFrame") end
+    prompt:Ask({
+        title  = "Add " .. spec.noun,
+        hint   = "Mob name",
+        accept = "Add",
+        OnAccept = function(text)
+            spec.Add(text)
+            ns.RefreshView()
+        end,
+    })
+end
+
+local function DressMobRow(box, index)
+    local row = UI.CreateSectionRow(box, index)
+    if row.label then return row end
+
+    row.remove = UI.CreateCloseButton(row, UI.ROW_ICON, 0.35)
+    row.remove:SetPoint("RIGHT", -2, 0)
+    UI.AddTooltip(row.remove, "Remove", "Take this mob off the list.")
+
+    -- Which entries shipped with the addon. Worth saying: removing one of ours
+    -- is remembered as an override rather than a deletion, and somebody
+    -- wondering why a name they never added is on the list deserves an answer.
+    row.note = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    row.note:SetPoint("RIGHT", row.remove, "LEFT", -6, 0)
+    row.note:SetTextColor(0.5, 0.5, 0.5)
+
+    row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.label:SetPoint("LEFT", 6, 0)
+    row.label:SetPoint("RIGHT", row.note, "LEFT", -6, 0)
+    row.label:SetJustifyH("LEFT")
+    return row
+end
+
+local function BuildMobBox(box, spec, globalName)
+    UI.AddHeaderTextButton(box, "Add (+)", "Add", spec.add,
+        function() AskMob(spec) end)
+    spec.hint = UI.CreateEmptyHint(box)
+    spec.hint:SetText(spec.empty)
+    UI.ScrollSectionRows(box, globalName, MOB_ROWS_MAX)
+end
+
+local function RefreshMobBox(box, spec)
+    local list = spec.List()
+    for i, entry in ipairs(list) do
+        local row = DressMobRow(box, i)
+        row.label:SetText(entry.name)
+        -- The shipped ones dimmer than your own, which is the other half of
+        -- sorting them last: the list you curate reads first.
+        row.label:SetTextColor(entry.default and 0.6 or 0.9,
+            entry.default and 0.6 or 0.9, entry.default and 0.6 or 0.9)
+        row.note:SetText(entry.default and "default" or "")
+
+        -- Re-wired per refresh rather than once: a pooled row holds a different
+        -- name after a removal, and a closure over the old key would delete
+        -- whoever moved up into that slot.
+        row.remove:SetScript("OnClick", function()
+            spec.Drop(entry.key)
+            ns.RefreshView()
+        end)
+        -- A shipped entry cannot be removed one at a time. Disabled with a
+        -- reason rather than hidden: a row missing the button every other row
+        -- has reads as a rendering fault, where a greyed one explains itself.
+        if entry.default then
+            row.remove:Disable()
+            row.remove.disabledReason =
+                "This one ships with TagTeam. |cffffff00Reset|r puts the whole "
+                .. "list back if you have changed it."
+        else
+            row.remove:Enable()
+        end
+        row:Show()
+    end
+    UI.SetSectionRowCount(box, #list)
+    spec.hint:SetShown(#list == 0)
+end
+
 -- Everything built for a page, kept so the refresh can find its widgets again.
 local optionPages = {}
 
@@ -1220,7 +1499,12 @@ local NO_ROWS = {}
 -- alike do not each carry their own copy of what a row can be.
 local OPTION_PARTS = { "check", "slider", "dropdown" }
 
+-- `Get` is the mirror of `Set`, for a row whose control value is not what the
+-- db field holds. The XP zone is the one: it saves nil for auto, because "no
+-- opinion" is what auto means and a stored "auto" would be a third state to
+-- keep in step with the two real ones.
 local function OptionValue(row)
+    if row.Get then return row.Get() end
     return ns.db and ns.db[row.db]
 end
 
@@ -1234,13 +1518,6 @@ local function SetOption(row, value)
     ns.RefreshView()
 end
 
--- A row's choices, which is a list, or a function returning one for a list that
--- cannot be written down at load: the fonts depend on what other addons have
--- registered by the time the window is first opened.
-local function Choices(row)
-    return type(row.choices) == "function" and row.choices() or row.choices
-end
-
 local ROW_TEXT_LEFT = 6    -- row edge to a label, matching the checkbox rows
 local CONTROL_GAP   = 12   -- label to the control beside it
 
@@ -1249,6 +1526,8 @@ local CONTROL_GAP   = 12   -- label to the control beside it
 -- nobody asked for. Backed out below, so the spacing written down is the
 -- spacing you see. StyleDropdown trims the housing's height, not this.
 local DROPDOWN_LEAD = 15
+local TEST_BTN_W    = 44   -- the "Test!" button on a notice row
+local AUDIO_BTN_SIZE = 22  -- the bare speaker beside it, deliberately larger
 
 -- Where the control beside a label starts. A group setting `labelW` puts every
 -- control in one column; without it each starts where its own label happens to
@@ -1269,7 +1548,15 @@ local function DressOptionRow(box, index, row, labelW)
     widget = UI.CreateSectionRow(box, index)
     widget.built = true
 
-    if row.slider then
+    -- A read-only line: no db key, no control, just something the rows around
+    -- it are saying together. The text comes from a function so it can move
+    -- with them rather than being written once at build.
+    if row.Text then
+        widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        widget.label:SetPoint("LEFT", ROW_TEXT_LEFT, 0)
+        widget.readOnly = true
+
+    elseif row.slider then
         -- Caption then handle, on one line. The caption carries the value, so
         -- the slider needs no numbers of its own.
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1281,6 +1568,14 @@ local function DressOptionRow(box, index, row, labelW)
         widget.slider:SetWidth(150)
         AnchorControl(widget, widget.slider, labelW, 0)
         if widget.slider.title then widget.slider.title:SetText("") end
+
+        -- What the handle's position is worth, to the right of it. Reads as a
+        -- consequence of the slider rather than a second setting, which is why
+        -- it sits after the handle and not in the caption.
+        if row.Note then
+            widget.note = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            widget.note:SetPoint("LEFT", widget.slider, "RIGHT", 12, 0)
+        end
         -- Parenthesised: gsub returns a count as well, and that second value
         -- would arrive as the tooltip body.
         UI.AddTooltip(widget.slider, (row.label:gsub("%s*:.*", "")), row.about)
@@ -1291,7 +1586,7 @@ local function DressOptionRow(box, index, row, labelW)
         widget.label:SetText(row.label)
 
         widget.dropdown = UI.CreateDropdown(widget, "TagTeamOption" .. row.db,
-            row.width or 90, Choices(row),
+            row.width or 90, row.choices,
             function() return OptionValue(row) end,
             function(value) SetOption(row, value) end)
         -- Beside its label rather than pushed to the far right edge: a caption
@@ -1304,13 +1599,76 @@ local function DressOptionRow(box, index, row, labelW)
         if row.holdPreview then previewHolds[widget.dropdown] = row.holdPreview end
 
     else
+        -- The box that turns it on is the first thing on the row, on both tabs
+        -- and on a row with no buttons at all: a column of them down the left
+        -- edge is what makes a list of settings scannable.
         widget.check = UI.CreateCheckbox(widget, nil, row.label, row.about,
             function() SetOption(row, not OptionValue(row)) end)
-        widget.check:SetSize(UI.ROW_ICON, UI.ROW_ICON)
+        widget.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
         widget.check:SetPoint("LEFT", 4, 0)
 
+        -- Right to left: Test is the outermost thing on the row and the sound
+        -- settings sit inside it. Test is the one you reach for repeatedly
+        -- while tuning, so it gets the edge.
+        local anchor
+        if row.test then
+            widget.test = CreateFrame("Button", nil, widget,
+                "UIPanelButtonTemplate")
+            widget.test:SetSize(TEST_BTN_W, UI.ROW_ICON)
+            widget.test:SetPoint("RIGHT", -4, 0)
+            widget.test:SetText("Test!")
+            -- Fires whatever the box says, on purpose: you press this to find
+            -- out what the thing looks like, usually while deciding whether to
+            -- leave it on. A button that quietly did nothing because the box
+            -- beside it is unticked reads as broken. See TestNotice.
+            widget.test:SetScript("OnClick",
+                function() SafeCall(ns.TestNotice, row.test) end)
+            UI.AddTooltip(widget.test, "Test",
+                "Show this one now, whether or not it is switched on.")
+            anchor = widget.test
+        end
+
+        if row.cue then
+            -- Bare, and a size up on the row's other icons. Framed, it read as
+            -- a second button competing with Test - and the two of them side by
+            -- side turned the right of every row into a button bar.
+            widget.audio = UI.CreateBareIconButton(widget, UI.SPEAKER_ICON,
+                AUDIO_BTN_SIZE, "Sound",
+                "Pick the sound for this, set its volume, or switch it off - "
+                .. "the same settings as its row on the Audio tab.",
+                function() SafeCall(AskSound, CueByKey(row.cue)) end)
+            if anchor then
+                widget.audio:SetPoint("RIGHT", anchor, "LEFT", -4, 0)
+            else
+                widget.audio:SetPoint("RIGHT", -4, 0)
+            end
+            anchor = widget.audio
+        end
+
+        -- The mark this row draws, at the size the Audio tab's rows use. An
+        -- inline |T..|t in the label would size to the FONT instead, which came
+        -- out half the size of the same icon one tab over.
+        local textLeft = 4 + UI.ROW_CHECK + ROW_TEXT_LEFT
+        if row.icon or row.questIcon then
+            widget.icon = widget:CreateTexture(nil, "ARTWORK")
+            widget.icon:SetSize(UI.ROW_ICON, UI.ROW_ICON)
+            widget.icon:SetPoint("LEFT", widget.check, "RIGHT", 6, 0)
+            -- A quest mark is asked for by name: the core decides whether this
+            -- client has the high-resolution art or the old 16px set.
+            if row.questIcon then
+                ns.SetQuestIcon(widget.icon, row.questIcon)
+            else
+                widget.icon:SetTexture(row.icon)
+            end
+            textLeft = textLeft + UI.ROW_ICON + 6
+        end
+
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        widget.label:SetPoint("LEFT", 4 + UI.ROW_ICON + ROW_TEXT_LEFT, 0)
+        widget.label:SetPoint("LEFT", textLeft, 0)
+        widget.label:SetJustifyH("LEFT")
+        if anchor then
+            widget.label:SetPoint("RIGHT", anchor, "LEFT", -6, 0)
+        end
         widget.label:SetText(row.label)
         -- The label is part of the click target: a checkbox you have to hit
         -- exactly is a checkbox people miss. Guarded on the box being live,
@@ -1334,11 +1692,19 @@ local function BuildOptionsPage(page, key)
         local box = UI.CreateSectionBox(scroll:GetScrollChild(), group.title)
         if group.Reset then
             UI.AddHeaderTextButton(box, "Reset", "Reset " .. group.title,
-                "Put every setting in this box back to the way it shipped.",
+                group.mobs
+                    and "Drop everything you have added here and put the "
+                        .. "shipped list back."
+                    or "Put every setting in this box back to the way it "
+                        .. "shipped.",
                 function()
                     group.Reset()
                     ns.RefreshView()
                 end)
+        end
+        -- Before the chain is laid out, since it adds a header button of its own.
+        if group.mobs then
+            BuildMobBox(box, group.mobs, "TagTeamViewMobScroll" .. key .. i)
         end
         UI.LayoutHeaderChain(box)
         -- Before any row exists: a custom builder reserves its strip above them,
@@ -1356,6 +1722,7 @@ local function RefreshOptionsPage(key)
     for i, group in ipairs(OPTION_PAGES[key]) do
         local box, index = built.boxes[i], 0
         if group.Refresh then group.Refresh(box) end
+        if group.mobs then RefreshMobBox(box, group.mobs) end
 
         for _, row in ipairs(group.rows or NO_ROWS) do
             -- A setting this client cannot honour is not shown at all. Classic
@@ -1366,9 +1733,14 @@ local function RefreshOptionsPage(key)
                 local widget = DressOptionRow(box, index, row, group.labelW)
                 local value = OptionValue(row)
 
-                if widget.slider then
+                if widget.readOnly then
+                    widget.label:SetText(row.Text())
+                elseif widget.slider then
                     UI.SetSliderValue(widget.slider, tonumber(value) or 0)
                     widget.label:SetText(format(row.label, tonumber(value) or 0))
+                    if widget.note then
+                        widget.note:SetText(row.Note(tonumber(value) or 0))
+                    end
                 elseif widget.dropdown then
                     widget.dropdown:Sync()
                 elseif widget.check then
@@ -1393,7 +1765,9 @@ local function RefreshOptionsPage(key)
                 widget:Show()
             end
         end
-        UI.SetSectionRowCount(box, index)
+        -- A mob box has already counted its own rows above; counting the
+        -- option rows it does not have would put it back to empty-list height.
+        if not group.mobs then UI.SetSectionRowCount(box, index) end
     end
 
     UI.SetScrollHeight(built.scroll,
@@ -1575,6 +1949,7 @@ function ns.RefreshView()
         UI.StackSections(frame.playersScroll:GetScrollChild(), frame.playersBoxes))
     RefreshOptionsPage("general")
     RefreshOptionsPage("popups")
+    RefreshOptionsPage("ignore")
     RefreshOptionsPage("nameplate")
     RefreshSounds()
 end
@@ -1589,8 +1964,9 @@ local function Build()
     BuildOptionsPage(pages[2], "general")
     BuildOptionsPage(pages[3], "popups")
     BuildOptionsPage(pages[4], "nameplate")
-    BuildSoundsPage(pages[5])
-    BuildAboutPage(pages[6])
+    BuildOptionsPage(pages[5], "ignore")
+    BuildSoundsPage(pages[6])
+    BuildAboutPage(pages[7])
 
     frame:SetScript("OnShow", function()
         -- Ask first, draw second: the answers land over the next second or two
