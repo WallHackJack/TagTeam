@@ -2177,6 +2177,9 @@ end
 -- comes from: WoW cannot open a web link, so a link button does not open
 -- anything - it drops its URL into a copy-ready box for Ctrl+C. That is the
 -- whole reason this page has an edit box on it.
+--
+-- The patch-notes panel below it is the other half of that page: a version
+-- picker over the RELEASES list, which is empty until 1.0.
 --------------------------------------------------------------------------------
 
 local LINKS = {
@@ -2186,8 +2189,116 @@ local LINKS = {
 
 local DISCORD = "wallhackjack"
 
+-- Newest first. One entry per tagged release, and the first is the one the
+-- panel opens on - so the top of this list is what somebody who has just
+-- updated gets shown. EMPTY UNTIL 1.0, deliberately: the panel below draws a
+-- hint instead of a version picker while there is nothing in here, which is
+-- why adding the first entry needs no other change.
+--
+--     { version = "1.0.0", date = "2026-09-01", notes = { "...", "..." } }
+--
+-- CHANGELOG.md stays the long form. These are the same releases said in one
+-- line each, because this panel is glanced at in a window rather than read.
+local RELEASES = {}
+
 local TAGLINE = "Tracks how much of a mob's health your power-levelling partner "
     .. "has dealt, and marks the nameplate the moment they have earned the kill."
+
+-- Box top to the first line of notes: the title strip, plus room for the
+-- version picker that sits on the title's line and hangs below it.
+local NOTES_TOP = UI.BOX_PAD + UI.SECTION_TITLE_H + 14
+-- The mirror of DROPDOWN_LEAD: transparent housing on the RIGHT of Blizzard's
+-- dropdown, taken back out when the control is anchored by that edge.
+local DROPDOWN_TRAIL = 17
+
+-- The patch-notes panel. Split out of BuildAboutPage because it is the only
+-- part of this page with any state - which release is being shown - and because
+-- with RELEASES empty it is one hint and nothing else.
+local function BuildReleaseNotes(box)
+    if #RELEASES == 0 then
+        -- A picker over an empty list would be a control that does nothing, and
+        -- a panel showing one stale release would be worse than one that says
+        -- it has nothing. So: say it has nothing.
+        local hint = UI.CreateEmptyHint(box)
+        hint:SetText("Nothing here until 1.0 - CHANGELOG.md, in the addon "
+            .. "folder, has the story so far.")
+        return
+    end
+
+    -- Beside the title, because the picker has the corner. Anchored to the
+    -- title itself rather than to the strip, so the two cannot end up on
+    -- different lines.
+    local date = box:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    date:SetPoint("LEFT", box.title, "RIGHT", 14, 0)
+    date:SetTextColor(0.65, 0.65, 0.65)
+
+    -- Scrolled, unlike WhoDoesWhat's fixed panel: a release with a dozen lines
+    -- in it otherwise runs off the bottom of the box with no way to reach the
+    -- rest, and the length of a release is not something this file gets to
+    -- decide. The gutter is reserved whether or not the bar is showing.
+    local scroll, content = UI.CreateScroll(box, "TagTeamAboutNotesScroll")
+    scroll:SetPoint("TOPLEFT", UI.BOX_PAD + 4, -NOTES_TOP)
+    scroll:SetPoint("BOTTOMRIGHT", -(UI.BOX_PAD + UI.SCROLLBAR_W), UI.BOX_PAD)
+
+    local text = content:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    text:SetPoint("TOPLEFT")
+    text:SetPoint("TOPRIGHT")
+    text:SetJustifyH("LEFT")
+    text:SetJustifyV("TOP")
+
+    -- How tall the wrapped text came out is only knowable after it has a width
+    -- to wrap into, and the scroll child gets its real width from the viewport
+    -- rather than at creation - so this runs again whenever that width moves.
+    local function Measure()
+        UI.SetScrollHeight(scroll, text:GetStringHeight() + 4)
+    end
+    scroll:HookScript("OnSizeChanged", Measure)
+
+    local shown = RELEASES[1]
+
+    local function Show(release)
+        shown = release
+        date:SetText(release.date or "")
+        local lines = {}
+        for _, note in ipairs(release.notes) do
+            lines[#lines + 1] = "|cffd8d8d8- " .. note .. "|r"
+        end
+        -- Blank line between notes: they are separate items, and at this size a
+        -- run of wrapped bullets with no gap reads as one paragraph.
+        text:SetText(table.concat(lines, "\n\n"))
+        Measure()
+        -- Back to the top on every pick: an offset left over from a longer
+        -- release opens the next one halfway down, which reads as a release
+        -- whose first few notes are missing.
+        scroll:SetVerticalScroll(0)
+    end
+
+    local choices = {}
+    for _, release in ipairs(RELEASES) do
+        choices[#choices + 1] = {
+            value = release.version,
+            label = "v" .. release.version,
+        }
+    end
+
+    -- Top right of the box, on the header strip's midline - the corner a
+    -- section box otherwise gives to its header buttons, which this box has
+    -- none of. DROPDOWN_TRAIL takes the housing's transparent right edge back
+    -- out, the way DROPDOWN_LEAD does on the left of an option row, so the
+    -- control's VISIBLE edge lines up with the box's inner margin.
+    local dropdown = UI.CreateDropdown(box, "TagTeamAboutReleaseDD", 82, choices,
+        function() return shown.version end,
+        function(value)
+            for _, release in ipairs(RELEASES) do
+                if release.version == value then Show(release) end
+            end
+        end)
+    dropdown:SetPoint("RIGHT", box, "TOPRIGHT",
+        -(UI.BOX_PAD + 4) + DROPDOWN_TRAIL,
+        -(UI.HEADER_STRIP_TOP + UI.HEADER_BTN_SIZE / 2) - 2)
+
+    Show(shown)
+end
 
 local function BuildAboutPage(page)
     local name = page:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -2264,17 +2375,12 @@ local function BuildAboutPage(page)
     copyName:SetText("Copy name")
     copyName:SetScript("OnClick", function() Offer("Discord", DISCORD) end)
 
-    -- TODO: patch notes. CHANGELOG.md already carries every release; this box
-    -- wants a RELEASES table beside LINKS above (version, date, notes) and a
-    -- version dropdown in this header, the way WhoDoesWhat's AboutView does it.
-    -- Deliberately left empty rather than half-filled: a notes panel showing
-    -- one stale release is worse than one that admits it has nothing.
+    -- Fills itself from RELEASES above; adding the first entry there is the
+    -- whole of turning this from a hint into a version picker.
     local notes = UI.CreateSectionBox(page, "Patch notes")
     notes:SetPoint("TOPLEFT", links, "BOTTOMLEFT", 0, -10)
     notes:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", 0, 0)
-
-    local soon = UI.CreateEmptyHint(notes)
-    soon:SetText("Not wired up yet - see CHANGELOG.md in the addon folder.")
+    BuildReleaseNotes(notes)
 
     Offer(LINKS[1].label, LINKS[1].value)
     copyEdit:ClearFocus()

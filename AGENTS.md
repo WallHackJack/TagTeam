@@ -1459,6 +1459,9 @@ Per release:
 
 - Set the TOC debug block's literal `## Version` to exactly the intended tag.
 - Add the release summary to [CHANGELOG.md](CHANGELOG.md).
+- Add the same release to `RELEASES` in [TagTeamView.lua](TagTeamView.lua), newest
+  first, as one line per change — that table is what the About tab's patch-notes
+  panel shows, and it is empty until 1.0.
 - Include both in the tagged commit, then `git tag 0.1.1 && git push origin 0.1.1`.
 
 Rules that bite:
