@@ -3381,8 +3381,6 @@ local function WarnGroupedCombat()
     if (GetTime() - lastGroupWarnAt) < C.GROUPED_WARN_INTERVAL then return end
 
     lastGroupWarnAt = GetTime()
-    Print("|cffff2020GROUPED WITH YOUR TAGGER|r - this kill earns them almost "
-        .. "nothing. Drop the party for the tag to count.")
     Burst("grouped")
 end
 
