@@ -1,12 +1,16 @@
 # Changelog
 
-## 0.5.0 — the window
+## 0.6.0 — settings, not commands
 
-A first pass at a real interface: `/tag ui` opens a tabbed window covering
-players, general settings, pop-ups, nameplates and sounds. It needs more work,
-and the About tab's patch notes panel is deliberately empty until it gets some.
+Eighteen slash commands became settings. What is left of `/tag` is things you
+DO rather than things you set, and everything you set lives in the window,
+which grew an Ignore tab, a Follow Binds box, and a nameplate badge you can see
+while you style it.
 
-Notes for this release are still to be written.
+- **Changed:** **the volume controls actually work.** The mixer reads the game's
+  SFX volume continuously, so setting the CVar, starting a cue and restoring it
+  on the next line played every cue at the volume you were trying to change.
+  Every volume control in the addon was a placebo before this.
 
 - **Added:** a **Follow Binds** box at the bottom of the General tab. The follow
   key is set from there rather than by going to Key Bindings — press the button,
@@ -38,14 +42,55 @@ Notes for this release are still to be written.
   now says. Levels are ignored in the split.
 
   It is announced in chat both ways — joining and leaving — and there is no
-  window for it on purpose: these names exist only while the tagger is standing
-  in that party, and dropping the group clears the lot.
+  window for this on purpose: co-taggers are scratch, not roster. Nothing is
+  saved, nobody gets a marker, and the level every estimate is measured against
+  never counts a stranger who grouped up for one quest.
 
-- **Changed:** `/tag inv` now means "get the two of us into one group" from
-  either end. Alone, it asks to be invited, as before. Already in a party, it
-  invites *them* instead — two carries running together and either of them
-  typing it should pull the tagger in, not ask to be taken out of the group they
-  are standing in. Without invite rights it says so and stops.
+  `/tag inv` now means "get the two of us into one group" from either end: alone
+  it asks to be invited, and in a party it invites them instead.
+
+- **Added:** an **Ignore tab** — the two blanket switches, then the ignored and
+  auto-tagged mob lists, each with add, a per-row bin, its own scroll area and a
+  Reset. Shipped entries sort last and can't be removed one at a time.
+
+- **Changed:** Popups became **Screen Bursts**, each row labelled by the mark it
+  draws and each with a Test. Two new switches: the full-XP burst had none at
+  all, and the acceptable one rode the miss flag, so the verdict worth
+  celebrating couldn't be switched off and the one worth tightening couldn't be
+  switched off separately from the one worth regretting. Quest notices split
+  three ways, since one flag was silencing objective ticks and hand-ins
+  together.
+
+- **Changed:** the **nameplate badge** gained offsets, font and sizes, over a
+  live preview drawn at 0.8 scale so you can see what you're styling. Tracking
+  and Badge both have Reset buttons, wired to the same defaults the addon ships
+  with. Two damage targets rather than one, both clamped to the range the XP
+  curve actually bends over, with what each is worth beside its slider.
+
+- **Fixed:** quest progress no longer defaults to the engine's objective-complete
+  flourish, which is the wrong weight of noise for something that fires once per
+  mob. The test for a sound there isn't whether it plays, it's whether you could
+  stand thirty of them in a minute.
+
+- **Fixed:** pop-up layering, so the burst and the prompts over it stop
+  arguing about which is in front.
+
+- **Fixed:** rows on the **Audio** tab toggle from anywhere on the row, the way
+  the Screen Bursts rows already did. A checkbox you have to hit exactly is a
+  checkbox people miss.
+
+- **Removed:** `pos`, `miss`, `level`, `pets`, `zone`, `leave`, `calibrate`,
+  `threshold`, `macro`, `instance`, `announce`, `quests`, `xpdebug`, `pvp`,
+  `ban`, `autotag`, `comms` and `accept`. All of them settings in disguise, and
+  all of them in the window now. `/tag xp` is now `/tag stats`.
+
+## 0.5.0 — the window
+
+A first pass at a real interface: `/tag ui` opens a tabbed window covering
+players, general settings, pop-ups, nameplates and sounds. It needs more work,
+and the About tab's patch notes panel is deliberately empty until it gets some.
+
+Notes for this release are still to be written.
 
 ## 0.4.0 — the link actually talks
 
