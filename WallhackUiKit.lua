@@ -39,7 +39,7 @@ UI.TAB_PAD     = 12   -- either side of a tab's label; tabs size to their text
 UI.TAB_GAP     = 2    -- between neighbouring tabs
 UI.TAB_INDENT  = 14   -- strip start to the left edge of the first tab, so the
                       -- row sits inboard like the tabs on a real folder
-UI.TAB_DROP    = 3    -- title bar to the top of the tabs
+UI.TAB_DROP    = 6    -- title bar to the top of the tabs
 UI.TAB_LIP     = 3    -- how far the panel rides UP behind the tab row, so the
                       -- tabs sit on the panel instead of floating above it
 
@@ -100,8 +100,31 @@ UI.VERSION = GetMetadata and GetMetadata(ADDON_NAME, "Version") or nil
 -- Windows
 --------------------------------------------------------------------------------
 
--- A standard window: solid black, title bar with text and version, close
--- button, draggable by anywhere on it, closes on Escape.
+-- Retitling goes through here so the version suffix cannot be lost by a caller
+-- that only meant to change the name. WhoDoesWhat re-sets its main title
+-- whenever a peer reports a version, and a plain SetText there would drop the
+-- stamp - or, worse, keep it by pasting the parenthesis together at the call
+-- site, which is the drift this kit exists to stop.
+--
+-- A colour escape rather than a second font string: one region keeps the name
+-- and the version centred as a single unit, which is what actually reads as a
+-- title bar. Two regions would centre one of them and hang the other off its
+-- edge, leaving the pair off-centre by half the stamp's width.
+local function SetTitle(f, text)
+    text = text or ""
+    if UI.VERSION then
+        text = text .. " |cff808080(v" .. UI.VERSION .. ")|r"
+    end
+    f.titleText:SetText(text)
+end
+
+-- A standard window: solid black, a centred title bar carrying the name and the
+-- version, a close button, draggable by anywhere on it, closes on Escape.
+--
+-- The title reads `Name (vX.Y.Z)`, the parenthesis greyed against the gold of
+-- the name. Retitle with `f:SetTitle("Name")` - it re-applies the stamp, so no
+-- caller ever spells the parenthesis out. `bare` windows have no title bar and
+-- therefore no `SetTitle`.
 --
 -- `globalName` must be unique per window - it is what the Escape-close registry
 -- keys on, and the only reason these frames are named at all.
@@ -146,19 +169,16 @@ function UI.CreateWindow(globalName, width, height, titleText, bare)
     f.titleBar = titlebar
 
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    title:SetPoint("LEFT", titlebar, "LEFT", 10, 0)
-    title:SetText(titleText or "")
+    -- Centred on the BAR, not on the window, and the bar is anchored to both
+    -- edges - so a window that changes width re-centres its own title with no
+    -- arithmetic and nothing to keep in step. WhoDoesWhat's main window does
+    -- this by hand today against `f` TOP with a half-height offset; this is the
+    -- same result without the offset to get wrong.
+    title:SetPoint("CENTER", titlebar, "CENTER", 0, 0)
     f.titleText = title
 
-    -- The build number, greyed out and to the right of the title, so a
-    -- screenshot of a misbehaving window says which version produced it.
-    local version = UI.VERSION
-    if version then
-        local stamp = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        stamp:SetPoint("LEFT", title, "RIGHT", 8, 0)
-        stamp:SetText(version)
-        f.versionText = stamp
-    end
+    f.SetTitle = SetTitle
+    f:SetTitle(titleText)
 
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 1, 1)
@@ -176,7 +196,17 @@ end
 
 -- One function decides what "selected" looks like, for the tab and its page
 -- both, so the two can never disagree about which tab is up.
+--
+-- Depth is part of "selected" here, which is what gives the row its folder
+-- shape: the selected tab comes forward OVER the panel, so its bottom edge and
+-- its underline sit on top of the panel's border and it reads as one piece with
+-- the page below. Every other tab drops BEHIND the panel, and the border runs
+-- unbroken across them.
+--
+-- Both levels are derived from the panel rather than written down, so the only
+-- thing that has to stay true is the gap AddTabs leaves around it.
 local function SelectTab(f, index)
+    local panelLevel = f.tabPanel:GetFrameLevel()
     for i, tab in ipairs(f.tabs) do
         local on = i == index
         tab.bg:SetColorTexture(on and 0.22 or 0.10, on and 0.22 or 0.10,
@@ -184,6 +214,8 @@ local function SelectTab(f, index)
         tab.label:SetTextColor(on and 1 or 0.65, on and 0.82 or 0.65,
                                on and 0 or 0.65)
         tab.underline:SetShown(on)
+        -- +2 clears the pages, which are the panel's own children at +1.
+        tab:SetFrameLevel(on and panelLevel + 2 or panelLevel - 1)
         f.pages[i]:SetShown(on)
     end
     f.selectedTab = index
@@ -225,23 +257,38 @@ end
 
 -- Fit a window out with a tab row and a content panel, one page per tab.
 --
--- `specs` is a list of `{ label = "..." }`; adding a tab is adding an entry,
--- and nothing here counts them by hand. Returns the pages, in the same order.
--- The caller fills each page and otherwise ignores the machinery; it can set
--- `f.onTabSelected` to hear about switches, and call `f:SelectTab(i)` to drive
--- one from outside.
+-- `specs` is a list of `{ label = "...", page = "..." }`; adding a tab is adding
+-- an entry, and nothing here counts them by hand. The caller fills each page and
+-- otherwise ignores the machinery; it can set `f.onTabSelected` to hear about
+-- switches, and call `f:SelectTab(i)` to drive one from outside.
+--
+-- Returns the pages under BOTH keys: the index, and `spec.page` when a spec
+-- carries one. Reach for the name - `pages.sounds`, not `pages[6]`. The index is
+-- what the tab row itself runs on and cannot go away, but a caller that counts
+-- positions is one inserted tab away from building the wrong page onto the wrong
+-- label, and nothing would say so: every page is the same empty frame, so the
+-- mistake surfaces as a tab full of its neighbour's contents rather than as an
+-- error. `page` is a stable key precisely because it is not the label - the
+-- label is the part that gets reworded.
 --
 -- Every page fills the panel and all but the selected one is hidden, so they
 -- stack and no page needs to know anything about the others.
 function UI.AddTabs(f, specs)
     f.tabs, f.pages = {}, {}
 
-    -- The panel is built FIRST so the tabs are the later siblings and draw over
-    -- it. That is what lets the row overlap the panel's top border by TAB_LIP
-    -- without the border cutting through the selected tab's underline. The
-    -- explicit frame level says so out loud rather than leaning on creation
-    -- order, because a future edit that reorders these would be silent.
+    -- The panel is deliberately parked THREE levels above the window, and every
+    -- tab level is measured from it (see SelectTab). The gap underneath is the
+    -- point: an unselected tab has to be below the panel to tuck behind it, and
+    -- still above `f` to be clickable at all.
+    --
+    -- That second half is easy to lose. `f` is mouse-enabled - it is what you
+    -- drag the window by - so a tab left on the same level as `f` is not merely
+    -- drawn wrong, it stops receiving clicks entirely, and the tabs go dead with
+    -- nothing in the log to say why. One level of clearance is what keeps them
+    -- alive; the panel needs the extra one so its own pages sit under a
+    -- brought-forward tab.
     local panel = CreateFrame("Frame", nil, f, UI.TEMPLATE)
+    panel:SetFrameLevel(f:GetFrameLevel() + 3)
     panel:SetPoint("TOPLEFT", UI.INSET,
         -(UI.INSET + UI.TITLEBAR_H + UI.TAB_DROP + UI.TAB_H - UI.TAB_LIP))
     panel:SetPoint("BOTTOMRIGHT", -UI.INSET, UI.INSET)
@@ -260,7 +307,6 @@ function UI.AddTabs(f, specs)
     local previous, previousRight
     for i, spec in ipairs(specs) do
         local tab = BuildTab(f, i, spec)
-        tab:SetFrameLevel(panel:GetFrameLevel() + 2)
         if spec.right then
             if previousRight then
                 tab:SetPoint("TOPRIGHT", previousRight, "TOPLEFT", -UI.TAB_GAP, 0)
@@ -280,12 +326,22 @@ function UI.AddTabs(f, specs)
         f.tabs[i] = tab
     end
 
-    for i in ipairs(specs) do
+    for i, spec in ipairs(specs) do
         local page = CreateFrame("Frame", nil, panel)
         page:SetPoint("TOPLEFT", 10, -10)
         page:SetPoint("BOTTOMRIGHT", -10, 10)
         page:Hide()
         f.pages[i] = page
+        -- The named key is an ALIAS onto the same frame, not a second page. A
+        -- duplicated `page` in the specs would silently overwrite the earlier
+        -- alias and leave one tab unreachable by name, so it is caught here
+        -- rather than puzzled over later.
+        if spec.page then
+            if f.pages[spec.page] then
+                error(("UI.AddTabs: duplicate page key %q"):format(spec.page), 2)
+            end
+            f.pages[spec.page] = page
+        end
     end
 
     f.SelectTab = SelectTab
