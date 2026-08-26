@@ -412,8 +412,13 @@ C.FLOAT_WAIT = 1.0
 -- engage it. Thorns, Retribution Aura, Lightning Shield, the Imp's Fire Shield
 -- and shield spikes all arrive as DAMAGE_SHIELD; DAMAGE_SPLIT is damage
 -- redirected onto us. Neither is a deliberate tag, so neither is allowed to claim
--- one - though the damage itself still counts toward the tagger's threshold,
--- which matters for an enhancement shaman running Lightning Shield.
+-- one, and neither may open a damage entry on a mob the tagger has not already
+-- hit - a badge and a death float on a mob that only walked past and swung is the
+-- addon reporting a pull nobody made.
+--
+-- Once there IS an entry, reactive damage adds to it like any other, which is
+-- what keeps an enhancement shaman's Lightning Shield counted toward the
+-- threshold it helped earn. See the guard in OnCombatLog.
 C.REACTIVE_EVENTS = {
     DAMAGE_SHIELD = true,
     DAMAGE_SPLIT  = true,
@@ -3832,6 +3837,20 @@ local function OnCombatLog()
     end
 
     if not fromTracked then return end
+
+    -- Reactive damage can JOIN a pull but never start one. Thorns firing because
+    -- the mob swung at the tagger is not the tagger engaging it, and on its own it
+    -- opened a damage entry - which is a badge wearing the warning icon and a
+    -- death float carrying a number, both about a mob nobody tagged. The tap side
+    -- of this was already settled by the REACTIVE_EVENTS check above; this is the
+    -- same call made about the damage.
+    --
+    -- Gated on an existing entry rather than banned outright, because the entry
+    -- can only have been opened by a deliberate hit - this very check makes the
+    -- first accumulation on any mob a non-reactive one. That is what keeps the
+    -- enhancement shaman whole: Lightning Shield fires off melee swings that
+    -- already banked their own damage, so its share still counts.
+    if C.REACTIVE_EVENTS[subevent] and not state.damage[destGUID] then return end
 
     -- Overkill only exists on the killing blow, but counting it would overstate
     -- a threshold that's meant to be measured against real health removed.
