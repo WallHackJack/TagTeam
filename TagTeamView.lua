@@ -1004,11 +1004,18 @@ end
 local PLATE_W, PLATE_H = 188, 40
 local PLATE_INSET = 7
 
--- Just enough room around the plate for a badge beside it. The offsets reach
--- forty pixels and this does not, deliberately: a box tall enough to hold the
+-- Room around the plate for a badge beside it. The offsets reach forty pixels
+-- and this still does not quite, deliberately: a box tall enough to hold the
 -- extremes would be mostly empty every other minute of its life, and the
 -- clipping below is what shows an extreme one leaving.
-local PREVIEW_H = 100
+local PREVIEW_H = 150
+
+-- Everything inside the preview is drawn a little under size, so the plate and
+-- its badge read as a thing being looked at rather than as another row of the
+-- window. On a wrapper frame rather than on the plate, because the badge is
+-- parented beside the plate and not to it, and a scale on one of the two would
+-- pull them apart.
+local PREVIEW_SCALE = 0.8
 
 -- The sweep. Bursts rather than a smooth climb because that is what damage
 -- does: a share jumps by whatever the last hit was worth and then sits there,
@@ -1125,9 +1132,16 @@ local function BuildBadgePreview(box)
     -- optional API member; without it the badge simply hangs over the edge.
     if area.SetClipsChildren then area:SetClipsChildren(true) end
 
+    -- The scaled stage. Both the plate and the badge hang off this rather than
+    -- off the area, so the two shrink together and the clipping above still
+    -- happens at the unscaled edge of the box.
+    local stage = CreateFrame("Frame", nil, area)
+    stage:SetAllPoints()
+    stage:SetScale(PREVIEW_SCALE)
+
     -- The base plate frame: what the badge is anchored to, and never drawn.
     -- See the note on PLATE_INSET for why it is wider than the bar inside it.
-    local anchor = CreateFrame("Frame", nil, area)
+    local anchor = CreateFrame("Frame", nil, stage)
     anchor:SetFrameLevel(area:GetFrameLevel() + 1)
     anchor:SetSize(PLATE_W + 2 * PLATE_INSET, PLATE_H)
     anchor:SetPoint("CENTER")
@@ -1146,7 +1160,7 @@ local function BuildBadgePreview(box)
     caption:SetText("Nameplate")
     caption:SetTextColor(0.75, 0.75, 0.75)
 
-    -- Parented to the area rather than to either rectangle, and a level above
+    -- Parented to the stage rather than to either rectangle, and a level above
     -- them both, so an offset that walks the badge back over the plate draws on
     -- top of it rather than behind it. The core anchors it to `anchor` all the
     -- same - SetPoint does not care who the parent is.
@@ -1154,7 +1168,7 @@ local function BuildBadgePreview(box)
     -- The same four regions the core builds on a real plate, under the same
     -- names, because ApplyBadgeStyle and DrawBadgeShare are what dress them.
     -- Sizes and points come from the style too, so none are set here.
-    local badge = CreateFrame("Frame", nil, area)
+    local badge = CreateFrame("Frame", nil, stage)
     badge:SetFrameLevel(area:GetFrameLevel() + 2)
 
     badge.check = badge:CreateTexture(nil, "OVERLAY")
