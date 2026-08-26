@@ -19,18 +19,19 @@ local ADDON_NAME, ns = ...
 -- to one enclosing function. The command table below is what fixed that.
 --------------------------------------------------------------------------------
 
-local C, state = ns.C, ns.state
+local state = ns.state
 
 -- Re-localized once, at load. These are functions, and a function never changes
 -- identity, so caching them here is safe. `db` is the exception - it does not
 -- exist until ADDON_LOADED, which is after this file has finished loading - so
 -- it is read from ns per dispatch instead. See HandleSlash.
+local UI                        = ns.UI
 local Print                     = ns.Print
+local PrintRaw                  = ns.PrintRaw
 local SafeCall                  = ns.SafeCall
 local NormalizeName             = ns.NormalizeName
 local InTaggerMode              = ns.InTaggerMode
 local TaggerNames               = ns.TaggerNames
-local TaggerInfo                = ns.TaggerInfo
 local TaggerKeyOf               = ns.TaggerKeyOf
 local InviteTarget              = ns.InviteTarget
 local PrimaryTaggerKey          = ns.PrimaryTaggerKey
@@ -50,7 +51,6 @@ local MultiplierText            = ns.MultiplierText
 local AskForInvite              = ns.AskForInvite
 local InviteToParty             = ns.InviteToParty
 local AmGroupLeader             = ns.AmGroupLeader
-local SendAddon                 = ns.SendAddon
 local Roster                    = ns.Roster
 -- The two names here that come from TagTeamView.lua rather than the core, which
 -- is why that file loads before this one.
@@ -59,32 +59,25 @@ local ShowPairPrompt            = ns.ShowPairPrompt
 
 local db            -- refreshed from ns.db on every dispatch
 
+-- The tail of the menu block, so these are unstamped and indented like the
+-- lines above them. Nothing else calls it.
 local function Status()
     if InTaggerMode() then
-        Print(format("|cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.", db.carry,
+        PrintRaw(format("  |cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.", db.carry,
             db.carryPet and format(" with pet |cff00ff00%s|r", db.carryPet) or ""))
     end
 
-    local names = TaggerNames()
-    if #names == 0 then
-        Print("|cffff8080no taggers set|r - |cffffff00/tag add <name>|r")
-    else
-        Print(format("combined damage from %d tagger%s must reach |cffffff00%.1f%%|r of max health:",
-            #names, #names == 1 and "" or "s", db.threshold))
-        for i = 1, #names do
-            local info = TaggerInfo(NormalizeName(names[i]))
-            Print(format("  |cff00ff00%s|r  level %s  %s  %s%s", names[i],
-                (info and info.level) or "|cffff8080?|r",
-                (info and info.marker) and C.MARKER_NAMES[info.marker]
-                    or "|cffff8080no marker|r",
-                (info and info.confirmed) and "|cff00ff00confirmed|r"
-                    or "|cff808080unverified|r",
-                (info and info.pet) and format("  pet |cff00ff00%s|r", info.pet) or ""))
-        end
+    -- Who the taggers are, what level each is and which marker each carries is
+    -- the window's job, and it does it in a form chat cannot: colour, columns,
+    -- and no scrollback burying it. What is left here is the part chat is still
+    -- better at - the one-line answer to "is this thing on".
+    if #TaggerNames() == 0 then
+        PrintRaw("  |cffff8080no taggers set|r - |cffffff00/tag pair <name>|r")
     end
+
     -- Loud, because a suspended addon looks exactly like a broken one.
     if Suspended() then
-        Print("|cffff8080SUSPENDED|r - dungeon or raid. The Ignore tab on "
+        PrintRaw("  |cffff8080SUSPENDED|r - dungeon or raid. The Ignore tab on "
             .. "|cffffff00/tag ui|r has the switch to run here anyway.")
     end
 end
@@ -114,15 +107,19 @@ commands[""] = function(rest, cmd)
     if ToggleView() and db.slashHelp then Menu() end
 end
 
+-- One block: a header that says whose it is, and no name stamped on any line
+-- under it. /tag stats and /tag diag are deliberately absent - they still work,
+-- they are just not what somebody who typed /tag was asking about.
 function Menu()
+    PrintRaw(format("|cff33ff99TagTeam|r%s |cffffff00Options:|r",
+        (UI and UI.VERSION) and format(" |cff808080(v%s)|r", UI.VERSION) or ""))
+    PrintRaw("  |cffffff00/tag inv|r - Asks your active partner for an immediate invite")
+    PrintRaw("  |cffffff00/tag pair <name>|r (or |cffffff00add|r) - Add a partner to TagTeam")
+    PrintRaw("  |cffffff00/tag remove <name>|r - Takes that name off every list it is on")
+    PrintRaw("  |cffffff00/tag reset|r (or |cffffff00clear|r) - Removes all taggers and carries")
+    PrintRaw(format("  |cffffff00/tag sound|r (or |cffffff00audio|r) - Toggle TagTeam's audio, "
+        .. "currently %s", db.audio and "|cff00ff00ON|r" or "|cffff2020OFF|r"))
     Status()
-    Print("|cffffff00/tag|r - Opens the addon")
-    Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")
-    Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
-    Print("|cffffff00/tag link|r - pair with the other client over the addon channel")
-    Print("|cffffff00/tag sound|r (|cffffff00/tag audio|r) - master mute. Which cues play is on the window's Audio tab.")
-    Print("|cffffff00/tag stats|r  |cffffff00/tag diag|r")
-    Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
 end
 commands["status"] = Menu
 commands["help"] = Menu
@@ -137,7 +134,10 @@ commands["window"] = commands["ui"]
 -- somebody is not the same as saying what they are to you, and getting that
 -- backwards is what the two roles exist to prevent.
 --
--- Also absent from the help text while the window is empty; see above.
+-- /tag add is the same command now. The old one made a tagger out of whatever
+-- you typed, without asking - which is exactly the guess this one refuses to
+-- make - so the word people already have in their fingers lands on the prompt
+-- instead of quietly picking a side for them.
 commands["pair"] = function(rest, cmd)
     local name = strtrim(rest or "")
     if name == "" then
@@ -146,6 +146,7 @@ commands["pair"] = function(rest, cmd)
     end
     ShowPairPrompt(name)
 end
+commands["add"] = commands["pair"]
 
 commands["diag"] = function(rest, cmd)
     RefreshContinent()
@@ -178,87 +179,52 @@ commands["diag"] = function(rest, cmd)
     state.lastCosmeticError = nil
 end
 
-commands["carry"] = function(rest, cmd)
-    local name = strtrim(rest or "")
-    if strlower(name) == "off" or strlower(name) == "none" then
-        db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
-        RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
-        Print("carry cleared - back to |cffffff00carry mode|r (you do the killing).")
-        return
-    end
-    if name == "" then
-        Print(InTaggerMode()
-            and format("your carry is |cff00ff00%s|r. |cffffff00/tag carry off|r to clear.", db.carry)
-            or "|cffffff00/tag carry <name>|r - run this on the character being boosted.")
-        return
-    end
-
-    -- Same rule in the other direction. The guard itself lives in the core, so
-    -- the window cannot enforce a different one - it raises the same popup and
-    -- that popup does the reporting from there.
-    -- Anything but "set" - a mode-switch popup, or your own name - has already
-    -- said its piece.
-    if Roster.RequestCarry(name) ~= "set" then return end
-
-    Print(format("carry set to |cff00ff00%s|r - |cffffff00tagger mode|r.", db.carry))
-    Print(format("Taggers: you%s. Party automation is off in this mode.",
-        IsInGroup() and " and your party" or ""))
-
-    -- Offer them the inverse role; their client decides.
-    SendAddon("PAIRT", db.carry)
-end
-
-commands["add"] = function(rest, cmd)
-    local name = strtrim(rest or "")
-    if name == "" then
-        Print("|cffffff00/tag add <name>|r")
-        return
-    end
-    -- Can't hold both roles. Confirm the switch rather than silently
-    -- discarding a carry the user deliberately set. The guard is the core's,
-    -- shared with the window; "switch" means the popup has it from here.
-    local outcome, info = Roster.RequestTagger(name)
-    if outcome == "switch" or not info then return end
-
-    -- Offer them the inverse role; their client decides.
-    SendAddon("PAIRC", info.name)
-
-    if info.marker then
-        Print(format("added |cff00ff00%s|r (%s). Taggers: %s",
-            info.name, C.MARKER_NAMES[info.marker], table.concat(TaggerNames(), ", ")))
-    else
-        Print(format("added |cff00ff00%s|r, but |cffff8080all three markers are taken|r.",
-            info.name))
-        Print("Drop one with |cffffff00/tag remove <name>|r to free a marker:")
-        for _, n in ipairs(TaggerNames()) do
-            local other = TaggerInfo(NormalizeName(n))
-            if other and other.marker then
-                Print(format("  %s - %s", n, C.MARKER_NAMES[other.marker]))
-            end
-        end
-    end
-end
-
+-- One name, off every list it is on: taggers, the active carry, remembered
+-- carries, follow targets. There is no "which list did you mean", because a
+-- name is a tagger or a carry or a follow target and there is nothing the
+-- caller could tell us about which that we cannot look up ourselves.
 commands["remove"] = function(rest, cmd)
-    local key = TaggerKeyOf(strtrim(rest or ""))
-    if not key then
-        Print("|cffff8080Not a tagger.|r Current: " ..
-            (#TaggerNames() > 0 and table.concat(TaggerNames(), ", ") or "none"))
+    local name = strtrim(rest or "")
+    if name == "" then
+        Print("|cffffff00/tag remove <name>|r")
         return
     end
+    local key = NormalizeName(name)
+    local gone = {}
+
     -- Frees the marker and re-derives the rest. In the core because the window
     -- removes taggers too, and both had better do the same four things.
-    local was = Roster.RemoveTagger(key)
-    -- TaggerKeyOf also matches the party-derived taggers of tagger mode, and
-    -- those are not a list anyone can edit - they are rebuilt from the roster
-    -- on every change. Say so rather than reporting a removal that did nothing.
-    if not was then
-        Print("|cffff8080That tagger comes from your party in tagger mode.|r " ..
-            "Leave the group, or |cffffff00/tag carry off|r.")
+    if Roster.RemoveTagger(key) then gone[#gone + 1] = "tagger" end
+
+    -- The active carry is not a list entry, it is the mode you are in, so
+    -- dropping it is a mode change: back to carry mode, and the party-derived
+    -- taggers that only exist inside tagger mode go with it.
+    if key == db.carryKey then
+        db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
+        RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+        gone[#gone + 1] = "carry"
+    end
+    -- After that branch and never before it: ForgetCarry refuses the active one.
+    if Roster.ForgetCarry(key) then gone[#gone + 1] = "remembered carry" end
+
+    if db.followTargets and db.followTargets[key] then
+        Roster.ForgetFollow(key)
+        gone[#gone + 1] = "follow target"
+    end
+
+    if #gone == 0 then
+        -- TaggerKeyOf also matches the party-derived taggers of tagger mode, and
+        -- those are not a list anyone can edit - they are rebuilt from the roster
+        -- on every change. Say so rather than reporting a removal that did nothing.
+        if TaggerKeyOf(name) then
+            Print("|cffff8080That tagger comes from your party in tagger mode.|r "
+                .. "Leave the group, or remove your carry.")
+        else
+            Print(format("|cffff8080%s isn't on any of your lists.|r", name))
+        end
         return
     end
-    Print(format("removed |cffff8080%s|r. Taggers: %s", was,
-        #TaggerNames() > 0 and table.concat(TaggerNames(), ", ") or "none"))
+    Print(format("removed |cffff8080%s|r (%s).", name, table.concat(gone, ", ")))
 end
 commands["rem"], commands["del"] = commands["remove"], commands["remove"]
 
@@ -311,16 +277,6 @@ commands["stats"] = function(rest, cmd)
                 .. "their kill estimates are doubled.", (info and info.name) or key, pct))
         end
     end
-end
-
-commands["link"] = function(rest, cmd)
-    local target = InTaggerMode() and db.carry or (TaggerNames()[1])
-    if not target then
-        Print("|cffff8080Nothing to link to|r - set a carry or add a tagger first.")
-        return
-    end
-    SendAddon(InTaggerMode() and "PAIRT" or "PAIRC", target)
-    Print(format("pairing request sent to |cff00ff00%s|r.", target))
 end
 
 -- The master switch, and the only sound command left. The seven individual cues
@@ -417,7 +373,7 @@ local function HandleSlash(input)
     local handler = commands[cmd]
     if handler then return handler(rest, cmd) end
 
-    -- Deliberately does NOT fall through to "add": a typo'd subcommand used to
+    -- Deliberately does NOT fall through to pairing: a typo'd subcommand used to
     -- silently create a tagger named after the typo.
     Print(format("|cffff8080Unknown command:|r %s", input))
     Menu()

@@ -668,7 +668,7 @@ everything downstream anyway.
 | Mode | Set by | Meaning |
 |---|---|---|
 | carry (default) | `db.taggers` populated | You are the carry; the list is who you're boosting. |
-| tagger | `/tag carry <name>` sets `db.carryKey` | You are a tagger; **you and your whole party** are taggers, rebuilt into `dynamicTaggers`. |
+| tagger | naming a carry sets `db.carryKey` | You are a tagger; **you and your whole party** are taggers, rebuilt into `dynamicTaggers`. |
 
 They are **mutually exclusive** and every transition is confirmed by a popup.
 Tagger mode is *tracking only* — invites, auto-leave, the grouped-in-combat

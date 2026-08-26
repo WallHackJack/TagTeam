@@ -76,20 +76,15 @@ automatically once you're back in range.
 
 ## Getting started
 
-**On the carry** (the character doing the killing):
+On either character, name the other one:
 
 ```
-/tag add Ragechief
+/tag pair Ragechief
 ```
 
-**On the tagger** (the character being levelled):
-
-```
-/tag carry Wallhackjack
-```
-
-Either one offers the other the matching role over the addon's own hidden
-channel; the other client confirms with a popup. Once linked, XP reports flow and
+Then say what they are to you — the tagger being levelled, or the carry doing the
+killing — and the other side is offered the matching role automatically, over the
+addon's own hidden channel; their client confirms with a popup. Once linked, XP reports flow and
 party invites happen silently without whispering anything visible.
 
 Then open `/tag ui`, go to **General → Follow Binds**, and set a key to target,
@@ -120,12 +115,10 @@ styling, the XP zone, which cues play, and the two by-name mob lists (Ignore).
 |---|---|
 | `/tag` (`/tag status`) | Full status and command list |
 | `/tag ui` (`/tag window`) | Open the settings window |
-| `/tag add <name>` / `/tag remove <name>` (`/tag rem`, `/tag del`) | Manage taggers |
-| `/tag carry <name>` | Run on a tagger's client: you and your party become the taggers |
-| `/tag pair <name>` | Open the window on the pairing prompt |
-| `/tag reset` (`/tag clear`, `/tag off`, `/tag none`) | Clear all roles |
+| `/tag pair <name>` (`/tag add`) | Open the pairing prompt on that name, then pick what they are to you |
+| `/tag remove <name>` (`/tag rem`, `/tag del`) | Take that name off every list it is on |
+| `/tag reset` (`/tag clear`, `/tag off`, `/tag none`) | Remove all taggers and carries |
 | `/tag stats` | Session totals, estimated and actual |
-| `/tag link` | Pair with the other client over the addon channel |
 | `/tag inv` (`/tag invite`) | Get the two of you into one group: asks for an invite when you're alone, sends one when you're already in a party |
 | `/tag sound` (`/tag audio`, `/tag mute`) | Master mute. Which cues play, and what each is set to, are on the Audio tab |
 | `/tag diag` | Runtime picture: what was detected, what is cached, and the last cosmetic error |

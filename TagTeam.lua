@@ -481,6 +481,14 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99TagTeam|r: " .. msg)
 end
 
+-- The same line without the name in front of it. For a block that has already
+-- said whose it is - the /tag menu prints one header and then its options, and
+-- stamping every one of those buries the content behind the same nine
+-- characters over and over.
+local function PrintRaw(msg)
+    DEFAULT_CHAT_FRAME:AddMessage(msg)
+end
+
 -- Dungeons and raids are not what this addon is for: the carry and the tagger
 -- are necessarily grouped, so a tag earns almost nothing, and every cue fires
 -- into a run where none of it can be acted on. Worse, the carry-side logistics
@@ -919,7 +927,7 @@ local function BuildFollowMacro()
     local function add(name)
         local key = name and NormalizeName(name)
         -- Never try to follow ourselves. In tagger mode the party set includes
-        -- us, and someone can always /tag add their own name by accident.
+        -- us, and someone can always name their own character by accident.
         if not key or key == me then return end
         for i = 1, #targets do
             if NormalizeName(targets[i]) == key then return end
@@ -4090,10 +4098,12 @@ function Roster.Carries()           return Listed(db.carries, db.carryKey) end
 
 -- The active carry is not really a member of this list, it is the mode you are
 -- in. Forgetting it would leave you in tagger mode with a carry that is not on
--- your own roster, so it is refused; ending tagger mode is /tag carry off, and
+-- your own roster, so it is refused; ending tagger mode is /tag remove, and
 -- saying so is more use than a button that quietly half-works.
+-- Returns whether it actually forgot one, so a caller working through several
+-- lists can report what it did rather than what it tried.
 function Roster.ForgetCarry(key)
-    if not key or key == db.carryKey then return false end
+    if not key or key == db.carryKey or not db.carries[key] then return false end
     db.carries[key] = nil
     return true
 end
@@ -4168,7 +4178,13 @@ function Roster.RequestTagger(name)
             nil, { mode = "carry", who = name })
         return "switch"
     end
-    return "added", AddTagger(name)
+    local info = AddTagger(name)
+    -- Offer them the inverse role the moment you name them; their client
+    -- decides. This used to be /tag link, typed by hand after the fact, which
+    -- meant the common case was a pair of clients that each had the other
+    -- written down and neither had told the other so.
+    if info then SendAddon("PAIRC", info.name) end
+    return "added", info
 end
 
 function Roster.RequestCarry(name)
@@ -4183,6 +4199,8 @@ function Roster.RequestCarry(name)
         return "switch"
     end
     SetCarryTo(name)
+    -- The same automatic offer, from the other side. See RequestTagger.
+    SendAddon("PAIRT", db.carry)
     return "set"
 end
 
@@ -5544,6 +5562,7 @@ end)
 ns.C, ns.state = C, state
 
 ns.Print, ns.SafeCall           = Print, SafeCall
+ns.PrintRaw                     = PrintRaw
 ns.NormalizeName                = NormalizeName
 ns.InTaggerMode                 = InTaggerMode
 ns.TaggerNames, ns.TaggerInfo   = TaggerNames, TaggerInfo

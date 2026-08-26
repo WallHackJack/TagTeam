@@ -332,7 +332,7 @@ local function RefreshSection(section)
         if live then
             row.remove:Disable()
             row.remove.disabledReason =
-                "This is your carry right now. |cffffff00/tag carry off|r first."
+                "This is your carry right now. |cffffff00/tag remove <name>|r first."
         else
             row.remove:Enable()
         end
