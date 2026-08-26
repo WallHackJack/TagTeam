@@ -4418,12 +4418,25 @@ local function NoteTaggerGroup(key, list)
     end
     sort(names)
 
+    -- What the line below actually says, so a resend that moves only the
+    -- payload - a pet that finished loading, an order that changed - applies in
+    -- silence instead of printing the same sentence at the carry twice.
+    local said = heads .. "|" .. table.concat(names, ",")
+    local repeated = (held ~= nil) and (held.said == said)
+
     -- Plus the tagger themselves, who is the one head the message cannot carry.
-    state.coGroup[key] = (heads > 0) and { n = heads + 1, raw = list } or nil
+    state.coGroup[key] = (heads > 0)
+        and { n = heads + 1, raw = list, said = said } or nil
 
     -- Identities just changed, so every cached "is this GUID a tagger" answer is
-    -- stale. Same reset AddTagger does, for the same reason.
-    ResetAll(); UpdateAllPlates()
+    -- stale. Only those: unlike AddTagger, which is somebody sitting down to
+    -- rebuild the list, this fires mid-fight, and the per-mob half of ResetAll
+    -- would throw away the damage already banked on everything in progress. A
+    -- party that grew adds sources to recognise; it doesn't un-hit any mob.
+    wipe(state.isTracked); wipe(state.isCarryGuid)
+    UpdateAllPlates()
+
+    if repeated then return end
 
     if heads == 0 then
         Print(format("|cff00ff00%s|r left their group - co-taggers cleared, "
