@@ -431,6 +431,9 @@ UI.ROW_CHECK        = 22   -- a checkbox on a row. Bigger than the icons beside
                            -- it on purpose: it is the control, they are
                            -- shortcuts, and it is the one thing on the row that
                            -- has to be hittable without aiming.
+UI.ROW_CLICK_FRAC   = 0.8  -- how much of a row's width toggles it. Its buttons
+                           -- live at the right end, and missing one by a pixel
+                           -- used to hit the stripe behind it instead.
 UI.HEADER_BTN_SIZE  = 22
 UI.HEADER_STRIP_TOP = 5    -- box top to the top of the header button strip
 UI.EMPTY_ROWS_H     = 22   -- rows area height while the list is empty
@@ -592,8 +595,9 @@ end
 
 -- The checkbox at the left edge of a section row, and the row behind it as a
 -- click target: a checkbox you have to hit exactly is a checkbox people miss,
--- so the label, the icon and the empty space to the right of them all toggle
--- it. Guarded on the box being live, because a row greyed out by a master
+-- so the label, the icon and the empty space after them toggle it too - out to
+-- UI.ROW_CLICK_FRAC, short of wherever the row's own buttons sit.
+-- Guarded on the box being live, because a row greyed out by a master
 -- switch must not stay clickable through its stripe.
 --
 -- Stored as row.check, which is where every refresh looks for it.
@@ -605,6 +609,12 @@ function UI.AddRowCheckbox(row, labelText, tooltipTitle, tooltipText, OnClick)
     row.check = cb
 
     row:EnableMouse(true)
+    -- ...but only the left of the row, so the space around its buttons is not a
+    -- second, larger target for the wrong thing. Re-cut on resize: the width is
+    -- anchor-driven and still zero here.
+    row:SetScript("OnSizeChanged", function(self, width)
+        self:SetHitRectInsets(0, (width or 0) * (1 - UI.ROW_CLICK_FRAC), 0, 0)
+    end)
     row:SetScript("OnMouseUp", function()
         if cb:IsEnabled() then cb:Click() end
     end)

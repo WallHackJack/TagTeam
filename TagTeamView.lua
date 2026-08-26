@@ -268,6 +268,13 @@ local function DressRow(section, index)
         textLeft = 4 + UI.ROW_CHECK + 6
 
         row:EnableMouse(true)
+        -- The left UI.ROW_CLICK_FRAC of it, anyway: the right end belongs to
+        -- this row's buttons. Same cut as UI.AddRowCheckbox, and for the same
+        -- reason - see there.
+        row:SetScript("OnSizeChanged", function(self, width)
+            self:SetHitRectInsets(0, (width or 0) * (1 - UI.ROW_CLICK_FRAC),
+                0, 0)
+        end)
         row:SetScript("OnMouseUp", Pick)
         row:SetScript("OnEnter", function(self) self.hover:Show() end)
         row:SetScript("OnLeave", function(self) self.hover:Hide() end)
