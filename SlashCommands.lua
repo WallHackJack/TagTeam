@@ -382,3 +382,14 @@ end
 SLASH_TAGTEAM1 = "/tag"
 SLASH_TAGTEAM2 = "/tagteam"
 SlashCmdList["TAGTEAM"] = HandleSlash
+
+-- The minimap button's right-click prints this, and it reads it off the
+-- namespace at click time rather than at load, so this file can keep loading
+-- last. It is the same menu /tag prints - one list of commands, not two.
+--
+-- `Menu` reads the file-local `db`, which HandleSlash refreshes per dispatch,
+-- so anything calling it from outside has to make sure that binding exists.
+ns.SlashMenu = function()
+    db = ns.db
+    Menu()
+end

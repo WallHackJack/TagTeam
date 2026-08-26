@@ -12,6 +12,20 @@
 ## X-Category: Leveling
 ## X-License: MIT
 
+## OptionalDeps: LibDataBroker-1.1, LibDBIcon-1.0
+
+# --- Libraries ---
+#
+# Only what the minimap button needs. LibDBIcon hard-errors without
+# LibDataBroker, which needs CallbackHandler, which needs LibStub - four
+# folders for one button, and the reason it is worth it is in
+# MinimapButton.lua's header.
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+# --- Main ---
 # Load order is a dependency chain: WallhackUiKit needs nothing, the core
 # exports to TagTeamView, and SlashCommands reads ns.ToggleView from it.
 #
@@ -19,4 +33,5 @@
 TagTeam.lua
 WallhackUiKit.lua
 TagTeamView.lua
+MinimapButton.lua
 SlashCommands.lua

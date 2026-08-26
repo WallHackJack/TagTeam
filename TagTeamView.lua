@@ -772,6 +772,10 @@ local AFTER = {
     plates  = function() UpdateAllPlates() end,
     markers = function() ReassignMarkers(); UpdateAllPlates() end,
     macro   = function() UpdateMacroButton() end,
+    -- Looked up on the namespace rather than localized at the top of the file:
+    -- it belongs to the other leaf, MinimapButton.lua, which loads after this
+    -- one. By the time a checkbox can be clicked it is there.
+    minimap = function() SafeCall(ns.UpdateMinimapButton) end,
 }
 
 local BADGE_CHOICES = {
@@ -1457,11 +1461,21 @@ local OPTION_PAGES = {
             },
         },
         {
-            -- The two lines TagTeam writes to chat, together, above the rules
-            -- that change what it does. Both are about what you get told, not
-            -- about how a kill is measured or who you end up grouped with.
-            title = "Chat",
+            -- What TagTeam writes to chat and the one way into it that is not
+            -- a command, together, above the rules that change what it does.
+            -- All of it is about how you reach the addon and what it tells you,
+            -- not about how a kill is measured or who you end up grouped with.
+            title = "Chat and UI",
             rows = {
+                -- First, because it is the way in rather than a thing that
+                -- happens once you are already here.
+                { db = "minimap", label = "Enable Minimap Button",
+                  after = "minimap",
+                  about = "A button on the minimap that opens this window, and "
+                       .. "prints the chat commands on right-click. Drag it "
+                       .. "around the ring to move it.|n|nAddons that manage "
+                       .. "minimap buttons can hide or collect it; this switch "
+                       .. "is whether TagTeam offers one at all." },
                 { db = "announce",
                   label = "Show full xp breakdown in chat upon kill",
                   about = "One line per kill, with what it paid." },

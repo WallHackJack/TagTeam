@@ -1,6 +1,6 @@
 # TagTeam — agent instructions
 
-TagTeam is a four-file Lua 5.1 addon for the WoW TBC Anniversary client. The
+TagTeam is a five-file Lua 5.1 addon for the WoW TBC Anniversary client. The
 checked-out repository is also the user's live addon directory, so source files
 must remain directly loadable by the game.
 
@@ -10,6 +10,7 @@ must remain directly loadable by the game.
 | `WallhackUiKit.lua` | Window chrome. **Shared verbatim with WhoDoesWhat** — see below. |
 | `TagTeamView.lua` | The `/tag ui` window: which tabs there are, what is on them. |
 | `SlashCommands.lua` | `/tag` and nothing else. |
+| `MinimapButton.lua` | The button on the minimap ring, registered with LibDBIcon. |
 
 Everything outside the core is a **leaf** — it reads from the core, the core
 never reads from it, and the entire boundary is the export block at the bottom
@@ -20,6 +21,44 @@ be added there.
 The one edge between leaves is `SlashCommands.lua` reading `ns.ToggleView` from
 `TagTeamView.lua`, which is why the view loads first. Keep that arrow pointing
 this way: the view must never reach into the slash file.
+
+There are three more edges of the same shape, all around the minimap button:
+`MinimapButton.lua` reads `ns.ToggleView` (at click time, so only the TOC order
+has to be right) and `ns.SlashMenu` (the right-click prints the same
+menu `/tag` does), and `TagTeamView.lua`'s `AFTER.minimap` reads
+`ns.UpdateMinimapButton` off the namespace for the same reason in reverse. The
+core still reads neither.
+
+## The minimap button registers with LibDBIcon, and that is the point
+
+`Libs/` holds four folders — LibStub, CallbackHandler-1.0, LibDataBroker-1.1,
+LibDBIcon-1.0 — and they exist for one button. They are the **only** libraries
+the addon carries, and the reason is not convenience.
+
+Every addon that manages minimap buttons finds them by walking LibDBIcon's
+`lib.objects` registry. Leatrix Plus's "hide addon buttons" is the case that
+caught us: it does nothing but loop `LibDBIconStub:GetButtonList()` calling
+`ShowOnEnter`, and the fade itself lives in LibDBIcon's two hooks on `Minimap`'s
+OnEnter/OnLeave. A hand-rolled button is not in that table, so it is not in that
+list, so nothing ever touches it. It sits there ignoring a setting the user
+believes they turned on, and that is indistinguishable from the addon being
+broken. Method Raid Tools has this exact bug — it even names its frame
+`LibDBIcon10_MethodRaidTools` without ever registering it.
+
+So **do not add fade, dim or hide-on-mouseover code here.** Registering is what
+hands that decision to whichever minimap addon the user actually chose.
+WhoDoesWhat calls `ShowOnEnter` on itself and therefore fades whether or not
+anybody asked for it; that is a bug it has, not a pattern to copy.
+
+Two smaller things follow from the library owning the button:
+
+- **`db.minimapButton` is LibDBIcon's table, not ours** — position, hidden,
+  locked. The only field we write is `hide`, mirrored from `db.minimap` so the
+  options row stays one declarative line. Two names for one setting, and worth
+  it against teaching the options builder about a nested table for one row.
+- **Registration happens on `PLAYER_LOGIN`**, not earlier. That is when the core
+  has assigned `ns.db`, and it is also what lets Leatrix's
+  `LibDBIcon_IconCreated` callback see us and apply the user's setting.
 
 ## WallhackUiKit.lua is shared with WhoDoesWhat
 
