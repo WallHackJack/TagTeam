@@ -2204,12 +2204,8 @@ C.CUES = {
       files  = C.QUEST_FILES, fixedId = C.QUEST_CUE },
 
     { key = "qprogress", section = "progress", label = "Quest progress",
-      about  = "An objective of theirs ticked over. Off by default - it fires "
-            .. "as often as their quest log updates.",
-      -- The one cue that ships off. Written down here rather than only in the
-      -- loader's defaults so Cues.ResetAll can put the switches back too - a
-      -- reset that turned this one ON would not be a reset.
-      defaultOn = false,
+      about  = "An objective of theirs ticked over. Fires as often as their "
+            .. "quest log updates.",
       enable = "questProgressSound", file = "qProgFile", id = "qProgId",
       fixedId = C.QUEST_UPDATE_CUE },
 
@@ -2549,7 +2545,7 @@ function Cues.ResetAll()
     for i = 1, #C.CUES do
         local cue = C.CUES[i]
         Cues.Reset(cue.key)
-        db[cue.enable] = cue.defaultOn ~= false
+        db[cue.enable] = true
     end
     db.audio, db.volume, db.useGameVolume = true, 100, true
     -- A hold in flight belongs to the volume we just threw away, and its timer
@@ -4525,9 +4521,9 @@ local function OnAddonMessage(msg, sender)
         if not IsPartner(who) then return end
         if not arg or arg == "" then return end
         Print(format("|cff00ff00%s|r - |cffffff00%s|r", who, arg))
-        -- Off by default. This is the chattiest event on the channel, so a cue
-        -- on it is a preference rather than a default, but it belongs in the
-        -- list either way: an option nobody can find is not an option.
+        -- The chattiest event on the channel, so this cue is the first one
+        -- people reach for the switch on - which is why it belongs in the list:
+        -- an option nobody can find is not an option.
         Cues.Play("qprogress")
 
         -- Cosmetic, so it goes last and behind SafeCall: a fault in the float
@@ -5249,7 +5245,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.levelPopup         == nil then db.levelPopup         = true end
         if db.questAcceptSound   == nil then db.questAcceptSound   = true end
         if db.questDoneSound     == nil then db.questDoneSound     = true end
-        if db.questProgressSound == nil then db.questProgressSound = false end
+        if db.questProgressSound == nil then db.questProgressSound = true  end
         if db.dingSound          == nil then db.dingSound          = true end
         -- Following the game's Sound Effects slider is the default, and it is
         -- also the only setting under which nothing touches that CVar. See the
