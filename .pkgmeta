@@ -5,3 +5,6 @@ ignore:
     - AGENTS.md
     - XP_RULES.md
     - .pkgmeta
+    # Design sources for the icon, not loaded by the addon.
+    - Media/ReadyCheck-Ready_64.png
+    - Media/ReadyCheck-Ready_172.png
