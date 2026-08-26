@@ -82,9 +82,12 @@ local buildFailed   -- set once Build has thrown; see Ready
 -- A player, on one line
 --
 -- Name, level, and where they are, from whatever the last ping brought back.
--- One font string with colour escapes rather than three regions: the fields
--- run into each other left to right, and three anchored regions would each
--- need a width for a name whose length nobody knows.
+--
+-- Two font strings, not one: the name wants an outline and a point of size the
+-- rest of the line does not, and a font string carries one font. The name is
+-- left unanchored on its right so it sizes itself to its own text, and the tail
+-- hangs off that edge - so neither needs a width for a name whose length nobody
+-- knows. Colours stay as escapes inside each.
 --------------------------------------------------------------------------------
 
 local GREY = "ff808080"
@@ -97,21 +100,26 @@ local function ClassHex(class)
     return format("ff%02x%02x%02x", color.r * 255, color.g * 255, color.b * 255)
 end
 
-local function PlayerLine(entry)
+-- The list's own copy is the fallback, not the source: a tagger record has
+-- carried a class and a level of its own since before db.seen existed, and an
+-- install upgrading into this has them there and nowhere else.
+local function PlayerName(entry)
     local seen = Roster.Seen(entry.key)
-    local line = format("|c%s%s|r", ClassHex(seen and seen.class), entry.name)
+    return format("|c%s%s|r", ClassHex(seen and seen.class or entry.class),
+        entry.name)
+end
 
-    if seen and seen.level then
-        line = line .. format("  |cffffff00%d|r", seen.level)
-    end
-
+local function PlayerTail(entry)
+    local seen = Roster.Seen(entry.key)
+    local level = (seen and seen.level) or entry.level
     local presence, zone = Roster.Presence(entry.key)
-    local tail =
+    local where =
         (presence == "here" and (zone or "unknown"))
         or (presence == "silent" and "offline")
         or (presence == "waiting" and "...")
         or "unknown"
-    return line .. format("  |c%s- %s|r", GREY, tail)
+    return (level and format("|cffffff00%d|r  ", level) or "")
+        .. format("|c%s- %s|r", GREY, where)
 end
 
 --------------------------------------------------------------------------------
@@ -141,7 +149,6 @@ local SECTIONS = {
         Clear = function() Roster.ClearCarries() end,
         Active = function(entry) return ns.db and entry.key == ns.db.carryKey end,
         Pick   = function(entry) Roster.RequestCarry(entry.name) end,
-        Line   = function(entry) return PlayerLine(entry) end,
     },
     {
         role  = "tagger",
@@ -157,7 +164,8 @@ local SECTIONS = {
             local out = {}
             for _, info in ipairs(TaggersByPriority()) do
                 out[#out + 1] = { key = NormalizeName(info.name),
-                                  name = info.name, marker = info.marker }
+                                  name = info.name, marker = info.marker,
+                                  class = info.class, level = info.level }
             end
             return out
         end,
@@ -292,10 +300,26 @@ local function DressRow(section, index)
         row.hover:Hide()
     end
 
+    -- The name, three points up on the page and thinly outlined: a class
+    -- colour is whatever Blizzard chose it to be, and the darker ones need an
+    -- edge to sit against on the row's grey. No RIGHT anchor, so it is as wide
+    -- as the name is and the tail can hang off that edge. The default shadow
+    -- goes with the outline; under one it only muddies the bottom of the glyphs.
     row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local font, size = row.label:GetFont()
+    if font and size then
+        row.label:SetFont(font, size + 3, "OUTLINE")
+        row.label:SetShadowOffset(0, 0)
+    end
     row.label:SetPoint("LEFT", textLeft, 0)
-    row.label:SetPoint("RIGHT", row.note, "LEFT", -6, 0)
     row.label:SetJustifyH("LEFT")
+
+    -- Level and where they are, in the page's own font: this half is read at
+    -- leisure, and outlining it too was what made the row shout.
+    row.tail = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.tail:SetPoint("LEFT", row.label, "RIGHT", 6, 0)
+    row.tail:SetPoint("RIGHT", row.note, "LEFT", -6, 0)
+    row.tail:SetJustifyH("LEFT")
 
     return row
 end
@@ -307,10 +331,12 @@ local function RefreshSection(section)
         local row = DressRow(section, i)
         local live = section.Active and section.Active(entry)
 
-        -- Line carries its own colours, so the font string is left plain white
-        -- and the escapes decide. Sections without one just show the name.
-        row.label:SetText(section.Line and section.Line(entry) or entry.name)
+        -- Both carry their own colours, so the font strings are left plain
+        -- white and the escapes decide. Every section here is a list of
+        -- players, so both halves are drawn the same way for all three.
+        row.label:SetText(PlayerName(entry))
         row.label:SetTextColor(0.9, 0.9, 0.9)
+        row.tail:SetText(PlayerTail(entry))
         row.note:SetText(section.Note and section.Note(entry) or "")
 
         -- Re-wired per refresh rather than once: a pooled row holds a different
@@ -2491,7 +2517,7 @@ local function Signature()
             -- with no event to hang a refresh on.
             parts[#parts + 1] = entry.name ..
                 (section.Note and section.Note(entry) or "") ..
-                (section.Line and section.Line(entry) or "")
+                PlayerName(entry) .. PlayerTail(entry)
         end
         parts[#parts + 1] = "|"
     end

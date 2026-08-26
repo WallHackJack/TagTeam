@@ -3287,15 +3287,23 @@ end
 -- and it re-samples as they level. A linked one sends LEVEL the moment they ding,
 -- which is the only path that survives them being out of range.
 local function SampleTrackedLevel(unit)
-    if not HasTaggers() or not UnitExists(unit) then return end
+    if not UnitExists(unit) then return end
 
     -- Not a player, but it may be a tagger's pet. Hung here rather than on its own
     -- scan so it inherits every call site this already has: the 2s sweep over
     -- eight tokens, targeting, and mouseover.
     if not UnitIsPlayer(unit) then
-        SafeCall(Pets.Notice, unit)
+        if HasTaggers() then SafeCall(Pets.Notice, unit) end
         return
     end
+
+    -- Anybody we have written down, whichever list they are on. A unit token
+    -- answers what a ping only asks for, so the cheapest place to learn a name's
+    -- class and level is standing next to them - and this is the one sweep that
+    -- runs whether or not there are taggers.
+    SafeCall(Roster.NoteUnit, unit)
+
+    if not HasTaggers() then return end
 
     local guid = UnitGUID(unit)
     local key = guid and state.isTracked[guid] or TaggerKeyOf(UnitName(unit))
@@ -3328,9 +3336,11 @@ C.SCAN_TOKENS = {
     "party1", "party2", "party3", "party4",
 }
 
+-- No HasTaggers() gate: the sweep also feeds the roster's directory, and a
+-- carry standing in front of you is a name worth learning on a character that
+-- has no taggers at all. Eight UnitExists calls every two seconds is nothing.
 local function ScanForTracked()
     if Suspended() then return end
-    if not HasTaggers() then return end
     NoticeFocus()
     for i = 1, #C.SCAN_TOKENS do
         SampleTrackedLevel(C.SCAN_TOKENS[i])
@@ -4075,6 +4085,22 @@ function Roster.NoteSeen(key, level, class, zone)
     seen.at    = GetTime()
 end
 
+-- The same three fields, taken off a unit token instead of a whisper. Class and
+-- level are free the moment they pass through a token we can inspect, and that
+-- beats a ping twice over: it costs nothing, and it works on a name whose copy
+-- of the addon has never answered - or who does not run it at all.
+--
+-- Kept, like everything else in db.seen: a class never changes, and a level a
+-- year old is still a better guess than the grey nothing it replaces.
+function Roster.NoteUnit(unit)
+    if not unit or not UnitIsPlayer(unit) then return end
+    local key = NormalizeName(UnitName(unit))
+    if not key or not Roster.Knows(key) then return end
+    local _, class = UnitClass(unit)
+    -- Our zone, which is theirs: we are looking at them.
+    Roster.NoteSeen(key, UnitLevel(unit), class, GetZoneText())
+end
+
 -- Ask one name. Throttled, because the window pings its whole roster every time
 -- it opens and somebody toggling tabs should not whisper the same character
 -- four times a second.
@@ -4421,6 +4447,16 @@ local function OnAddonMessage(msg, sender)
     -- Their addon answering is the confirmation. Anyone can be added; only a name
     -- that talks back earns a marker slot ahead of the rest.
     ConfirmTagger(key, "addon link")
+
+    -- Their client just spoke, so it is there to answer. If they are on one of
+    -- our lists and we still do not know what they are, this is the moment to
+    -- ask - a name we have never stood next to gets its class and level from
+    -- the one exchange it can. Throttled inside Ping, and asked once: the PONG
+    -- fills the class in and this stops firing.
+    if Roster.Knows(key) then
+        local seen = Roster.Seen(key)
+        if not (seen and seen.class) then Roster.Ping(who) end
+    end
 
     local cmd, arg = strsplit(":", msg, 2)
 
