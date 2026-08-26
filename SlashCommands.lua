@@ -102,13 +102,19 @@ end
 -- and the three handlers that serve more than one name need to know which.
 local commands = {}
 
--- The bare word opens the window; the menu below is what every OTHER input
--- lands on, typo or not.
+-- Declared before the bare-word handler, which calls it: the menu is defined
+-- below because that is where it reads best, and a local named later would be
+-- nil at the point the closure looks it up.
+local Menu
+
+-- The bare word opens the window, and prints the menu too when the Chat option
+-- asks for it. The menu on its own is what every OTHER input lands on, typo or
+-- not.
 commands[""] = function(rest, cmd)
-    ToggleView()
+    if ToggleView() and db.slashHelp then Menu() end
 end
 
-local function Menu()
+function Menu()
     Status()
     Print("|cffffff00/tag|r - Opens the addon")
     Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")

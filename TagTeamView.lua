@@ -720,8 +720,14 @@ local function RefreshSounds()
                 row.check.disabledReason = "Sounds are off. Turn on Enable TagTeam Audio."
                 row.gear.disabledReason = "Sounds are off. Turn on Enable TagTeam Audio."
 
-                UI.SetEnabled(on, row.icon, row.label, row.note, row.gear,
-                    row.check)
+                -- Two states, not one. Sounds off greys the whole row, gear
+                -- included, because none of it can do anything. A cue switched
+                -- off with sounds on greys only what the cue IS - its mark, its
+                -- name and what it is set to - and leaves the box and the gear
+                -- lit, since both still work on a silent cue.
+                UI.SetEnabled(on, row.gear, row.check)
+                UI.SetEnabled(on and Cues.Enabled(cue.key),
+                    row.icon, row.label, row.note)
                 row:Show()
             end
         end
@@ -1419,7 +1425,8 @@ local OPTION_PAGES = {
                   label = "Minimum Damage Target: |cffffffff%.1f%%|r",
                   slider = { min = C.TARGET_MIN, max = C.TARGET_MAX, step = 0.5 },
                   after = "plates", Note = TargetXPNote,
-                  about = "Under this a kill is a write-off however it ends." },
+                  about = "The damage required by taggers before the "
+                       .. C.WARN_ICON .. " is removed from an enemy nameplate." },
                 { db = "threshold",
                   label = "Ideal Damage Target: |cffffffff%.1f%%|r",
                   Note = TargetXPNote,
@@ -1428,16 +1435,13 @@ local OPTION_PAGES = {
                   -- below to land: the badges are what somebody is watching
                   -- while they drag this.
                   after = "plates",
-                  about = "The share your taggers have to deal between them to "
-                       .. "earn the kill.",
+                  about = "The damage required by taggers to produce a "
+                       .. C.CHECK_ICON .. " on enemy nameplate.",
                   -- Throttled, because this one does not just write a db field:
                   -- it whispers the other client. A drag across the range steps
                   -- a dozen times, and a dozen addon messages to say what the
                   -- last one says is how you get muted by the server.
                   Set = function(value) PushThresholdSoon(value) end },
-                { db = "announce",
-                  label = "Show full xp breakdown in chat upon kill",
-                  about = "One line per kill, with what it paid." },
                 -- Saved as nil for auto, because "no opinion" is what auto
                 -- means and a stored "auto" would be a third state to keep in
                 -- step with the two real ones. Get/Set carry the translation.
@@ -1449,42 +1453,59 @@ local OPTION_PAGES = {
                       SafeCall(ns.RefreshContinent)
                   end,
                   about = "Which continent's XP formula an estimate is built "
-                       .. "on. Auto follows the zone you are in." },
+                       .. "on." },
+            },
+        },
+        {
+            -- The two lines TagTeam writes to chat, together, above the rules
+            -- that change what it does. Both are about what you get told, not
+            -- about how a kill is measured or who you end up grouped with.
+            title = "Chat",
+            rows = {
+                { db = "announce",
+                  label = "Show full xp breakdown in chat upon kill",
+                  about = "One line per kill, with what it paid." },
+                { db = "focusWarning", label = "Set Focus Reminders",
+                  about = "Reminds you when focus isn't set on your partner, if "
+                       .. "|cffffd100Use focus for range detection|r is enabled.",
+                  requires = "HAS_FOCUS" },
+                { db = "slashHelp", label = "/Tag prints chat commands",
+                  about = "Using /tag will both open this window AND print "
+                       .. "commands in chat. Use /tag help when disabled for "
+                       .. "chat commands." },
             },
         },
         {
             title = "Grouping rules",
             rows = {
                 { db = "autoInvite", label = "Ask for an invite when out of range",
-                  about = "Out of combat-log range nothing can be measured, so "
-                       .. "the addon asks to be grouped rather than going quiet." },
+                  about = "Automatically request an invite when out of range of "
+                       .. "your tagger for more than 30 seconds, or when focus "
+                       .. "is lost (if enabled)." },
                 { db = "autoLeave", label = "Leave the party once back in range",
-                  about = "Being grouped splits the XP, so the group is dropped "
-                       .. "the moment it stops being needed." },
+                  about = "Grouping with taggers can destroy their xp earned, "
+                       .. "enabling this causes the party to be disbanded "
+                       .. "automatically once combat is over." },
                 { db = "autoLoot",
-                  label = "Auto-set FFA loot when partied via TagTeam (/tag inv)",
-                  about = "A two-person tag group wants everything lootable by "
-                       .. "whoever gets there." },
+                  label = "Use FFA loot when partied with tagteam partners",
+                  about = "Automatically sets the Loot mode to "
+                       .. "|cff00ff00Free for all|r when partied exclusively "
+                       .. "with players listed in TagTeam." },
                 -- Here rather than on the Nameplate tab, which is about the
                 -- badge: this marker goes on a PERSON, and finding your tagger
                 -- is a party problem whichever way round you solve it.
                 { db = "taggerMarker", label = "Mark taggers while ungrouped",
-                  about = "Ungrouped there is no party frame to find them on, "
-                       .. "so the marker goes on the tagger instead.",
+                  about = "Marks your partner with a " .. C.MARKER_ICON
+                       .. " when ungrouped to help you find them.",
                   after = "markers" },
                 { db = "autoFocus", label = "Use focus for range detection",
-                  about = "The focus unit is the most reliable range check "
-                       .. "there is. Setting focus is protected, so it needs "
-                       .. "the follow key - set one under Follow Binds below.",
+                  about = "Auto-party with your partner when their "
+                       .. "Focus-target status is lost. Helps you quickly find "
+                       .. "your partner when separated. Requires /focus to be "
+                       .. "set via macro or keybind features below. Might "
+                       .. "backfire when using invisibility.",
                   -- Classic Era has no focus unit at all.
                   requires = "HAS_FOCUS", after = "macro" },
-                -- Beside the setting it is a reminder about, rather than over
-                -- on Popups with the things drawn over mobs. It is a chat line,
-                -- and it is only ever about the row above it.
-                { db = "focusWarning", label = "Set Focus Reminders",
-                  about = "Says so when no focus is set, because without one "
-                       .. "range falls back to a timer.",
-                  requires = "HAS_FOCUS" },
             },
         },
         {
@@ -1546,27 +1567,33 @@ local OPTION_PAGES = {
                 { db = "fullAlert", test = "tagged",
                   icon = C.BURSTS.tagged.tex,
                   label = "Full XP Kill",
-                  about = "The mark over a kill that reached your ideal "
-                       .. "target." },
+                  about = "Displays a " .. C.CHECK_ICON .. " Screen Burst with "
+                       .. "XP info when an enemy was killed with an ideal "
+                       .. "amount of damage applied to it." },
                 { db = "nearAlert", test = "short",
                   icon = C.BURSTS.short.tex, cue = C.BURSTS.short.cue,
                   label = "Acceptable XP Kill",
-                  about = "Short of the ideal target but past the minimum - it "
-                       .. "still banked most of its XP." },
+                  about = "Displays a " .. C.WARN_ICON .. " Screen Burst with "
+                       .. "XP info when an enemy was killed with less than the "
+                       .. "ideal amount of damage, but more than the minimum." },
                 { db = "missAlert", test = "failed",
                   icon = C.BURSTS.failed.tex, cue = C.BURSTS.failed.cue,
                   label = "Low XP Kill",
-                  about = "A kill that came in under the minimum." },
+                  about = "Displays a " .. C.X_ICON .. " Screen Burst with XP "
+                       .. "info when an enemy was killed with less than the "
+                       .. "minimum amount of damage applied to it." },
                 { db = "stealWarning", test = "mistag",
                   icon = C.BURSTS.mistag.tex, cue = C.BURSTS.mistag.cue,
                   label = "Mistag Warning",
-                  about = "Somebody else tapped the mob first. Nothing your "
-                       .. "tagger does to it after that can pay." },
+                  about = "Displays a " .. C.X_ICON .. " Screen Burst when you "
+                       .. "tap an enemy before your taggers do, so nothing they "
+                       .. "do to it afterwards can pay." },
                 { db = "groupWarning", test = "grouped",
                   icon = C.BURSTS.grouped.tex,
                   label = "Grouped Warning",
-                  about = "Being grouped splits the XP. In carry mode that is "
-                       .. "almost always a mistake, and an expensive one." },
+                  about = "Displays a " .. C.WARN_ICON .. " Screen Burst when a "
+                       .. "kill was made while you were grouped, splitting the "
+                       .. "XP your taggers earned." },
             },
         },
         {
@@ -1579,27 +1606,32 @@ local OPTION_PAGES = {
                   questIcon = "progress",
                   cue = C.QUEST_NOTICES.progress.cue,
                   label = "Quest Progress",
-                  about = "Your partner's objectives ticking over, as they "
-                       .. "appear on their screen." },
+                  about = "Displays a " .. C.QUEST_ICONS.progress .. " Screen "
+                       .. "Notice when a quest objective ticks over on your "
+                       .. "partner's screen." },
                 { db = "questComplete", test = "complete",
                   questIcon = "complete",
                   cue = C.QUEST_NOTICES.complete.cue,
                   label = "Quest Completion",
-                  about = "Hand-ins, and what they paid. The XP is counted "
-                       .. "either way - this is only whether it is announced." },
+                  about = "Displays a " .. C.QUEST_ICONS.complete .. " Screen "
+                       .. "Notice with XP info when your partner hands a quest "
+                       .. "in. The XP is counted either way." },
                 { db = "questAccepted", test = "accepted",
                   questIcon = "accepted",
                   cue = C.QUEST_NOTICES.accepted.cue,
                   label = "Quest Accepted",
-                  about = "What your partner picks up and abandons." },
+                  about = "Displays a " .. C.QUEST_ICONS.accepted .. " Screen "
+                       .. "Notice when your partner picks up or abandons a "
+                       .. "quest." },
             },
         },
         {
             title = "Windows",
             rows = {
                 { db = "levelPopup", label = "Pop up when your tagger levels",
-                  about = "The event the whole addon exists to produce. Off, it "
-                       .. "is still announced in chat." },
+                  about = "Displays a window with the level's summary when a "
+                       .. "tagger levels up. Still announced in chat when "
+                       .. "disabled." },
             },
         },
     },
@@ -2029,8 +2061,9 @@ local function DressOptionRow(box, index, row, labelW)
             -- beside it is unticked reads as broken. See TestNotice.
             widget.test:SetScript("OnClick",
                 function() SafeCall(ns.TestNotice, row.test) end)
-            UI.AddTooltip(widget.test, "Test",
-                "Show this one now, whether or not it is switched on.")
+            -- No tooltip: the word on the button is the whole explanation, and
+            -- one that popped up over the row would only cover the thing the
+            -- button just drew.
             anchor = widget.test
         end
 
@@ -2038,10 +2071,12 @@ local function DressOptionRow(box, index, row, labelW)
             -- Bare, and a size up on the row's other icons. Framed, it read as
             -- a second button competing with Test - and the two of them side by
             -- side turned the right of every row into a button bar.
+            -- Named after the row it sits on, because that is what the pop-up
+            -- it raises is about - "Sound" alone said nothing the speaker
+            -- icon had not already said.
             widget.audio = UI.CreateBareIconButton(widget, UI.SPEAKER_ICON,
-                AUDIO_BTN_SIZE, "Sound",
-                "Pick the sound for this, set its volume, or switch it off - "
-                .. "the same settings as its row on the Audio tab.",
+                AUDIO_BTN_SIZE,
+                format("Edit %s audio options", row.label), nil,
                 function() SafeCall(AskSound, CueByKey(row.cue)) end)
             if anchor then
                 widget.audio:SetPoint("RIGHT", anchor, "LEFT", -4, 0)
@@ -2164,6 +2199,19 @@ local function RefreshOptionsPage(key)
                     UI.SetEnabled(live, widget.label, widget.check,
                         widget.slider, widget.dropdown, widget.button,
                         widget.value)
+                end
+
+                -- An unticked row draws nothing, so it reads as nothing: its
+                -- name and its mark grey out, and the box stays lit as the one
+                -- part still worth clicking. Down here so it takes the `needs`
+                -- state above into account rather than undoing it - a row that
+                -- is on but gated is still off in practice.
+                if widget.check then
+                    local lit = value and true or false
+                    if row.needs then
+                        lit = lit and ns.db and ns.db[row.needs] and true or false
+                    end
+                    UI.SetEnabled(lit, widget.label, widget.icon)
                 end
                 widget:Show()
             end
@@ -2521,9 +2569,17 @@ local function Ready()
     return false
 end
 
+-- Returns whether the window ended up OPEN, which is what /tag needs to decide
+-- whether to print the command list with it: the same keystroke closing the
+-- window should not spill a menu into chat on the way out.
 local function ToggleView()
-    if not Ready() then return end
-    SafeCall(function() frame:SetShown(not frame:IsShown()) end)
+    if not Ready() then return false end
+    local opened = false
+    SafeCall(function()
+        opened = not frame:IsShown()
+        frame:SetShown(opened)
+    end)
+    return opened
 end
 
 -- /tag pair <name>. The same prompt the [+] buttons raise, minus the assumption

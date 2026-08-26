@@ -226,6 +226,14 @@ C.QUEST_ATLAS = {
     progress = "QuestArrow",
     complete = "QuestTurnin",
 }
+-- The same three marks inline, for the tooltips that name them. Textures rather
+-- than the atlas: |A..|a markup is not on every client, and a tooltip is not
+-- worth a second SetQuestIcon-style fallback.
+C.QUEST_ICONS = {
+    accepted = "|T" .. C.QUEST_TEXTURES.accepted .. ":0|t",
+    progress = "|T" .. C.QUEST_TEXTURES.progress .. ":0|t",
+    complete = "|T" .. C.QUEST_TEXTURES.complete .. ":0|t",
+}
 
 -- Dress a texture as one of the three quest marks.
 --
@@ -313,6 +321,10 @@ C.HAS_FOCUS    = not isClassicEra
 -- use 8/7/6, so the two sets can never collide.
 C.TAGGER_MARKERS = { 4, 3, 2 }
 C.MARKER_NAMES   = { [4] = "triangle", [3] = "diamond", [2] = "orange" }
+-- The first slot's mark, inline, for the one tooltip that names it. Drawing the
+-- mark beats spelling "triangle": it is what you will be scanning for over a
+-- head, and this is what it looks like.
+C.MARKER_ICON    = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_4:0|t"
 
 C.INVITE_MESSAGE     = "inv"
 C.OUT_OF_RANGE_AFTER = 30   -- fallback only, where focus isn't available
@@ -5394,6 +5406,10 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.followFocusFallback  == nil then db.followFocusFallback  = C.HAS_FOCUS end
         if db.followTargetFallback == nil then db.followTargetFallback = true end
         if db.focusWarning == nil then db.focusWarning = true end
+        -- Off: the bare /tag opens the window, and that is all it has done
+        -- since the window existed. This is for people who want the old wall
+        -- of commands back with it.
+        if db.slashHelp    == nil then db.slashHelp    = false end
         if db.groupWarning == nil then db.groupWarning = true end
         if db.autoLeave    == nil then db.autoLeave    = true end
         -- One-time conversion from the scheme that copied defaults into saved

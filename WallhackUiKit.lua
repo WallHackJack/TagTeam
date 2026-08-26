@@ -501,10 +501,54 @@ function UI.LayoutHeaderChain(box)
     end
 end
 
+-- The tooltip's bottom-left corner on the cursor, which ANCHOR_CURSOR gets
+-- close to but not exactly: it keeps a gap and flips the box about near an
+-- edge, so the corner is somewhere different depending on where you point.
+--
+-- Placed against UIParent, and divided by the TOOLTIP's effective scale rather
+-- than UIParent's - that is the bug this comment exists for. A SetPoint offset
+-- is measured in the units of the frame being MOVED, not of the frame it is
+-- anchored to, and GameTooltip runs at its own scale (the game has a slider for
+-- it). Dividing by UIParent's put the box a long way below and left of the
+-- cursor on any client where the two differ.
+--
+-- The tooltip grows up and to the right from a BOTTOMLEFT point, so the corner
+-- stays put as lines are added.
+local function PinToCursor()
+    local x, y = GetCursorPosition()
+    local scale = GameTooltip:GetEffectiveScale()
+    GameTooltip:ClearAllPoints()
+    GameTooltip:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT",
+        x / scale, y / scale)
+end
+
+-- One shared handler rather than a closure per hover, and it lets go the
+-- moment the tooltip belongs to somebody else: another addon showing its own
+-- while the mouse is still over ours would otherwise have it dragged about.
+local function TrackCursor(self)
+    if GameTooltip:IsOwned(self) then
+        PinToCursor()
+    else
+        self:SetScript("OnUpdate", nil)
+    end
+end
+
 -- Standard tooltip for a control. While the button is disabled it shows
 -- btn.disabledReason instead of the body, so a dead button explains itself
 -- rather than just going grey.
-function UI.AddTooltip(btn, title, body)
+--
+-- `source` is for the frame that hovers standing in for a control that does
+-- not: a row carrying its checkbox's tooltip asks the CHECKBOX whether it is
+-- disabled and why, because a row has neither. Anchoring still goes on the
+-- frame the mouse is actually over.
+--
+-- `follow` tracks the cursor instead of sitting still, and is for those rows
+-- and nothing else: a row is the width of the box, so where in it you are
+-- pointing is the only clue to which tooltip you asked for. A checkbox or a
+-- button is a few pixels square - the corner of it IS where the cursor is, and
+-- a tooltip that jitters along with the mouse over one just looks unwell.
+function UI.AddTooltip(btn, title, body, source, follow)
+    source = source or btn
     -- Button-only, and this is called on sliders and anything else with a
     -- tooltip too. Without it a disabled widget stops firing OnEnter, so the
     -- explanation of WHY it is disabled goes away exactly when it is wanted -
@@ -513,16 +557,43 @@ function UI.AddTooltip(btn, title, body)
         btn:SetMotionScriptsWhileDisabled(true)
     end
     btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:SetText(title, 1, 1, 1)
-        if self.IsEnabled and not self:IsEnabled() and self.disabledReason then
-            GameTooltip:AddLine(self.disabledReason, 1, 0.4, 0.4, true)
+        -- At the cursor rather than off the widget's right edge. A row is the
+        -- full width of the box, so ANCHOR_RIGHT put its explanation out past
+        -- the window and miles from where you were pointing; the cursor is
+        -- where you are already looking. ANCHOR_NONE because the point is set
+        -- by hand below - an owner anchor would fight it.
+        GameTooltip:SetOwner(self, "ANCHOR_NONE")
+        -- Gold, the same 1/0.82/0 the active tab and its underline use, and
+        -- the colour the game's own tooltips title with. The header is nearly
+        -- always the row's label repeated, so it wants to read as a heading
+        -- rather than compete with the body for attention.
+        GameTooltip:SetText(title, 1, 0.82, 0)
+        if source.IsEnabled and not source:IsEnabled() and source.disabledReason then
+            GameTooltip:AddLine(source.disabledReason, 1, 0.4, 0.4, true)
         elseif body then
             GameTooltip:AddLine(body, 0.8, 0.8, 0.8, true)
         end
         GameTooltip:Show()
+        -- Show() sizes it, so the corner is placed after rather than before.
+        if follow then
+            PinToCursor()
+            -- Kept there while the mouse moves across the row, which is wide
+            -- enough that a tooltip left where the mouse entered ends up a long
+            -- way from where it is now. Cleared on leave: an OnUpdate that
+            -- outlived the hover would drag other addons' tooltips around.
+            self:SetScript("OnUpdate", TrackCursor)
+        else
+            -- Same corner, same direction, off the control instead of off the
+            -- mouse: bottom-left of the tooltip on the widget's top-right, so
+            -- it opens up and to the right and stays where it opened.
+            GameTooltip:ClearAllPoints()
+            GameTooltip:SetPoint("BOTTOMLEFT", self, "TOPRIGHT", 0, 0)
+        end
     end)
-    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    btn:SetScript("OnLeave", function(self)
+        self:SetScript("OnUpdate", nil)
+        GameTooltip:Hide()
+    end)
 end
 
 -- Small text button for a section's header strip - the [+] of an add control,
@@ -618,6 +689,10 @@ function UI.AddRowCheckbox(row, labelText, tooltipTitle, tooltipText, OnClick)
     row:SetScript("OnMouseUp", function()
         if cb:IsEnabled() then cb:Click() end
     end)
+    -- The row explains itself as well as toggling: the box is a few pixels
+    -- square and the sentence about what it does is the reason to look. Same
+    -- click area, so anything that toggles on hover also has a tooltip.
+    UI.AddTooltip(row, tooltipTitle, tooltipText, cb, true)
     return cb
 end
 
