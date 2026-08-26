@@ -445,6 +445,7 @@ state.focusTaggerName = nil     -- the one player we'll ask for an invite
 local ReportTaggedKill      -- assigned in the comms section, called from HandleDeath
 local SendAddon             -- ditto; the contact checker needs it before it's defined
 local ReportRested          -- ditto; the flush and the handshake both push it
+local ReportGroup           -- ditto; the roster event and the handshake push it
 local linked = {}           -- [key] = true; rebound to db.linked so it survives /reload
 
 -- Labels for the Key Bindings panel. Bindings.xml declares the binding itself.
@@ -561,6 +562,30 @@ local function RebuildDynamicTaggers()
     end
 end
 
+--------------------------------------------------------------------------------
+-- Temporary co-taggers
+--
+-- A tagger who joins a party has handed everyone in it a share of the tag. The
+-- group holds one tap, so their party's damage counts toward our threshold
+-- exactly as the tagger's own does, and the xp the mob pays is then split across
+-- every head in that party.
+--
+-- Neither half is visible from this client. The combat log names a stranger with
+-- nothing to connect them to our tagger, and the group membership of somebody we
+-- are not grouped with is not queryable at all - so the tagger's own client is
+-- the only thing that can know, and it sends its roster over as GROUP.
+--
+-- These are deliberately SCRATCH, not roster. Nothing is saved, nothing appears
+-- in the window, no marker is assigned and no level is ever read off them: they
+-- last exactly as long as the tagger stands in that party. db.taggers is the
+-- list somebody chose; this is a fact about where that person happens to be.
+--
+-- Levels especially: LowestTaggerLevel must never see one of these. It is the
+-- number every xp estimate is measured against, and a stranger who grouped up
+-- for one quest would silently re-price the whole session.
+state.coTaggers = {}   -- [key] = { name, owner = <tagger key>, pet, petKey }
+state.coGroup   = {}   -- [tagger key] = { n = heads sharing the xp, raw = payload }
+
 local function HasTaggers()
     if db and db.taggers and next(db.taggers) ~= nil then return true end
     return next(dynamicTaggers) ~= nil
@@ -571,6 +596,9 @@ local function TaggerKeyOf(name)
     if not key then return nil end
     if db and db.taggers and db.taggers[key] then return key end
     if dynamicTaggers[key] then return key end
+    -- Last, so a real tagger who is also standing in another tagger's party is
+    -- still answered as themselves rather than as somebody's guest.
+    if state.coTaggers[key] then return key end
     return nil
 end
 
@@ -631,6 +659,11 @@ function Pets.TaggerKey(guid, name)
     end
     for key, info in pairs(dynamicTaggers) do
         if info.petKey == petKey then return key end
+    end
+    -- Their OWNER's key, not their own: a co-tagger's pet is damage the pool
+    -- wants, and nothing else in the addon has a use for the pet itself.
+    for _, info in pairs(state.coTaggers) do
+        if info.petKey == petKey then return info.owner end
     end
     return nil
 end
@@ -924,6 +957,20 @@ end
 local function ResetAll()
     for i = 1, #C.PER_MOB do wipe(state[C.PER_MOB[i]]) end
     wipe(state.isTracked); wipe(state.isCarryGuid)
+
+    -- A co-tagger only exists as somebody's guest, so an owner who is no longer
+    -- a tagger takes their whole party with them. Swept here rather than at the
+    -- four places that drop or wipe the tagger list - /tag remove, /tag reset,
+    -- the window's bin, and the switch into tagger mode - because every one of
+    -- them already ends in this call and a fifth would be the one that forgot.
+    for k, co in pairs(state.coTaggers) do
+        if not (db and db.taggers and db.taggers[co.owner]) then
+            state.coTaggers[k] = nil
+        end
+    end
+    for k in pairs(state.coGroup) do
+        if not (db and db.taggers and db.taggers[k]) then state.coGroup[k] = nil end
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -2640,6 +2687,35 @@ local function RestedFactor()
     return 1
 end
 
+-- How many ways a tagger's xp is being split, from the party they are standing
+-- in. One when they are alone, which is the normal case and costs nothing.
+--
+-- 1/x, and the levels are deliberately ignored. The real rule weights each share
+-- by level, and we cannot even see a stranger's level to weight it with - so
+-- this is wrong in the same direction for everybody rather than confidently
+-- wrong for one of them, and it is the number the tagger actually banks when the
+-- party is levelled together, which is what these parties are.
+--
+-- The LARGEST group wins where several taggers are in different ones. Same
+-- choice LowestTaggerLevel makes, for the same reason: never overstate what
+-- anyone earned.
+local function GroupSplit()
+    -- Tagger mode: our own party IS the group, and dynamicTaggers is already
+    -- exactly it - ourselves plus the party, carry excluded. Counted rather than
+    -- messaged, because this is the client that can simply look.
+    if InTaggerMode() then
+        local n = 0
+        for _ in pairs(dynamicTaggers) do n = n + 1 end
+        return n > 1 and n or 1
+    end
+
+    local most = 1
+    for _, g in pairs(state.coGroup) do
+        if g.n > most then most = g.n end
+    end
+    return most
+end
+
 -- Returns estimated XP, 0 for a grey mob, or nil when either level is unknown.
 local function EstimateXP(guid)
     local pl = LowestTaggerLevel()
@@ -2664,6 +2740,10 @@ local function EstimateXP(guid)
     end
 
     if state.mobElite[guid] then xp = xp * 2 end
+    -- Split last, over the whole mob's worth. A party divides what the mob pays,
+    -- not what one member's damage share earned - the share decides whether the
+    -- tag counts at all, and this decides what the tag is then worth.
+    xp = xp / GroupSplit()
     return floor(xp + 0.5)
 end
 
@@ -4140,6 +4220,77 @@ local function ResetTrackingOptions()
     SafeCall(PushThreshold, C.THRESHOLD_DEFAULT)   -- writes db.threshold too
 end
 
+-- One tagger's party, as their own client sees it. Everything it writes is
+-- scratch - see the co-tagger note up by RebuildDynamicTaggers for why none of
+-- it is saved, shown or levelled.
+--
+-- Announced rather than applied in silence, because it moves the two numbers the
+-- carry is actively reading: whose damage counts toward the threshold, and how
+-- far the xp estimate is divided. There is no window for this, so the chat line
+-- is the whole of it.
+local function NoteTaggerGroup(key, list)
+    -- Carry side only. A GROUP from our own carry - both halves running the
+    -- addon, and them briefly in a party of their own - lands nowhere.
+    local info = db.taggers and db.taggers[key]
+    if not info then return end
+
+    local held = state.coGroup[key]
+    if held and held.raw == list then return end   -- a forced resend, unchanged
+    if not held and list == "" then return end     -- solo, and always was
+
+    -- Everyone they brought last time goes first, so a party that shrank loses
+    -- the people who left instead of keeping them for the session.
+    for k, co in pairs(state.coTaggers) do
+        if co.owner == key then state.coTaggers[k] = nil end
+    end
+
+    local me = NormalizeName(UnitName("player"))
+    local names, heads = {}, 0
+    for _, entry in ipairs({ strsplit(";", list or "") }) do
+        if entry ~= "" then
+            local name, pet = strsplit(",", entry, 2)
+            local k = NormalizeName(name)
+            if k then
+                -- Counted even when not tracked below: the split is over every
+                -- head in their party, and that includes heads whose damage we
+                -- already had another way.
+                heads = heads + 1
+                -- Never ourselves, and never over a real tagger. This is a
+                -- temporary fact about where somebody is standing, and the list
+                -- somebody chose outranks it.
+                if k ~= me and not db.taggers[k] then
+                    if pet == "" then pet = nil end
+                    state.coTaggers[k] = {
+                        name = name, owner = key,
+                        pet = pet, petKey = NormalizeName(pet),
+                    }
+                    names[#names + 1] = name
+                end
+            end
+        end
+    end
+    sort(names)
+
+    -- Plus the tagger themselves, who is the one head the message cannot carry.
+    state.coGroup[key] = (heads > 0) and { n = heads + 1, raw = list } or nil
+
+    -- Identities just changed, so every cached "is this GUID a tagger" answer is
+    -- stale. Same reset AddTagger does, for the same reason.
+    ResetAll(); UpdateAllPlates()
+
+    if heads == 0 then
+        Print(format("|cff00ff00%s|r left their group - co-taggers cleared, "
+            .. "XP estimates back to full.", info.name))
+        return
+    end
+
+    Print(format("|cff00ff00%s|r is in a group of |cffffff00%d|r%s - their party's damage "
+        .. "counts toward the tag, and XP estimates are now |cffffff00divided by %d|r.",
+        info.name, heads + 1,
+        (#names > 0) and (" with |cff00ff00" .. table.concat(names, ", ") .. "|r") or "",
+        heads + 1))
+end
+
 local function OnAddonMessage(msg, sender)
     local who = strsplit("-", sender or "")
     if not who or who == "" then return end
@@ -4209,6 +4360,7 @@ local function OnAddonMessage(msg, sender)
         SendAddon("HI", who)   -- silent handshake; both ends are now marked linked
         AnnouncePet(who)       -- they just logged in; their copy of our pet is gone
         if ReportRested then ReportRested(true) end   -- and their copy of our rested
+        if ReportGroup  then ReportGroup(true)  end   -- and of our party
 
     elseif cmd == "HI" then
         -- Nothing to say. Arriving at all is the whole message - our own pet went
@@ -4221,6 +4373,14 @@ local function OnAddonMessage(msg, sender)
         if not IsPartner(who) then return end
         Pets.Learn(who, arg or "")
 
+    elseif cmd == "GROUP" then
+        -- Their party, which we have no other way of seeing. Partners only: it
+        -- writes into damage accounting AND into the xp estimate, so it is the
+        -- last message a stranger should get to send. NoteTaggerGroup checks the
+        -- tagger list itself, which is what keeps it carry-side.
+        if not IsPartner(who) then return end
+        NoteTaggerGroup(key, arg or "")
+
     elseif cmd == "INV" then
         -- Only ever from the other half of an established pair. Without this
         -- check any stranger running the addon could make us open a group.
@@ -4232,6 +4392,7 @@ local function OnAddonMessage(msg, sender)
         Print(format("|cff00ff00TagTeam linked|r with %s.", who))
         AnnouncePet(who)
         if ReportRested then ReportRested(true) end
+        if ReportGroup  then ReportGroup(true)  end
 
     elseif cmd == "NO" then
         Print(format("|cffff8080%s|r declined the pairing.", who))
@@ -4422,6 +4583,9 @@ local function GreetPartners()
     AnnouncePet()
     -- Same reasoning for the rested pool: the carry cannot see it at all.
     if ReportRested then ReportRested(true) end
+    -- And for the party. A reload loses the carry's copy of it entirely, and a
+    -- stale one has them pooling damage from people who are no longer there.
+    if ReportGroup then ReportGroup(true) end
 end
 
 -- Our own pet changed. Three jobs: cache the GUID the carry-mode damage path
@@ -4435,6 +4599,9 @@ local function OnPetChanged(unit)
         AnnouncePet()
     end
     RebuildDynamicTaggers()
+    -- A party pet is part of the roster we send, so a summon four feet away
+    -- changes the message even though nobody joined or left.
+    if ReportGroup then ReportGroup() end
 end
 
 -- At max level PLAYER_XP_UPDATE never fires, so there's nothing to hang a report
@@ -4772,6 +4939,47 @@ ReportRested = function(force)
     SendAddon(format("REST:%.1f", pct), db.carry)
 end
 
+-- Our party, to the carry. Everybody standing in it holds a share of our tag, and
+-- the carry's client cannot see one bit of that on its own: the combat log hands
+-- them a stranger's name with nothing tying it to us, and the membership of a
+-- group you are not in is not queryable at all. This is the only thing that can
+-- tell them, so it is the only reason their threshold and their estimate are
+-- right while we are grouped.
+--
+-- Pets ride on their owner's entry, the same shape as everywhere else - a party
+-- pet does a real share of the damage and is just as anonymous in their log.
+--
+-- The EMPTY list is the message that matters most. It is "I left the group", and
+-- without it the carry goes on pooling damage from people who walked away and
+-- goes on dividing the estimate by a party that no longer exists.
+do
+local lastGroup    -- block-scoped, like lastRest above; see Pets on slots
+ReportGroup = function(force)
+    if not InTaggerMode() or not db.carry then return end
+
+    local me = NormalizeName(UnitName("player"))
+    local parts = {}
+    for key, info in pairs(dynamicTaggers) do
+        -- Ourselves left out: the carry has us by name already, on the list they
+        -- typed. dynamicTaggers has the carry out of it too, so a carry standing
+        -- in our party is never reported back to themselves.
+        if key ~= me then
+            parts[#parts + 1] = info.name .. "," .. (info.pet or "")
+        end
+    end
+    -- Sorted so the dedupe below compares ROSTERS rather than table order, which
+    -- pairs() does not promise to keep the same between two calls.
+    sort(parts)
+
+    local msg = "GROUP:" .. table.concat(parts, ";")
+    -- GROUP_ROSTER_UPDATE fires on far more than joining and leaving, and this
+    -- rides the whisper channel, so a broadcast only goes out on a change.
+    if not force and msg == lastGroup then return end
+    lastGroup = msg
+    SendAddon(msg, db.carry)
+end
+end
+
 end
 
 -- PLAYER_LEVEL_UP, tagger side. The carry has no way to learn this on their own
@@ -4955,6 +5163,9 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if grouped and not wasGrouped then groupedAt = GetTime() end
         wasGrouped = grouped
         RebuildDynamicTaggers()   -- party membership defines the tagger set
+        -- ...and, in tagger mode, the co-taggers the carry has to be told about.
+        -- Deduped inside, so the several of these one join fires cost one message.
+        if ReportGroup then ReportGroup() end
         -- Delayed: leadership and roster aren't settled the instant this fires.
         C_Timer.After(1, CheckLootMethod)
     elseif event == "PLAYER_REGEN_ENABLED" then
@@ -5222,6 +5433,10 @@ ns.LeaveTaggerParty             = LeaveTaggerParty
 ns.CheckLootMethod              = CheckLootMethod
 ns.AskForInvite                 = AskForInvite
 ns.InviteTarget                 = InviteTarget
+-- The other direction of the same exchange. /tag inv asks to BE invited when we
+-- are alone and invites when we are not, and it needs both halves to decide.
+ns.InviteToParty                = InviteToParty
+ns.AmGroupLeader                = AmGroupLeader
 ns.SendAddon                    = SendAddon
 ns.PushThreshold                = PushThreshold
 ns.PlayCue                      = PlayCue

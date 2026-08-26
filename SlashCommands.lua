@@ -48,6 +48,8 @@ local TaggerInRange             = ns.TaggerInRange
 local Suspended                 = ns.Suspended
 local MultiplierText            = ns.MultiplierText
 local AskForInvite              = ns.AskForInvite
+local InviteToParty             = ns.InviteToParty
+local AmGroupLeader             = ns.AmGroupLeader
 local SendAddon                 = ns.SendAddon
 local Roster                    = ns.Roster
 -- The two names here that come from TagTeamView.lua rather than the core, which
@@ -379,8 +381,14 @@ commands["sound"] = function(rest, cmd)
 end
 commands["audio"], commands["mute"] = commands["sound"], commands["sound"]
 commands["inv"] = function(rest, cmd)
-    -- Asks THEM to invite US, which is the same exchange the automatic
-    -- out-of-range path runs - this is just the manual trigger for it.
+    -- "Get the two of us into one group", from whichever end typed it.
+    --
+    -- Alone, that means asking THEM to invite US, which is the same exchange the
+    -- automatic out-of-range path runs - this is just the manual trigger for it.
+    -- Already in a party, it means the opposite: a group exists, so the thing to
+    -- do is pull them into it. Two carries running together and either of them
+    -- typing /tag inv should not be asking to be taken out of the group they are
+    -- standing in - see the invite branch below.
     --
     -- One target, never the whole tagger list: several taggers would mean
     -- several party invites arriving at once and only one of them could ever
@@ -410,6 +418,29 @@ commands["inv"] = function(rest, cmd)
     end
     if present then
         Print(format("|cff00ff00%s|r is already in your group.", target))
+        return
+    end
+
+    -- A group already exists, so asking to be invited to another one would mean
+    -- leaving this one first. Invite them into it instead.
+    if IsInGroup() or IsInRaid() then
+        -- Only the leader can invite, and in a raid an assistant can too. Guarded
+        -- individually, as every optional API member here is: UnitIsGroupAssistant
+        -- is not on every client this addon loads on.
+        local mayInvite = AmGroupLeader()
+            or (IsInRaid() and UnitIsGroupAssistant and UnitIsGroupAssistant("player"))
+
+        if not mayInvite then
+            -- A warning and nothing else, deliberately: falling back to asking
+            -- THEM would drag us out of the group we are in, which is the one
+            -- thing this branch exists to avoid.
+            Print(format("|cffff8080Can't invite %s|r - you aren't the group leader. "
+                .. "Ask the leader to invite them, or leave the group first.", target))
+            return
+        end
+
+        InviteToParty(target)
+        Print(format("invited |cff00ff00%s|r to your group.", target))
         return
     end
 

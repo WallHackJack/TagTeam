@@ -98,7 +98,10 @@ out of range, and it can't set focus for you — that action is protected.
 ## Logistics it handles for you
 
 - Whispers or silently asks for a party invite when you lose your partner, or on
-  demand with `/tag inv`
+  demand with `/tag inv` — and if you're already in a group, `/tag inv` invites
+  them into it instead of asking to be taken out of it
+- Tells the carry when a tagger joins or leaves a party. Everyone in it counts
+  toward the tag, and the XP estimate is divided by the size of the group
 - Auto-accepts invites from your partner only
 - Sets loot to free-for-all in a two-person tag group
 - Leaves the party again once you're back together
@@ -121,7 +124,7 @@ styling, the XP zone, which cues play, and the two by-name mob lists (Ignore).
 | `/tag reset` (`/tag clear`, `/tag off`, `/tag none`) | Clear all roles |
 | `/tag stats` | Session totals, estimated and actual |
 | `/tag link` | Pair with the other client over the addon channel |
-| `/tag inv` (`/tag invite`) | Ask your tagger — or your carry — to invite you now |
+| `/tag inv` (`/tag invite`) | Get the two of you into one group: asks for an invite when you're alone, sends one when you're already in a party |
 | `/tag sound` (`/tag audio`, `/tag mute`) | Master mute. Which cues play, and what each is set to, are on the Audio tab |
 | `/tag diag` | Runtime picture: what was detected, what is cached, and the last cosmetic error |
 

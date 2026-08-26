@@ -8,6 +8,26 @@ and the About tab's patch notes panel is deliberately empty until it gets some.
 
 Notes for this release are still to be written.
 
+- **Added:** a tagger who joins a party now tells the carry about it. Everyone in
+  that party — and their pets — counts as a temporary co-tagger, so their damage
+  pools toward the threshold the same way the tagger's does. Neither the names
+  nor the group were visible from the carry's side before: the combat log just
+  showed a stranger, and there is no way to ask about a group you aren't in.
+
+  The XP estimate is divided by the size of the group, since that is how the mob
+  pays. A tagger in a group of three earns a third, so that is what the estimate
+  now says. Levels are ignored in the split.
+
+  It is announced in chat both ways — joining and leaving — and there is no
+  window for it on purpose: these names exist only while the tagger is standing
+  in that party, and dropping the group clears the lot.
+
+- **Changed:** `/tag inv` now means "get the two of us into one group" from
+  either end. Alone, it asks to be invited, as before. Already in a party, it
+  invites *them* instead — two carries running together and either of them
+  typing it should pull the tagger in, not ask to be taken out of the group they
+  are standing in. Without invite rights it says so and stops.
+
 ## 0.4.0 — the link actually talks
 
 The two clients barely spoke before this. The tagger sent XP and nothing else, so

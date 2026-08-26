@@ -598,6 +598,52 @@ There can be several taggers. **Their damage is pooled** against the one
 threshold, which is correct when they are grouped with each other, since a party
 shares one tag.
 
+## Temporary co-taggers
+
+A tagger who joins a party has handed everyone in it a share of the tag: the
+group holds one tap, so their party's damage counts toward the threshold exactly
+as the tagger's own does, and the XP the mob pays is split across every head in
+it. **Neither half is visible from the carry's client** — the combat log names a
+stranger with nothing tying them to our tagger, and the group membership of
+somebody you are not grouped with is not queryable at all. So the tagger's own
+client sends its roster over as `GROUP`, and that message is the only reason the
+carry's threshold and estimate are right while the tagger is grouped.
+
+`state.coTaggers` (`[key] = { name, owner, pet, petKey }`) and `state.coGroup`
+(`[tagger key] = { n, raw }`) hold it. Four things about them are deliberate:
+
+- **They are scratch, not roster.** Nothing is saved, nothing appears in the
+  window, no marker is assigned, and `TaggerNames` does not list them — there is
+  no persistent UI for these on purpose. `db.taggers` is the list somebody chose;
+  this is a fact about where that person happens to be standing, and it lasts
+  exactly as long as they stand there.
+- **`LowestTaggerLevel` must never see one.** It is the number every XP estimate
+  is measured against, and a stranger who grouped up for one quest would silently
+  re-price the whole session. The levels are not even on the wire.
+- **They enter through `TaggerKeyOf` and `Pets.TaggerKey`, and nowhere else** —
+  the identity layer is the whole integration, which is what keeps `MatchesTracked`,
+  the badge, `GroupedWithTagger` and `TaggerPartyUnit` right for free.
+  `Pets.TaggerKey` returns the **owner's** key for a co-tagger's pet: the pool
+  wants the damage and nothing else in the addon has a use for the pet itself.
+- **`ResetAll` is where they are swept**, dropping any whose owner is no longer a
+  tagger. Four places drop or wipe the tagger list — `/tag remove`, `/tag reset`,
+  the window's bin, and the switch into tagger mode — and every one of them
+  already ends in that call, so a fifth cannot forget.
+
+`GroupSplit()` is the other half of the message: the mob's whole worth divided by
+the number of heads sharing it, applied at the end of `EstimateXP`. **1/x, and
+the levels are deliberately ignored** — the real rule weights each share by
+level, we cannot see a stranger's level to weight it with, and 1/x is what the
+tagger actually banks in the parties these are. The **largest** group wins where
+several taggers are in different ones, the same choice `LowestTaggerLevel` makes
+and for the same reason. In tagger mode it counts `dynamicTaggers` instead: that
+client can simply look.
+
+The count includes heads whose damage we already had another way (a second real
+tagger in there), because the split is over the party, not over the strangers in
+it. The carry being in that party is the `TagIsWasted` case, which suppresses
+everything downstream anyway.
+
 ## Two modes
 
 | Mode | Set by | Meaning |
@@ -804,6 +850,14 @@ same way — `Pets`.
 - "Confirmed" means their addon has talked to ours, or we have seen them on a unit
   token. Any name can be added; only a confirmed one can hold the triangle.
 - Only the player we held **focus** on gets asked for an invite.
+- **`/tag inv` asks to be invited only when we are alone; in a group it invites.**
+  The command means "get the two of us into one group", and when a party already
+  exists, asking to be taken into a different one would mean leaving this one
+  first. Two carries running together and either of them typing it should pull
+  the tagger in. Without invite rights it prints a warning and **stops** — it
+  must not fall back to asking, which is the one thing that would drag us out of
+  the group we are standing in. `UnitIsGroupAssistant` is guarded on its own, as
+  every optional API member here is.
 - **The backup whisper asks whether a party formed *since* the request, never
   whether one exists now.** `AskForInvite` captures `sentAt` and its timer bails
   when `groupedAt >= sentAt`. A live `IsInGroup()` test is the wrong question and
@@ -838,6 +892,7 @@ Hidden addon channel over WHISPER, prefix `TagTeam`, so nothing appears in chat.
 | `QPROG:<text>` | tagger → carry | An objective ticking over — the yellow centre-screen text, forwarded verbatim. **Partners only**, no cue. Printing is gated on the receiver's `db.questProgress`; `QACC` and `QDROP` are gated on `db.questAccepted`. |
 | `REST:<pct>` | tagger → carry | Rested pool left, as a **percentage of their level's XP** (`0` = none). Feeds `state.taggerRested` and so `RestedFactor`. **Partners only** — it decides whether every estimate doubles. Pushed on the crossings, every `C.REST_STEP` of drift, and forced at the handshake and on a ding. |
 | `LEVEL:<n>` | tagger → carry | They dinged. Feeds `NoteTaggerLevel` and plays `C.DING_CUE`. **Partners only** — it writes the number every XP estimate is measured against. |
+| `GROUP:<name>,<pet>;<name>,<pet>;…` | tagger → carry | Our party, ourselves left out. Pets ride on their owner's entry; an absent pet is an empty field. **Partners only** — it writes into damage accounting *and* into the XP estimate. The **empty list is the message that matters most**: it is "I left the group", and without it the carry pools damage from people who walked away and keeps dividing by a party that no longer exists. Sent on `GROUP_ROSTER_UPDATE` and `UNIT_PET`, deduped against the last one sent; forced at the handshake and on every link established or re-verified. |
 | `PET:<name>` | either | Our own pet, by name. Empty name clears. **Partners only** — it writes into damage accounting. Sent on `UNIT_PET`, at login, and on every link established or re-verified; broadcasts are deduped against the last one sent, direct sends are not. |
 
 `db.linked` persists so a `/reload` does not silently drop back to visible
@@ -1040,9 +1095,13 @@ unannounced. That is deliberate and it costs nothing lasting: the level is
 re-sampled the moment they are visible again, so the estimate self-heals; only
 the notification is lost, which is what suspension means everywhere else.
 
-Group splits are invisible to an addon, so the number is always labelled an
-estimate. A linked tagger's reported XP is authoritative and should be preferred
-wherever both exist.
+A group split used to be invisible to an addon, which is part of why the number
+is always labelled an estimate. A **linked** tagger's is no longer invisible —
+they send their party as `GROUP` and `GroupSplit()` divides by it, the same
+reasoning `REST` gets: anything we can see belongs in the estimate rather than
+beside it. An unlinked tagger's split is still unknowable, and the label still
+carries that. A linked tagger's reported XP is authoritative either way and
+should be preferred wherever both exist.
 
 **Rested is no longer invisible, because the tagger tells us.** `GetXPExhaustion`
 is on their client, not ours, so it arrives as `REST:<pct>` and lands in
