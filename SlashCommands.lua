@@ -190,7 +190,9 @@ commands["carry"] = function(rest, cmd)
     -- Same rule in the other direction. The guard itself lives in the core, so
     -- the window cannot enforce a different one - it raises the same popup and
     -- that popup does the reporting from there.
-    if Roster.RequestCarry(name) == "switch" then return end
+    -- Anything but "set" - a mode-switch popup, or your own name - has already
+    -- said its piece.
+    if Roster.RequestCarry(name) ~= "set" then return end
 
     Print(format("carry set to |cff00ff00%s|r - |cffffff00tagger mode|r.", db.carry))
     Print(format("Taggers: you%s. Party automation is off in this mode.",

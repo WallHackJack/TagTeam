@@ -504,6 +504,36 @@ local function NormalizeName(name)
     return strlower(base)
 end
 
+-- The name as it gets shown back: however it was typed - WALLHACKJACK,
+-- wallhackjack, wAllhackjack - it reads as Wallhackjack. A realm suffix is
+-- kept exactly as it came, because we have no business recasing someone
+-- else's server.
+local function DisplayName(name)
+    if not name then return nil end
+    local base, realm = strsplit("-", name, 2)
+    base = gsub(strlower(base), "^%l", strupper)
+    return realm and (base .. "-" .. realm) or base
+end
+
+-- You are never on your own lists. Every list here names the OTHER character -
+-- who you are boosting, who is boosting you, who to follow - so your own name
+-- is always a typo, and taking it would hand you a marker meant for a real
+-- tagger and put a /follow on yourself in the macro.
+local function IsSelf(name)
+    if not name then return false end
+    return NormalizeName(name) == NormalizeName(UnitName("player"))
+end
+
+-- The same refusal, said out loud. The low-level guards stay silent so a name
+-- arriving over comms cannot spam the chat frame; the paths a person typed
+-- into come through here instead.
+local function RefuseSelf(name)
+    if not IsSelf(name) then return false end
+    Print(format("|cffff8080%s is you|r - TagTeam's lists are for the other character.",
+        DisplayName(name)))
+    return true
+end
+
 --------------------------------------------------------------------------------
 -- Who is who
 --
@@ -3910,12 +3940,12 @@ end
 
 local function AddTagger(name)
     local key = NormalizeName(name)
-    if not key then return nil end
+    if not key or IsSelf(name) then return nil end
 
     if not db.taggers[key] then
         db.taggerSeq = (db.taggerSeq or 0) + 1
         db.taggers[key] = {
-            name = gsub(name, "^%l", strupper),
+            name = DisplayName(name),
             order = db.taggerSeq,   -- establishment order, never reused
         }
     end
@@ -3933,10 +3963,10 @@ end
 
 local function Remember(list, seqField, name)
     local key = NormalizeName(name)
-    if not key then return nil end
+    if not key or IsSelf(name) then return nil end
     if not list[key] then
         db[seqField] = (db[seqField] or 0) + 1
-        list[key] = { name = gsub(name, "^%l", strupper), order = db[seqField] }
+        list[key] = { name = DisplayName(name), order = db[seqField] }
     end
     return list[key]
 end
@@ -4058,6 +4088,7 @@ end
 
 -- The follow list is in the macro, so every edit to it has to rebuild the key.
 function Roster.AddFollow(name)
+    if RefuseSelf(name) then return nil end
     local entry = Remember(db.followTargets, "followSeq", name)
     UpdateMacroButton()
     return entry
@@ -4081,7 +4112,8 @@ function Roster.RemoveTagger(key)
 end
 
 local function SetCarryTo(name)
-    db.carry = gsub(name, "^%l", strupper)
+    if IsSelf(name) then return end
+    db.carry = DisplayName(name)
     db.carryKey = NormalizeName(name)
     -- Every carry you set joins the remembered roster, so the list fills itself
     -- from normal use rather than needing to be curated.
@@ -4115,6 +4147,7 @@ end
 -- more; the popup's own OnAccept reports what happened. Otherwise "added" or
 -- "set", plus the tagger's record where there is one.
 function Roster.RequestTagger(name)
+    if RefuseSelf(name) then return "self" end
     if InTaggerMode() then
         StaticPopup_Show("TAGTEAM_MODE_SWITCH",
             format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00tagger mode|r with "
@@ -4127,6 +4160,7 @@ function Roster.RequestTagger(name)
 end
 
 function Roster.RequestCarry(name)
+    if RefuseSelf(name) then return "self" end
     if db.taggers and next(db.taggers) then
         StaticPopup_Show("TAGTEAM_MODE_SWITCH",
             format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00carry mode|r with "
