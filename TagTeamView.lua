@@ -195,7 +195,7 @@ end
 -- One prompt frame serves the three [+] buttons and /tag pair. The only
 -- difference between them is whether the role is already settled: a [+] lives
 -- on a section so it is, and /tag pair does not, so that one gets the dropdown.
-local function Ask(role, name)
+local function Ask(role, name, announce)
     if not prompt then prompt = UI.CreatePrompt("TagTeamPromptFrame") end
 
     local known = role and SectionFor(role)
@@ -210,7 +210,15 @@ local function Ask(role, name)
         accept  = "Add",
         OnAccept = function(text, chosen)
             local section = SectionFor(role or chosen)
-            if section then section.Add(text) end
+            if section then
+                section.Add(text)
+                -- Only when the prompt was raised from chat: the window shows
+                -- the new row itself, so a line about it there is noise.
+                if announce then
+                    Print(format("added |cff00ff00%s|r as a %s.", text,
+                        strlower(section.noun)))
+                end
+            end
             -- A name typed in is a name we know nothing about. Forced past the
             -- throttle: this is the one moment the answer is worth waiting for.
             Roster.Ping(text, true)
@@ -2598,12 +2606,13 @@ end
 
 -- /tag pair <name>. The same prompt the [+] buttons raise, minus the assumption
 -- about which of the three lists the name belongs in.
+--
+-- The prompt alone, with no window behind it: typing a name is a one-question
+-- errand, and the full UI arriving under it is a second thing to close. It does
+-- not go through Ready either - the prompt is its own frame and needs nothing
+-- the window builds.
 local function ShowPairPrompt(name)
-    if not Ready() then return end
-    SafeCall(function()
-        frame:Show()
-        Ask(nil, name)
-    end)
+    SafeCall(function() Ask(nil, name, true) end)
 end
 
 --------------------------------------------------------------------------------
