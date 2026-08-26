@@ -869,37 +869,65 @@ end
 -- degrades on its own instead of needing conditionals macros can't express.
 local function BuildFollowMacro()
     local targets = {}
+    local me = NormalizeName(UnitName("player"))
+
+    -- Highest priority FIRST in here; the loop at the bottom emits the list
+    -- backwards, so targets[1] is the name targeted last and therefore the one
+    -- actually followed when several are nearby.
+    local function add(name)
+        local key = name and NormalizeName(name)
+        -- Never try to follow ourselves. In tagger mode the party set includes
+        -- us, and someone can always /tag add their own name by accident.
+        if not key or key == me then return end
+        for i = 1, #targets do
+            if NormalizeName(targets[i]) == key then return end
+        end
+        targets[#targets + 1] = name
+    end
+
+    -- The Follow targets list leads, ahead of everything derived: it is the one
+    -- list somebody typed out in order to be followed, where the taggers are
+    -- worked out from who is being levelled.
+    for _, entry in ipairs(Roster.Follows()) do add(entry.name) end
 
     if InTaggerMode() and db.carry then
         -- On a tagger's client the carry is the only name worth following, ahead
         -- of any tagger entries left over from using this character as a carry.
-        targets[1] = db.carry
+        add(db.carry)
     else
-        -- Never try to follow ourselves. In tagger mode the party set includes
-        -- us, and someone can always /tag add their own name by accident.
-        local list = TaggersByPriority()
-        local me = NormalizeName(UnitName("player"))
-        for i = 1, #list do
-            if NormalizeName(list[i].name) ~= me then
-                targets[#targets + 1] = list[i].name
-            end
-        end
-
+        local before = #targets
+        for _, info in ipairs(TaggersByPriority()) do add(info.name) end
         -- No taggers to chase? Follow the carry - the other half of the pair.
-        if #targets == 0 and db and db.carry then targets[1] = db.carry end
+        if #targets == before then add(db.carry) end
     end
 
-    -- Nothing configured either way: follow whoever is targeted.
-    if #targets == 0 then return "/follow" end
-
     local lines = {}
+
+    -- The two fallbacks go FIRST, because a later /follow overrides an earlier
+    -- one: whichever name the chain below finds wins, and these are what is
+    -- left standing when it finds nobody. Written as conditionals rather than
+    -- as a branch on #targets so they also cover the case where every name on
+    -- the list is out of range.
+    if db.followTargetFallback then
+        lines[#lines + 1] = "/follow [@target,help,exists]"
+    end
+    if C.HAS_FOCUS and db.followFocusFallback then
+        lines[#lines + 1] = "/follow [@focus,help,exists]"
+    end
+
     for i = #targets, 1, -1 do
         lines[#lines + 1] = "/targetexact " .. targets[i]
         -- [help] so a failed targetexact can't leave us focusing a mob: the
         -- command simply doesn't run when the current target is hostile.
-        lines[#lines + 1] = "/focus [help]"
+        if C.HAS_FOCUS and db.followFocus then
+            lines[#lines + 1] = "/focus [help]"
+        end
         lines[#lines + 1] = "/follow"
     end
+
+    -- Nothing configured and both fallbacks off: follow whoever is targeted,
+    -- which is what the key did before any of this was settable.
+    if #lines == 0 then return "/follow" end
     return table.concat(lines, "\n")
 end
 
@@ -4028,9 +4056,17 @@ function Roster.ForgetCarry(key)
     return true
 end
 
-function Roster.AddFollow(name)  return Remember(db.followTargets, "followSeq", name) end
+-- The follow list is in the macro, so every edit to it has to rebuild the key.
+function Roster.AddFollow(name)
+    local entry = Remember(db.followTargets, "followSeq", name)
+    UpdateMacroButton()
+    return entry
+end
 function Roster.Follows()        return Listed(db.followTargets) end
-function Roster.ForgetFollow(key) db.followTargets[key] = nil end
+function Roster.ForgetFollow(key)
+    db.followTargets[key] = nil
+    UpdateMacroButton()
+end
 
 -- Dropping a tagger frees its marker, so the rest have to be re-derived. Lives
 -- here rather than in the slash file because the window removes taggers too,
@@ -4121,7 +4157,10 @@ function Roster.ClearCarries()
     if db.carry then Roster.RememberCarry(db.carry) end
 end
 
-function Roster.ClearFollows() wipe(db.followTargets) end
+function Roster.ClearFollows()
+    wipe(db.followTargets)
+    UpdateMacroButton()
+end
 
 StaticPopupDialogs["TAGTEAM_MODE_SWITCH"] = {
     text = "%s",
@@ -5082,7 +5121,59 @@ local function Sweep()
     end
 end
 
+--------------------------------------------------------------------------------
+-- The per-character half of the saved data
+--
+-- Who you are levelling and who is carrying are facts about THIS character:
+-- log in on the carry and the taggers list should be your taggers, not the
+-- roster you keep while playing the tagger. The follow list is the opposite -
+-- it is a list of people you chase whoever you happen to be logged in as - so
+-- it stays on `db` with the settings, account wide.
+--
+-- Swapped in at load and back out at logout rather than read through a
+-- per-character table everywhere: `db.carry` alone is on fifty lines and half
+-- these keys are scalars, which no shared table reference would carry. There
+-- is no durability cost - SavedVariables are only written at logout either
+-- way, so a session that never reaches PLAYER_LOGOUT was losing these writes
+-- before this existed too.
+--------------------------------------------------------------------------------
+
+local PER_CHAR = { "taggers", "taggerSeq", "carries", "carrySeq",
+                   "carry", "carryKey", "carryPet" }
+
+local function CharKey()
+    return (UnitName("player") or "?") .. "-" .. (GetRealmName() or "?")
+end
+
+local function LoadCharRoster()
+    db.chars = db.chars or {}
+    -- One-time. An install from before the split has one roster sitting on db
+    -- itself, and it belongs to whoever is logging in when the split arrives.
+    -- The account-level keys are cleared as they move, so the NEXT character
+    -- starts empty instead of inheriting a roster that was never theirs.
+    if not db.charsMigrated then
+        local seed = {}
+        for _, key in ipairs(PER_CHAR) do seed[key], db[key] = db[key], nil end
+        db.chars[CharKey()] = seed
+        db.charsMigrated = true
+    end
+
+    local mine = db.chars[CharKey()] or {}
+    db.chars[CharKey()] = mine
+    -- Unconditional, nils included: a character with no carry has to end up
+    -- with no carry, not with whatever the last one left on db.
+    for _, key in ipairs(PER_CHAR) do db[key] = mine[key] end
+end
+
+local function SaveCharRoster()
+    if not db or not db.chars then return end
+    local mine = db.chars[CharKey()] or {}
+    db.chars[CharKey()] = mine
+    for _, key in ipairs(PER_CHAR) do mine[key] = db[key] end
+end
+
 frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("PLAYER_LOGOUT")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 frame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
@@ -5195,10 +5286,16 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         RebuildDynamicTaggers()
         -- Delayed: the chat system isn't ready to carry addon messages at login.
         C_Timer.After(5, GreetPartners)
+    elseif event == "PLAYER_LOGOUT" then
+        SaveCharRoster()
     elseif event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         TagTeamDB = TagTeamDB or {}
         db = TagTeamDB
         ns.db = db   -- SlashCommands.lua reads it from here; see the exports
+        -- Before anything below reads a roster key. ReassignMarkers at the end
+        -- of this block walks db.taggers, and it has to be walking this
+        -- character's.
+        LoadCharRoster()
         -- A session that ended while a cue was holding the Sound Effects CVar
         -- left it moved. This is the only place that can know, because the
         -- value it has to put back is the one we saved before moving it.
@@ -5257,6 +5354,11 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.autoInvite   == nil then db.autoInvite   = true end
         if db.taggerMarker == nil then db.taggerMarker = true end
         if db.autoFocus    == nil then db.autoFocus    = C.HAS_FOCUS end
+        -- The follow key's three switches. All on: this is what the macro did
+        -- before any of it was settable, minus the two fallbacks it never had.
+        if db.followFocus          == nil then db.followFocus          = C.HAS_FOCUS end
+        if db.followFocusFallback  == nil then db.followFocusFallback  = C.HAS_FOCUS end
+        if db.followTargetFallback == nil then db.followTargetFallback = true end
         if db.focusWarning == nil then db.focusWarning = true end
         if db.groupWarning == nil then db.groupWarning = true end
         if db.autoLeave    == nil then db.autoLeave    = true end

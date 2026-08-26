@@ -25,6 +25,7 @@ local ADDON_NAME, ns = ...
 local UI, SafeCall = ns.UI, ns.SafeCall
 local UpdateAllPlates   = ns.UpdateAllPlates
 local UpdateMacroButton = ns.UpdateMacroButton
+local BuildFollowMacro  = ns.BuildFollowMacro
 local ReassignMarkers   = ns.ReassignMarkers
 local PushThreshold     = ns.PushThreshold
 local Roster, Cues, Mobs = ns.Roster, ns.Cues, ns.Mobs
@@ -1192,6 +1193,192 @@ local function BuildBadgePreview(box)
     RefreshBadgePreview(box)
 end
 
+--------------------------------------------------------------------------------
+-- Follow binds
+--
+-- One action, reachable two ways: a key bound straight to the addon's secure
+-- button, and a plain macro you can drag to a bar. Both run the same text out
+-- of BuildFollowMacro, so there is nothing to keep in step - the macro window
+-- is a copy of what the key already does.
+--
+-- The keybind pop-up is here rather than in the kit because the thing it binds
+-- is TagTeam's: it names one action and offers no way to pick another, which
+-- is the whole reason it is smaller than the Key Bindings panel it saves you a
+-- trip to.
+--------------------------------------------------------------------------------
+
+-- What Bindings.xml declares. One string, so the pop-up, the label and the
+-- clear button cannot drift onto different actions.
+local BIND_ACTION = "CLICK TagTeamFollowButton:LeftButton"
+
+local MACRO_WINDOW_W, MACRO_WINDOW_H = 380, 250
+local BIND_POPUP_W,  BIND_POPUP_H    = 320, 150
+local BIND_BTN_W = 90
+
+-- Modifier keys on their own are not a binding, they are half of one: a
+-- pop-up that closed on the SHIFT of SHIFT-F would bind SHIFT and never see
+-- the F.
+local BARE_MODIFIERS = {
+    LSHIFT = true, RSHIFT = true, LCTRL = true, RCTRL = true,
+    LALT = true, RALT = true, UNKNOWN = true,
+}
+
+-- PARENTHESISED. An unbound action makes GetBindingKey return *nothing* rather
+-- than nil, and a bare `return GetBindingKey(...)` passes that emptiness on -
+-- which reaches tostring() in the refresh signature as no argument at all.
+-- The parentheses truncate the call to exactly one value, nil included.
+local function BoundKey()
+    return (GetBindingKey(BIND_ACTION))
+end
+
+-- Written out, not abbreviated. GetBindingText on the whole string gives back
+-- the game's own shorthand - "c+spacebar" for CTRL-SPACE - which is what the
+-- Key Bindings panel wants in a narrow column and not what a settings row
+-- wants on a line of its own.
+local MODIFIER_TEXT = { ALT = "Alt", CTRL = "Ctrl", SHIFT = "Shift" }
+
+-- "CTRL-SPACE" -> "Ctrl + Spacebar".
+local function PrettyKey(key)
+    if not key or key == "" then return nil end
+
+    local parts, rest = {}, key
+    -- Modifiers come off the FRONT one at a time rather than splitting the
+    -- whole string on "-": the base key can itself be "-", and CTRL-ALT--
+    -- would otherwise come apart into empty pieces.
+    while true do
+        local mod, tail = strmatch(rest, "^(%u+)%-(.+)$")
+        if not (mod and MODIFIER_TEXT[mod]) then break end
+        parts[#parts + 1] = MODIFIER_TEXT[mod]
+        rest = tail
+    end
+
+    -- Only the base key goes through the game's names, which is where SPACE
+    -- becomes "Spacebar" and BUTTON3 becomes "Middle Mouse".
+    parts[#parts + 1] = (GetBindingText and GetBindingText(rest, "KEY_")) or rest
+    return table.concat(parts, " + ")
+end
+
+local function BoundKeyText()
+    -- Greyed rather than absent: the row has to say something in the column
+    -- where the key goes, or it reads as having failed to draw.
+    return PrettyKey(BoundKey()) or "|cff808080Not bound|r"
+end
+
+local macroWindow    -- the copyable-macro window, built on first use
+local bindPopup      -- and the key-capture pop-up, likewise
+
+local function ShowMacroWindow()
+    if not macroWindow then
+        local f = UI.CreateWindow("TagTeamMacroFrame", MACRO_WINDOW_W,
+            MACRO_WINDOW_H, "Follow macro")
+
+        local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+        hint:SetPoint("TOPLEFT", UI.BOX_PAD + 4, -(f.titleBarHeight + UI.INSET + 6))
+        hint:SetPoint("TOPRIGHT", -(UI.BOX_PAD + 4),
+            -(f.titleBarHeight + UI.INSET + 6))
+        hint:SetJustifyH("LEFT")
+        hint:SetText("Ctrl+C to copy, then paste it into a macro.")
+
+        local scroll = CreateFrame("ScrollFrame", "TagTeamMacroScroll", f,
+            "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -8)
+        scroll:SetPoint("BOTTOMRIGHT", -(UI.SCROLLBAR_W + 4), UI.INSET + 34)
+
+        local edit = CreateFrame("EditBox", nil, scroll)
+        edit:SetMultiLine(true)
+        edit:SetFontObject(ChatFontNormal)
+        edit:SetWidth(MACRO_WINDOW_W - UI.SCROLLBAR_W - UI.BOX_PAD * 2 - 12)
+        edit:SetAutoFocus(false)
+        edit:SetScript("OnEscapePressed", function() f:Hide() end)
+        scroll:SetScrollChild(edit)
+        f.edit = edit
+
+        local close = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        close:SetSize(BIND_BTN_W, 22)
+        close:SetPoint("BOTTOM", 0, UI.INSET + 6)
+        close:SetText(CLOSE)
+        close:SetScript("OnClick", function() f:Hide() end)
+
+        macroWindow = f
+    end
+
+    -- Rebuilt on every open, never cached: the roster it is made of changes
+    -- while this window is closed, and a stale macro is a macro that follows
+    -- somebody you dropped an hour ago.
+    macroWindow.edit:SetText(BuildFollowMacro() or "/follow")
+    macroWindow.edit:HighlightText()
+    macroWindow.edit:SetFocus()
+    macroWindow:Show()
+end
+
+local function SetFollowBind(key)
+    -- SetBinding only clears the KEY it is given, so the old one has to go by
+    -- hand or the action ends up on two keys and the label can only show one.
+    local old = BoundKey()
+    if old then SetBinding(old) end
+    if key then SetBinding(key, BIND_ACTION) end
+    SaveBindings(GetCurrentBindingSet())
+    ns.RefreshView()
+end
+
+local function ShowBindPopup()
+    if not bindPopup then
+        local p = UI.CreateWindow("TagTeamBindPopup", BIND_POPUP_W,
+            BIND_POPUP_H, "", true)
+        -- Above DIALOG, so it lands on top of the window that opened it.
+        p:SetFrameStrata("FULLSCREEN_DIALOG")
+
+        local heading = p:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        heading:SetPoint("TOPLEFT", UI.BOX_PAD + 6, -(UI.INSET + 12))
+        heading:SetPoint("TOPRIGHT", -(UI.BOX_PAD + 6), -(UI.INSET + 12))
+        heading:SetJustifyH("CENTER")
+        heading:SetText("Press a key to follow")
+
+        local current = p:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        current:SetPoint("TOP", heading, "BOTTOM", 0, -14)
+        p.current = current
+
+        local note = p:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        note:SetPoint("TOP", current, "BOTTOM", 0, -8)
+        note:SetText("Escape cancels.")
+
+        local cancel = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
+        cancel:SetSize(BIND_BTN_W, 22)
+        cancel:SetPoint("BOTTOMLEFT", UI.BOX_PAD + 6, UI.INSET + 8)
+        cancel:SetText(CANCEL)
+        cancel:SetScript("OnClick", function() p:Hide() end)
+
+        local clear = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
+        clear:SetSize(BIND_BTN_W, 22)
+        clear:SetPoint("BOTTOMRIGHT", -(UI.BOX_PAD + 6), UI.INSET + 8)
+        clear:SetText("Clear")
+        clear:SetScript("OnClick", function()
+            p:Hide()
+            SetFollowBind(nil)
+        end)
+
+        -- The pop-up eats every key while it is up, which is the point: a
+        -- capture that let W through would walk you off a cliff mid-bind.
+        p:EnableKeyboard(true)
+        if p.SetPropagateKeyboardInput then p:SetPropagateKeyboardInput(false) end
+        p:SetScript("OnKeyDown", function(self, key)
+            if key == "ESCAPE" then self:Hide(); return end
+            if BARE_MODIFIERS[key] then return end
+            local prefix = ""
+            if IsAltKeyDown()     then prefix = prefix .. "ALT-" end
+            if IsControlKeyDown() then prefix = prefix .. "CTRL-" end
+            if IsShiftKeyDown()   then prefix = prefix .. "SHIFT-" end
+            self:Hide()
+            SetFollowBind(prefix .. key)
+        end)
+
+        bindPopup = p
+    end
+
+    bindPopup.current:SetText("Currently: |cffffffff" .. BoundKeyText() .. "|r")
+    bindPopup:Show()
+end
+
 local OPTION_PAGES = {
     general = {
         {
@@ -1272,8 +1459,8 @@ local OPTION_PAGES = {
                   after = "markers" },
                 { db = "autoFocus", label = "Use focus for range detection",
                   about = "The focus unit is the most reliable range check "
-                       .. "there is. Setting focus is protected, so bind a key "
-                       .. "under Key Bindings > TagTeam.",
+                       .. "there is. Setting focus is protected, so it needs "
+                       .. "the follow key - set one under Follow Binds below.",
                   -- Classic Era has no focus unit at all.
                   requires = "HAS_FOCUS", after = "macro" },
                 -- Beside the setting it is a reminder about, rather than over
@@ -1283,6 +1470,50 @@ local OPTION_PAGES = {
                   about = "Says so when no focus is set, because without one "
                        .. "range falls back to a timer.",
                   requires = "HAS_FOCUS" },
+            },
+        },
+        {
+            -- Last on the tab, because it is the one box that is about a key
+            -- rather than about the addon's behaviour: everything above
+            -- changes what TagTeam does, this changes how you reach it.
+            title = "Follow Binds",
+            -- Both rows' contents start in one column. Without it the bound
+            -- key would begin where "Follow Keybind:" happens to end and the
+            -- Macro button where "Generate Macro:" does, which is two captions
+            -- of different lengths putting their contents at two different x.
+            labelW = 118,
+            rows = {
+                -- The key it is bound to is the read-out; the button is what
+                -- changes it, and it says which of the two jobs it is doing.
+                { label = "Follow Keybind:", Value = BoundKeyText,
+                  Button = function()
+                      return BoundKey() and "Rebind" or "Set Key"
+                  end,
+                  width = 100, OnClick = ShowBindPopup,
+                  about = "One key that targets, focuses and follows down the "
+                       .. "list below. The same binding as Key Bindings > "
+                       .. "TagTeam, set from here." },
+                { db = "followFocus", after = "macro", requires = "HAS_FOCUS",
+                  label = "Set focus target on Taggers and Carries",
+                  about = "The key sets focus as well as following, which is "
+                       .. "what makes the range check reliable. Setting focus "
+                       .. "is protected, so this only works from the key." },
+                { db = "followFocusFallback", after = "macro",
+                  requires = "HAS_FOCUS",
+                  label = "Follow focus target when no others exist",
+                  about = "With nobody from the lists in range, follow whoever "
+                       .. "is focused." },
+                { db = "followTargetFallback", after = "macro",
+                  label = "Follow target when no others exist",
+                  about = "The last resort, and what the key did before any of "
+                       .. "this: follow whoever you have targeted." },
+                -- The same text the key runs, for a bar button or another
+                -- addon. Built fresh on open, so it is never a stale copy.
+                { label = "Generate Macro:", Button = function() return "Macro" end,
+                  width = 100, OnClick = ShowMacroWindow,
+                  about = "The follow macro as text, ready to copy into a "
+                       .. "macro of your own. /focus will not work from a "
+                       .. "normal macro - only the keybind above can set it." },
             },
         },
     },
@@ -1609,7 +1840,7 @@ local NO_ROWS = {}
 
 -- The control a row can be holding. One list, so the passes that treat them
 -- alike do not each carry their own copy of what a row can be.
-local OPTION_PARTS = { "check", "slider", "dropdown" }
+local OPTION_PARTS = { "check", "slider", "dropdown", "button" }
 
 -- `Get` is the mirror of `Set`, for a row whose control value is not what the
 -- db field holds. The XP zone is the one: it saves nil for auto, because "no
@@ -1708,6 +1939,39 @@ local function DressOptionRow(box, index, row, labelW)
         -- Parenthesised: gsub returns a count as well, and that second value
         -- would arrive as the tooltip body.
         UI.AddTooltip(widget.slider, (row.label:gsub("%s*:.*", "")), row.about)
+
+    elseif row.Button then
+        -- A row that does something instead of holding a value. Caption, then
+        -- what it is set to, then the button that changes it - left to right in
+        -- the order you read it, with the thing you press last.
+        widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        widget.label:SetPoint("LEFT", ROW_TEXT_LEFT, 0)
+        widget.label:SetText(row.label)
+
+        -- White, in the `labelW` column with every other control on the page.
+        -- No width of its own, so it sizes to the key it is showing and the
+        -- button below can sit straight after it. That does mean the button
+        -- shifts when the binding changes - which is fine here and would not
+        -- be on a slider: this one only moves on the press that moved it.
+        if row.Value then
+            widget.value = widget:CreateFontString(nil, "OVERLAY",
+                "GameFontHighlight")
+            widget.value:SetJustifyH("LEFT")
+            AnchorControl(widget, widget.value, labelW, 0)
+        end
+
+        widget.button = CreateFrame("Button", nil, widget, "UIPanelButtonTemplate")
+        widget.button:SetSize(row.width or 100, UI.ROW_ICON + 4)
+        -- Packed along to the left after whatever precedes it, not pushed out
+        -- to the row's right edge: a caption on one side of the box and its
+        -- button on the other reads as two unrelated things.
+        if widget.value then
+            widget.button:SetPoint("LEFT", widget.value, "RIGHT", CONTROL_GAP, 0)
+        else
+            AnchorControl(widget, widget.button, labelW, 0)
+        end
+        widget.button:SetScript("OnClick", function() SafeCall(row.OnClick) end)
+        UI.AddTooltip(widget.button, (row.label:gsub("%s*:.*", "")), row.about)
 
     elseif row.choices then
         widget.label = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1870,6 +2134,9 @@ local function RefreshOptionsPage(key)
                     if widget.note then
                         widget.note:SetText(row.Note(tonumber(value) or 0))
                     end
+                elseif widget.button then
+                    widget.button:SetText(row.Button())
+                    if widget.value then widget.value:SetText(row.Value()) end
                 elseif widget.dropdown then
                     widget.dropdown:Sync()
                 elseif widget.check then
@@ -1889,7 +2156,8 @@ local function RefreshOptionsPage(key)
                         end
                     end
                     UI.SetEnabled(live, widget.label, widget.check,
-                        widget.slider, widget.dropdown)
+                        widget.slider, widget.dropdown, widget.button,
+                        widget.value)
                 end
                 widget:Show()
             end
@@ -2060,6 +2328,9 @@ local function Signature()
             end
         end
     end
+    -- The follow key, which the Key Bindings panel can change behind our back:
+    -- nothing fires an event for it, so it has to be looked at.
+    parts[#parts + 1] = tostring(BoundKey())
     for _, cue in ipairs(C.CUES) do
         parts[#parts + 1] = tostring(Cues.Enabled(cue.key)) .. Cues.Describe(cue.key)
             .. tostring(ns.db and ns.db.cueVolume and ns.db.cueVolume[cue.key])

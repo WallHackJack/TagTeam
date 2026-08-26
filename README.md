@@ -58,9 +58,10 @@ Type `/tag` for all options.
   crosses your target, your mouseover, or your target's target. `/tag` lists who
   owns what.
 - **One keybind to target, follow and focus your partner.** It builds itself from
-  whoever you've set up, tries each of them in priority order, and falls back to
-  following your current target if nobody's configured. Bind it under
-  **Key Bindings → TagTeam** and it stays current as your roster changes.
+  your follow targets and your taggers, tries each of them in priority order,
+  and falls back to your focus or your target when none of them are in range.
+  Set it — and those fallbacks — under **General → Follow Binds**, and it stays
+  current as your roster changes.
 
 ## Why not just group up?
 
@@ -91,9 +92,10 @@ Either one offers the other the matching role over the addon's own hidden
 channel; the other client confirms with a popup. Once linked, XP reports flow and
 party invites happen silently without whispering anything visible.
 
-Then bind a key under **Key Bindings → TagTeam** to target, follow and focus your
-partner in one press. Focus matters: it's how TagTeam knows when you've drifted
-out of range, and it can't set focus for you — that action is protected.
+Then open `/tag ui`, go to **General → Follow Binds**, and set a key to target,
+follow and focus your partner in one press. Focus matters: it's how TagTeam knows
+when you've drifted out of range, and it can't set focus for you — that action is
+protected, so it only happens on the key.
 
 ## Logistics it handles for you
 

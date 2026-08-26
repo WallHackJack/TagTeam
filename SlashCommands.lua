@@ -58,64 +58,6 @@ local ToggleView                = ns.ToggleView
 local ShowPairPrompt            = ns.ShowPairPrompt
 
 local db            -- refreshed from ns.db on every dispatch
--- Kept deliberately though nothing calls it: /tag macro is gone and the macro
--- itself may want a window again. BuildFollowMacro still builds the text.
-local macroFrame    -- the copyable-macro window, built on first use
-
-local function ShowMacroWindow(text)
-    if not macroFrame then
-        local f = CreateFrame("Frame", "TagTeamMacroFrame", UIParent,
-            BackdropTemplateMixin and "BackdropTemplate" or nil)
-        f:SetSize(400, 260)
-        f:SetPoint("CENTER")
-        f:SetFrameStrata("DIALOG")
-        f:SetMovable(true)
-        f:EnableMouse(true)
-        f:RegisterForDrag("LeftButton")
-        f:SetScript("OnDragStart", f.StartMoving)
-        f:SetScript("OnDragStop", f.StopMovingOrSizing)
-
-        if f.SetBackdrop then
-            f:SetBackdrop({
-                bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
-                edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-                tile = true, tileSize = 32, edgeSize = 32,
-                insets = { left = 11, right = 12, top = 12, bottom = 11 },
-            })
-        end
-
-        local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        title:SetPoint("TOP", 0, -16)
-        title:SetText("TagTeam follow macro - Ctrl+C to copy")
-
-        local scroll = CreateFrame("ScrollFrame", "TagTeamMacroScroll", f,
-            "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -40)
-        scroll:SetPoint("BOTTOMRIGHT", -36, 44)
-
-        local edit = CreateFrame("EditBox", nil, scroll)
-        edit:SetMultiLine(true)
-        edit:SetFontObject(ChatFontNormal)
-        edit:SetWidth(320)
-        edit:SetAutoFocus(false)
-        edit:SetScript("OnEscapePressed", function() f:Hide() end)
-        scroll:SetScrollChild(edit)
-        f.edit = edit
-
-        local close = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-        close:SetSize(90, 22)
-        close:SetPoint("BOTTOM", 0, 16)
-        close:SetText("Close")
-        close:SetScript("OnClick", function() f:Hide() end)
-
-        macroFrame = f
-    end
-
-    macroFrame.edit:SetText(text)
-    macroFrame.edit:HighlightText()
-    macroFrame.edit:SetFocus()
-    macroFrame:Show()
-end
 
 local function Status()
     if InTaggerMode() then

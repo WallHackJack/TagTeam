@@ -123,6 +123,25 @@ the only ones, and three things about them are deliberate:
   bottom. `UI.ScrollSectionRows` has to be called before any row exists, for the
   same reason `ReserveSectionStrip` does.
 
+**A row can be a button instead of a setting.** `Button` on a row is a function
+returning the button's own caption, `Value` an optional one returning the
+current setting, and `OnClick` what pressing it does — caption, read-out,
+button, packed left to right. The read-out takes the `labelW` column and the
+button sits straight after it rather than out at the row's right edge, which
+put a caption on one side of the box and its button on the other. The read-out
+has no width of its own, so the button does shift when the value changes —
+acceptable only because it moves on the press that moved it, which is not true
+of a slider. Both fields are functions rather than strings because both are
+live: the keybind row's button
+says "Set Key" or "Rebind" depending on whether there is one, and its `Value`
+is the key. The two on the Follow Binds box are the only ones.
+
+`PrettyKey` is why that read-out is not just `GetBindingText`: called on a whole
+binding string that returns the panel's shorthand — "c+spacebar" for
+CTRL-SPACE — so the modifiers are peeled off the front and named, and only the
+base key goes through the game's `KEY_` table. Peeled off the **front**, not
+split on `-`, because the base key can itself be `-`.
+
 **A box can bring a picture as well as rows.** `Build` and `Refresh` on a group
 sit alongside `rows`, and the builder calls `UI.ReserveSectionStrip` to leave
 room above the first one. That reservation **must happen before any row exists**
@@ -730,6 +749,22 @@ same way — `Pets`.
 9. Events, then slash commands.
 
 ## Important invariants
+
+- **The saved data has two halves, and only one of them is account wide.**
+  `TagTeamDB` is a single account-wide SavedVariable, but the roster keys in
+  `PER_CHAR` — `taggers`, `taggerSeq`, `carries`, `carrySeq`, `carry`,
+  `carryKey`, `carryPet` — are swapped out of `db.chars[CharKey()]` at
+  ADDON_LOADED and written back at PLAYER_LOGOUT. Who you are levelling is a
+  fact about the character you are logged in as; the **follow targets** list
+  (`db.followTargets`, `db.followSeq`) is not, so it stays on `db` with the
+  settings and is shared by every character. `db.seen` is shared too — a
+  character's zone does not care which list found them. The swap is why nothing
+  else in the file needed changing: `db.carry` reads the same on fifty lines.
+  `db.charsMigrated` runs the one-time move of a pre-split roster onto whoever
+  logs in first, **clearing the account-level keys as it goes** so the next
+  character does not inherit a roster that was never theirs. Adding a key to
+  `PER_CHAR` is the whole of making something per-character; adding one that
+  another character should see means leaving it off that list.
 
 - Damage accumulates per mob GUID; the threshold is measured against
   `UnitHealthMax`, never against total observed damage — that survives partial

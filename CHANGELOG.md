@@ -8,6 +8,25 @@ and the About tab's patch notes panel is deliberately empty until it gets some.
 
 Notes for this release are still to be written.
 
+- **Added:** a **Follow Binds** box at the bottom of the General tab. The follow
+  key is set from there rather than by going to Key Bindings — press the button,
+  press a key — and the **Follow targets** list on the Players tab is now part of
+  what that key chases, ahead of the taggers, since it is the one list you type
+  out in order to be followed.
+
+  Three switches beside it: whether the key sets focus as well as following, and
+  two fallbacks for when nobody on the lists is in range — follow your focus, and
+  follow your target. Both are new; the key previously did nothing at all when
+  every name on it was away. **Generate Macro** puts the same text in a box for
+  copying onto a bar, though `/focus` only ever works from the keybind.
+
+- **Changed:** your **carries and taggers are now saved per character**, where
+  before one roster was shared by your whole account. Logging in on the carry to
+  find the carry listed as a tagger was the symptom. Your existing roster stays
+  with whichever character logs in first after updating; every other character
+  starts empty. **Follow targets stay account wide** — they are people you chase
+  whoever you are logged in as.
+
 - **Added:** a tagger who joins a party now tells the carry about it. Everyone in
   that party — and their pets — counts as a temporary co-tagger, so their damage
   pools toward the threshold the same way the tagger's does. Neither the names
