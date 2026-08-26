@@ -523,14 +523,12 @@ local function DressCueRow(box, index, cue)
     -- Box first, same as every other settings row in the window. The Popups tab
     -- lists overlapping things, and a control that changed sides between the
     -- two would have to be found twice.
-    row.check = UI.CreateCheckbox(row, nil, cue.label, cue.about, function()
+    UI.AddRowCheckbox(row, nil, cue.label, cue.about, function()
         -- Ticking one on plays it. The /tag test* commands are gone, and this
         -- is the moment somebody wants to hear what they just switched on.
         if Cues.Toggle(cue.key) then Cues.Play(cue.key) end
         ns.RefreshView()
     end)
-    row.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
-    row.check:SetPoint("LEFT", 4, 0)
 
     row.gear = UI.CreateGearButton(row, "Change the sound",
         "Pick a SOUNDKIT id or a file path, set this cue's own volume, or "
@@ -598,7 +596,7 @@ local function BuildSoundsPage(page)
     -- to be near each other; on rows they line up with the cue rows below, and
     -- the checkboxes are ROW_CHECK like every other checkbox on a row.
     local switchRow = UI.CreateSectionRow(master, 1)
-    sounds.master = UI.CreateCheckbox(switchRow, "Enable TagTeam Audio",
+    sounds.master = UI.AddRowCheckbox(switchRow, "Enable TagTeam Audio",
         "Enable TagTeam Audio",
         "Every cue below is silenced while this is off. The on-screen marks "
         .. "are unaffected. Same switch as |cffffff00/tag sound|r.",
@@ -610,8 +608,6 @@ local function BuildSoundsPage(page)
             Preview()
             ns.RefreshView()
         end)
-    sounds.master:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
-    sounds.master:SetPoint("LEFT", 4, 0)
 
     -- Caption then handle, on one line and left aligned, the caption starting
     -- where a row's label starts so the three rows share a left edge.
@@ -648,7 +644,7 @@ local function BuildSoundsPage(page)
     local followRow = UI.CreateSectionRow(master, 3)
     -- Label left empty here: RefreshSounds writes it, because it carries the
     -- game's current Sound Effects percentage.
-    sounds.followGame = UI.CreateCheckbox(followRow, "",
+    sounds.followGame = UI.AddRowCheckbox(followRow, "",
         "Follow the game's volume",
         "Multiply everything by your Sound Effects slider as well. Off, this "
         .. "addon plays at its own volume whatever the game is set to.",
@@ -657,8 +653,6 @@ local function BuildSoundsPage(page)
             Preview()
             ns.RefreshView()
         end)
-    sounds.followGame:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
-    sounds.followGame:SetPoint("LEFT", 4, 0)
 
     -- Three rows, and the box sizes itself to them the way every other section
     -- does. Fixed here rather than in RefreshSounds: this box's row count is
@@ -2009,10 +2003,8 @@ local function DressOptionRow(box, index, row, labelW)
         -- The box that turns it on is the first thing on the row, on both tabs
         -- and on a row with no buttons at all: a column of them down the left
         -- edge is what makes a list of settings scannable.
-        widget.check = UI.CreateCheckbox(widget, nil, row.label, row.about,
+        UI.AddRowCheckbox(widget, nil, row.label, row.about,
             function() SetOption(row, not OptionValue(row)) end)
-        widget.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
-        widget.check:SetPoint("LEFT", 4, 0)
 
         -- Right to left: Test is the outermost thing on the row and the sound
         -- settings sit inside it. Test is the one you reach for repeatedly
@@ -2077,13 +2069,6 @@ local function DressOptionRow(box, index, row, labelW)
             widget.label:SetPoint("RIGHT", anchor, "LEFT", -6, 0)
         end
         widget.label:SetText(row.label)
-        -- The label is part of the click target: a checkbox you have to hit
-        -- exactly is a checkbox people miss. Guarded on the box being live,
-        -- because a greyed row must not stay clickable through its label.
-        widget:EnableMouse(true)
-        widget:SetScript("OnMouseUp", function()
-            if widget.check:IsEnabled() then widget.check:Click() end
-        end)
     end
 
     return widget

@@ -534,6 +534,27 @@ function UI.CreateCheckbox(parent, labelText, tooltipTitle, tooltipText, OnClick
     return cb
 end
 
+-- The checkbox at the left edge of a section row, and the row behind it as a
+-- click target: a checkbox you have to hit exactly is a checkbox people miss,
+-- so the label, the icon and the empty space to the right of them all toggle
+-- it. Guarded on the box being live, because a row greyed out by a master
+-- switch must not stay clickable through its stripe.
+--
+-- Stored as row.check, which is where every refresh looks for it.
+function UI.AddRowCheckbox(row, labelText, tooltipTitle, tooltipText, OnClick)
+    local cb = UI.CreateCheckbox(row, labelText, tooltipTitle, tooltipText,
+        OnClick)
+    cb:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
+    cb:SetPoint("LEFT", 4, 0)
+    row.check = cb
+
+    row:EnableMouse(true)
+    row:SetScript("OnMouseUp", function()
+        if cb:IsEnabled() then cb:Click() end
+    end)
+    return cb
+end
+
 -- Enable or grey out a run of widgets in one call, for a master switch that
 -- turns off everything under it.
 --
