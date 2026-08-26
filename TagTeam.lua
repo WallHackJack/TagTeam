@@ -5468,7 +5468,7 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         UpdateMacroButton()
 
         local names = TaggerNames()
-        Print(format("loaded. Taggers: %s. Type |cffffff00/tag|r for options.",
+        Print(format("loaded. Taggers: %s. Type |cffffff00/tag|r to open it.",
             #names > 0 and ("|cff00ff00" .. table.concat(names, ", ") .. "|r")
                 or "|cffff8080none|r"))
     end

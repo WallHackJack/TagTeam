@@ -102,9 +102,15 @@ end
 -- and the three handlers that serve more than one name need to know which.
 local commands = {}
 
+-- The bare word opens the window; the menu below is what every OTHER input
+-- lands on, typo or not.
 commands[""] = function(rest, cmd)
+    ToggleView()
+end
+
+local function Menu()
     Status()
-    Print("|cffffff00/tag ui|r - everything below, and every setting that no longer has a command")
+    Print("|cffffff00/tag|r - Opens the addon")
     Print("|cffffff00/tag add <name>|r  |cffffff00/tag remove <name>|r  |cffffff00/tag reset|r")
     Print("|cffffff00/tag carry <name>|r - run on a TAGGER's client: you and your party become the taggers")
     Print("|cffffff00/tag link|r - pair with the other client over the addon channel")
@@ -112,10 +118,9 @@ commands[""] = function(rest, cmd)
     Print("|cffffff00/tag stats|r  |cffffff00/tag diag|r")
     Print("|cffffff00/tag inv|r - ask your tagger (or your carry) to invite you now")
 end
-commands["status"] = commands[""]
+commands["status"] = Menu
+commands["help"] = Menu
 
--- Deliberately absent from the help text above while the window is still empty:
--- pointing people at it would only be an invitation to be disappointed.
 commands["ui"] = function(rest, cmd)
     ToggleView()
 end
@@ -407,7 +412,7 @@ local function HandleSlash(input)
     -- Deliberately does NOT fall through to "add": a typo'd subcommand used to
     -- silently create a tagger named after the typo.
     Print(format("|cffff8080Unknown command:|r %s", input))
-    Print("Use |cffffff00/tag add <name>|r to add a tagger, or |cffffff00/tag|r for the full list.")
+    Menu()
 end
 
 SLASH_TAGTEAM1 = "/tag"
