@@ -1038,9 +1038,9 @@ end
 --------------------------------------------------------------------------------
 -- Prompts
 --
--- One reusable modal per addon: a name field, an optional dropdown, Accept and
--- Cancel. Reconfigured per Ask rather than rebuilt, so the same window serves
--- every "add a thing" control and they all behave identically.
+-- One reusable modal per addon: a title bar, a name field, an optional dropdown
+-- and Accept. Reconfigured per Ask rather than rebuilt, so the same window
+-- serves every "add a thing" control and they all behave identically.
 --
 -- Not a StaticPopup. StaticPopupDialogs cannot carry a dropdown without
 -- anchoring one to a frame it does not own, and its stack is Blizzard's - the
@@ -1049,19 +1049,31 @@ end
 
 local PROMPT_W        = 300   -- default; opts.width widens one that needs it
 local PROMPT_PAD      = UI.BOX_PAD + 6
-local PROMPT_BASE_H   = 112   -- heading + edit box + buttons
+local PROMPT_BASE_H   = 128   -- title bar + edit box + buttons, with room
 local PROMPT_ROW_H    = 40    -- added when the dropdown is in play
 local PROMPT_SLIDER_H = 50    -- added when the slider is in play: caption over
                               -- handle, so two lines rather than one
 local PROMPT_TOGGLE_H = 26    -- and when the checkbox is
 local PROMPT_CHECK_MS = 0.4   -- typing settles this long before Validate runs
-local PROMPT_BTN_W    = 84    -- all three of them, so the pair on the right lines up
+local PROMPT_BTN_W    = 84    -- both of them, so the pair on the right lines up
 local PROMPT_FIELD_H  = 22    -- added when the field carries a caption line
 local PROMPT_EDIT_H   = 30    -- the edit box row itself
-local PROMPT_HEADING_H = 22   -- the heading line, at GameFontNormalLarge
+-- How far a caption sits above the control it names. Shorter than
+-- PROMPT_FIELD_H, which is what the caption COSTS the frame: the line itself is
+-- about 14px tall, so stepping the layout by the full 22 left a caption
+-- floating clear of its own box. The frame still grows by PROMPT_FIELD_H - the
+-- difference lands as breathing room at the bottom rather than as a gap between
+-- a label and the thing it labels.
+local PROMPT_CAP_H    = 16
+-- The same trick the other way round: how far the layout steps PAST the toggle,
+-- which is more than the toggle COSTS the frame. The switch governs everything
+-- under it rather than belonging to it, so it wants clear air beneath it - and
+-- the gap comes out of the slack at the bottom rather than making the frame
+-- taller again.
+local PROMPT_TOGGLE_STEP = PROMPT_TOGGLE_H + 10
 
 -- opts:
---   title    the heading, in the prompt itself - there is no title bar
+--   title    the title bar's text; no version stamp, unlike a window's
 --   width    frame width; defaults to PROMPT_W
 --   hint     greyed text inside the empty edit box, e.g. "Character name"
 --   text     value the edit box opens with (may be nil)
@@ -1071,6 +1083,9 @@ local PROMPT_HEADING_H = 22   -- the heading line, at GameFontNormalLarge
 --            Laid out inline - caption, then the handle - and left aligned, so
 --            it reads as one row rather than a full-width band. Live: OnChange
 --            fires as it moves, because the point of a volume is hearing it.
+--   toggle   { label, checked, OnClick } or nil. A centred checkbox above the
+--            field, applied on click rather than on accept. It GOVERNS what is
+--            below it: unticked, the field and the slider grey out.
 --   reset    function; adds a Reset button. Closes the prompt.
 --   accept   accept button label, default "Add"
 --   allowEmpty  accept an empty box; for a prompt where blank means "reset"
@@ -1079,20 +1094,14 @@ local PROMPT_HEADING_H = 22   -- the heading line, at GameFontNormalLarge
 --            a validator with no opinion must not disable anything.
 --   OnAccept function(text, choiceValue) - not called with an empty name
 function UI.CreatePrompt(globalName)
-    -- Bare: a pop-up, not a window. The buttons already dismiss it, and a title
-    -- bar on something this small is a third of its height spent saying again
-    -- what the heading says.
-    local p = UI.CreateWindow(globalName, PROMPT_W, PROMPT_BASE_H, "", true)
+    -- A window like the addon's others, title bar and all. It used to be bare,
+    -- with the name of the thing being edited as a heading INSIDE the frame -
+    -- which is a title bar drawn by hand, one that matches nothing else here
+    -- and costs the same height anyway. The bar carries that text now, and its
+    -- close button is the way out, so the Cancel button went with it.
+    local p = UI.CreateWindow(globalName, PROMPT_W, PROMPT_BASE_H, "")
     -- Above DIALOG so it lands on top of the window that opened it.
     p:SetFrameStrata("FULLSCREEN_DIALOG")
-
-    -- Centred and a size up: it is the only thing on the pop-up that says WHAT
-    -- you are editing, and left-aligned at body size it read as another label.
-    local heading = p:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    heading:SetPoint("TOPLEFT", PROMPT_PAD, -(UI.INSET + 10))
-    heading:SetPoint("TOPRIGHT", -PROMPT_PAD, -(UI.INSET + 10))
-    heading:SetJustifyH("CENTER")
-    p.heading = heading
 
     -- A caption in front of the box, for a prompt whose field needs naming.
     -- Hidden when there is nothing to say, and then the box takes the full
@@ -1156,19 +1165,9 @@ function UI.CreatePrompt(globalName)
     p.toggle = UI.CreateCheckbox(p, "", "", "", nil)
     p.toggle:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
 
-    -- Cancel alone on the left; Reset and the accept button paired on the
-    -- right, all three the same width.
-    --
-    -- Reset next to accept rather than marooned in the middle because it is one
-    -- of the two things you can do to the thing you are editing - Cancel is the
-    -- way out, and the way out belongs at the far end on its own.
-    local cancel = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
-    cancel:SetSize(PROMPT_BTN_W, 22)
-    cancel:SetPoint("BOTTOMLEFT", PROMPT_PAD, UI.INSET + 8)
-    cancel:SetText(CANCEL)
-    cancel:SetScript("OnClick", function() p:Hide() end)
-    p.cancel = cancel
-
+    -- Reset and the accept button, paired at the right and both the same width.
+    -- There is no Cancel: the close button on the title bar is the way out, and
+    -- Escape still closes this frame like every other window in the addon.
     local accept = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
     accept:SetSize(PROMPT_BTN_W, 22)
     accept:SetPoint("BOTTOMRIGHT", -PROMPT_PAD, UI.INSET + 8)
@@ -1228,9 +1227,29 @@ function UI.CreatePrompt(globalName)
     -- outlive the prompt and hang in mid-air.
     p:SetScript("OnHide", function() CloseDropDownMenus() end)
 
+    -- The toggle governs the controls under it, so an unticked one greys them.
+    -- Turning a cue off and then still being invited to type a sound path for
+    -- it, or drag a volume nothing will play at, is an invitation to a setting
+    -- that does nothing - the switch says so, and now the controls agree.
+    --
+    -- A prompt with no toggle has nothing governing it and stays live.
+    function p:GateOnToggle()
+        local on = (not self.toggle:IsShown()) or self.toggle:GetChecked()
+        UI.SetEnabled(on and true or false,
+            self.edit, self.editLabel, self.slider, self.sliderLabel)
+        -- An EditBox keeps the caret and the keyboard when it is disabled, so
+        -- letting go has to be spelled out - otherwise a greyed box still eats
+        -- what you type.
+        if not on then self.edit:ClearFocus() end
+    end
+
     function p:Ask(opts)
         self:SetWidth(opts.width or PROMPT_W)
-        self.heading:SetText(opts.title or "")
+        -- Straight onto the title bar's font string rather than through
+        -- SetTitle: that one stamps the addon version after the text, which
+        -- belongs on a window that IS the addon, not on a pop-up naming the one
+        -- thing it is editing.
+        self.titleText:SetText(opts.title or "")
         self.hint:SetText(opts.hint or "")
         self.OnAccept = opts.OnAccept
         self.Validate = opts.Validate
@@ -1258,15 +1277,28 @@ function UI.CreatePrompt(globalName)
         -- sitting at the left edge rather than on the frame. Anchoring every
         -- row to the frame keeps the two things independent: `y` decides how
         -- far down, the frame decides where across.
-        local y = -(UI.INSET + 10 + PROMPT_HEADING_H)
+        local y = -(UI.INSET + UI.TITLEBAR_H + 10)
 
         -- The toggle goes ABOVE the field: it decides whether the thing below
         -- it matters at all, and a switch found under the setting it governs is
         -- a switch found second.
+        --
+        -- CENTRED, like the captions under it, which takes arithmetic a
+        -- checkbox cannot do for itself: the label is a separate region hanging
+        -- off the box's right edge, so the pair is only centred when the box
+        -- itself sits half the label's width left of centre. GetStringWidth
+        -- needs the text set first, hence the SetText here rather than with the
+        -- rest of the toggle's state further down.
         if opts.toggle then
+            if self.toggle.label then
+                self.toggle.label:SetText(opts.toggle.label or "")
+            end
+            local labelWidth = self.toggle.label
+                and self.toggle.label:GetStringWidth() or 0
             self.toggle:ClearAllPoints()
-            self.toggle:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 2, y)
-            y = y - PROMPT_TOGGLE_H
+            self.toggle:SetPoint("TOP", self, "TOP",
+                -(labelWidth + 4) / 2, y)
+            y = y - PROMPT_TOGGLE_STEP
         end
 
         -- A labelled field is a CAPTION OVER A BOX, both centred; an unlabelled
@@ -1283,12 +1315,12 @@ function UI.CreatePrompt(globalName)
             self.editLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y)
             self.editLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
             self.editLabel:Show()
-            y = y - PROMPT_FIELD_H
+            y = y - PROMPT_CAP_H
         else
             self.editLabel:Hide()
         end
-        self.edit:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y - 4)
-        self.edit:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 4)
+        self.edit:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y)
+        self.edit:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
         y = y - PROMPT_EDIT_H
 
         self.choices = opts.choices
@@ -1341,7 +1373,7 @@ function UI.CreatePrompt(globalName)
             self.sliderLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y - 10)
             self.sliderLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 10)
             self.slider:ClearAllPoints()
-            self.slider:SetPoint("TOP", self, "TOP", 0, y - 10 - PROMPT_FIELD_H)
+            self.slider:SetPoint("TOP", self, "TOP", 0, y - 10 - PROMPT_CAP_H)
 
             self.slider:SetMinMaxValues(opts.slider.min or 0, opts.slider.max or 100)
             self.slider:SetValueStep(opts.slider.step or 5)
@@ -1375,17 +1407,17 @@ function UI.CreatePrompt(globalName)
         -- handler are set here.
         if opts.toggle then
             self.toggle:SetChecked(opts.toggle.checked and true or false)
-            if self.toggle.label then
-                self.toggle.label:SetText(opts.toggle.label or "")
-            end
+            -- The label was set during layout, where its width was needed to
+            -- centre the pair.
+            --
             -- Applied as it is clicked rather than on Accept: it is a switch,
-            -- not part of the answer being typed, and Cancel on a box you have
+            -- not part of the answer being typed, and closing on a box you have
             -- already watched take effect would be a strange thing to want -
             -- the same reasoning the volume slider above it uses.
             self.toggle:SetScript("OnClick", function(box)
-                if opts.toggle.OnClick then
-                    opts.toggle.OnClick(box:GetChecked() and true or false)
-                end
+                local on = box:GetChecked() and true or false
+                if opts.toggle.OnClick then opts.toggle.OnClick(on) end
+                p:GateOnToggle()
             end)
             self.toggle:Show()
             self:SetHeight(self:GetHeight() + PROMPT_TOGGLE_H)
@@ -1394,8 +1426,11 @@ function UI.CreatePrompt(globalName)
         end
 
         self.edit:SetText(opts.text or "")
+        -- After SetText: the gate greys the box, and greying it takes its focus
+        -- away, which SetText on its own would not.
+        self:GateOnToggle()
         self:Show()
-        self.edit:SetFocus()
+        if self.edit:IsEnabled() then self.edit:SetFocus() end
         -- Taking focus selects whatever is in the box, and a name handed to the
         -- prompt is a starting point rather than something to type over - a
         -- selected one is gone on the first keystroke. Cleared explicitly
