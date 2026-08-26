@@ -54,9 +54,9 @@ local state = {}   -- per-pull scratch, all cleared by Forget/ResetAll
 --                  climbs orange to green.
 --
 -- Both are clamped to TARGET_MIN..TARGET_MAX, which is the range where the XP
--- curve actually bends - see XP_CURVE below. Outside it there is nothing to
--- tune: under the floor every kill is a write-off and over the ceiling the mob
--- pays in full whatever you do.
+-- curve actually bends - see XP_SHARE_POWER below. Outside it there is nothing
+-- to tune: under the floor every kill is a write-off and over the ceiling the
+-- mob pays in full whatever you do.
 --
 -- The ideal is SYNCHRONISED with the other client (see PushThreshold); the
 -- minimum is not, because nothing on the wire is measured against it.
@@ -80,21 +80,32 @@ C.XP_BASE_OUTLAND = 235
 -- clamping would have moved it anyway.
 C.LEGACY_THRESHOLDS = { [36] = true, [38] = true }
 
--- XP paid against damage share, measured on live kills rather than derived.
--- Ascending by share; at and above the last sample the mob pays in full.
+-- XP paid against damage share.
 --
--- Sampled rather than fitted to a line, because the curve steepens towards the
--- top and the top is the only part anyone is choosing between: a straight line
--- through these points is wrong by several points exactly where the threshold
--- actually gets set.
-C.XP_CURVE = {
-    { 31.4, 0.48 }, { 33.9, 0.61 }, { 36.2, 0.74 }, { 37.2, 0.80 },
-    { 38.2, 0.87 }, { 38.7, 0.91 }, { 39.8, 0.98 }, { 40.0, 1.00 },
-}
+-- The samples that used to live here as a lookup table turned out to be one
+-- clean curve: the fraction paid is the share over FULL_XP_SHARE, CUBED. Every
+-- measurement lands on it to the rounding of the number that was read off the
+-- screen, so the table has been replaced by the thing the table was an
+-- approximation of.
+--
+--   share  measured  (share/40)^3
+--   31.4     0.48       0.484
+--   33.9     0.61       0.609
+--   36.2     0.74       0.741
+--   37.2     0.80       0.804
+--   38.2     0.87       0.871
+--   38.7     0.91       0.906
+--   39.8     0.98       0.985
+--   40.0     1.00       1.000
+--
+-- Being a formula rather than eight points also means it stays right BELOW the
+-- sampled range, where the old table had to extend its first segment's slope
+-- and guessed low.
+C.XP_SHARE_POWER = 3
 
--- Where full XP starts, read off the curve rather than written down twice: add a
--- sample past 40 and the advice moves with it.
-C.FULL_XP_SHARE = C.XP_CURVE[#C.XP_CURVE][1]
+-- Where full XP starts. Above it the cube would keep climbing past 1, so it is
+-- also the cap.
+C.FULL_XP_SHARE = 40
 
 -- The bottom of what the threshold slider suggests. Not a limit - anything is
 -- allowed - but below this a kill pays under three quarters, and the point of a
@@ -1202,23 +1213,17 @@ end
 -- number. Both read from here.
 --------------------------------------------------------------------------------
 
--- What a share should pay, interpolated across the measured curve. Full XP at
--- and above the top sample; below the bottom one the first segment's slope
--- carries on, which is a guess, but a better one than a cliff.
+-- What a share should pay: the share as a fraction of FULL_XP_SHARE, cubed,
+-- and capped at full. See C.XP_SHARE_POWER for the measurements it came off.
 --
--- An ESTIMATE, and every caller says so out loud: the samples came off real
--- kills, which drag rested, level gaps and rounding along with them.
+-- Still an ESTIMATE, and every caller says so out loud - the kills the curve
+-- was read from drag rested, level gaps and rounding along with them - but it
+-- is now one expression rather than a lookup, so it is exact between samples
+-- and does not fall apart below the lowest one.
 local function ExpectedXP(pct)
-    local c = C.XP_CURVE
-    if pct >= c[#c][1] then return 1 end
-
-    local lo, hi
-    for i = 2, #c do
-        if pct <= c[i][1] then lo, hi = c[i - 1], c[i]; break end
-    end
-
-    local v = lo[2] + (pct - lo[1]) / (hi[1] - lo[1]) * (hi[2] - lo[2])
-    return v < 0 and 0 or v
+    if pct >= C.FULL_XP_SHARE then return 1 end
+    if pct <= 0 then return 0 end
+    return (pct / C.FULL_XP_SHARE) ^ C.XP_SHARE_POWER
 end
 
 -- Which of the three bands a share landed in. One function, so the badge, the

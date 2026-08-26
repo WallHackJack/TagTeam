@@ -60,6 +60,29 @@ UI.SCROLL_TRACK_BACKDROP = {
     insets = { left = 3, right = 3, top = 3, bottom = 3 },
 }
 
+-- The trough of a horizontal slider, and the height that art is cut for.
+--
+-- Same two files the scroll track uses, but the insets are NOT the same, and
+-- that difference is the whole point. UI-SliderBar-Border is an 8px edge file:
+-- a corner piece is 8px tall, so at 8 + 8 = 16 the top and bottom corners of an
+-- end cap meet and the cap reads as one rounded shape. Go taller and the
+-- backdrop fills the difference by stretching the left and right edge segments
+-- between them, and since those segments are cap art rather than a repeating
+-- rail, what you get is four disjointed corners with nothing joining them. That
+-- is the whole bug: the height, not the insets.
+--
+-- 15 rather than 16, so the two corners overlap by a pixel instead of merely
+-- touching. Not a number worth deriving - it is what AceGUI-3.0's slider widget
+-- and DBM-GUI's panel prototype both use, which between them is most of the
+-- sliders anybody running this game has ever looked at.
+UI.SLIDER_H = 15
+UI.SLIDER_BACKDROP = {
+    bgFile   = "Interface\\Buttons\\UI-SliderBar-Background",
+    edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = { left = 3, right = 3, top = 6, bottom = 6 },
+}
+
 -- BackdropTemplate is the Shadowlands-era split of backdrop support out of the
 -- base frame. Both clients have it, but resolve it rather than assume it -
 -- CreateFrame takes a nil template happily.
@@ -531,25 +554,44 @@ function UI.SetEnabled(enabled, ...)
     end
 end
 
--- A slider with its caption above it. OptionsSliderTemplate finds its own Low,
--- High and Text regions by appending to the frame's name, so this one needs a
--- global name whether or not anything else looks it up.
+-- A horizontal slider, dressed by hand rather than taken from
+-- OptionsSliderTemplate.
 --
--- The Low/High captions are blanked: they would read "0" and "100" under every
--- slider in the addon, and the caption above already says what the number is.
+-- The template was the source of the mismatched end caps. It ships a frame
+-- height that does not suit the border art (see UI.SLIDER_H), it carries Low,
+-- High and Text regions we blank on every single slider anyway, and the numbers
+-- behind all of that differ by client - which is a lot of art we do not control
+-- in exchange for three font strings we do not want.
+--
+-- What is here instead is what AceGUI-3.0 and DBM-GUI both do, to the pixel: a
+-- bare Slider on BackdropTemplate, explicitly horizontal, 15 tall, with the
+-- SliderBar backdrop and the SliderBar thumb. Those two are the reference
+-- implementation by sheer weight of use, and a slider that matches them is a
+-- slider that looks like every other addon's.
+--
+-- `globalName` is no longer needed for region lookups, but it stays: it is what
+-- makes a control findable from a /script line while debugging, and callers
+-- already pass one.
 function UI.CreateSlider(parent, globalName, minValue, maxValue, step, OnChange)
-    local s = CreateFrame("Slider", globalName, parent, "OptionsSliderTemplate")
+    local s = CreateFrame("Slider", globalName, parent, UI.TEMPLATE)
     s:SetFrameLevel(parent:GetFrameLevel() + 1)
+    s:SetOrientation("HORIZONTAL")
     s:SetWidth(180)
+    s:SetHeight(UI.SLIDER_H)
+    -- The trough is a backdrop and the handle is a thumb texture, both left at
+    -- the art's own size. Guarded only because SetBackdrop lives on the
+    -- template, and UI.TEMPLATE resolves to nil on a client without it.
+    if s.SetBackdrop then s:SetBackdrop(UI.SLIDER_BACKDROP) end
+    s:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    -- 15px of grabbable height is a thin target for something people drag.
+    -- Widened a little top and bottom, but nowhere near AceGUI's -10: its
+    -- sliders have empty space under them and ours have the next setting.
+    s:SetHitRectInsets(0, 0, -4, -4)
     s:SetMinMaxValues(minValue, maxValue)
     s:SetValueStep(step)
     -- Retail-era addition, present on both clients, guarded like every other
     -- optional member. Without it a drag reports every fractional position.
     if s.SetObeyStepOnDrag then s:SetObeyStepOnDrag(true) end
-
-    if _G[globalName .. "Low"]  then _G[globalName .. "Low"]:SetText("") end
-    if _G[globalName .. "High"] then _G[globalName .. "High"]:SetText("") end
-    s.title = _G[globalName .. "Text"]
 
     s:SetScript("OnValueChanged", function(self, value)
         -- SetValue fires this too. Without the guard, a refresh that pushes the
@@ -945,7 +987,6 @@ function UI.CreatePrompt(globalName)
     -- The template's own caption sits above the handle and would fight the
     -- inline one, so it is emptied rather than hidden - hiding a region the
     -- template also touches invites it coming back.
-    if slider.title then slider.title:SetText("") end
     p.slider = slider
 
     -- A switch on the pop-up itself, for the setting somebody came here to

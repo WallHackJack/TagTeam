@@ -802,16 +802,20 @@ end
 
 -- What a damage target is worth in XP, beside the slider that sets it.
 --
--- Off C.XP_CURVE through the core's own ExpectedXP, which is the curve measured
--- from real kills - so this is the actual answer rather than a placeholder. It
+-- Through the core's own ExpectedXP - the share-cubed curve the measured kills
+-- landed on - so this is the actual answer rather than a placeholder. It
 -- is what makes the pair of sliders legible: XP climbs with the share instead
 -- of switching on at a line, and 31 against 40 means nothing until you can see
 -- what each one pays.
 --
--- Tilde because it IS an estimate, and the XP purple because that is what this
--- addon has always coloured xp.
+-- No tilde in front of it. It used to carry one to say "estimate", but Friz
+-- Quadrata draws a tilde high and thin and it read as a smudge above the digits
+-- rather than as a word. The tooltip and the chat line both say estimate in
+-- actual words, which is where that belongs.
+--
+-- XP purple because that is what this addon has always coloured xp.
 local function TargetXPNote(value)
-    return format("|c%s~%d%% XP|r", C.HEX_XP,
+    return format("|c%s%d%% XP|r", C.HEX_XP,
         floor((ns.ExpectedXP(value) or 0) * 100 + 0.5))
 end
 
@@ -1193,6 +1197,15 @@ local OPTION_PAGES = {
         {
             title = "Tracking",
             Reset = function() ns.ResetTrackingOptions() end,
+            -- Both handles start in one column instead of each one starting
+            -- where its own caption happened to end. Two sliders one above the
+            -- other with their handles at different x read as two unrelated
+            -- controls, and dragging either would slide the other's handle
+            -- sideways as the caption's digits changed width. Comfortably wider
+            -- than the longest caption at its longest value: a handle butted up
+            -- against the "%" reads as part of the number rather than as the
+            -- control that sets it.
+            labelW = 202,
             rows = {
                 -- Both targets share one range, and it is the range the XP
                 -- curve actually bends over. Outside it there is nothing to
@@ -1625,6 +1638,8 @@ local CONTROL_GAP   = 12   -- label to the control beside it
 -- nobody asked for. Backed out below, so the spacing written down is the
 -- spacing you see. StyleDropdown trims the housing's height, not this.
 local DROPDOWN_LEAD = 15
+local NOTE_GAP      = 12   -- slider handle to the value note beside it
+local NOTE_W        = 62   -- and the note's own column, wide enough for "~100% XP"
 local TEST_BTN_W    = 44   -- the "Test!" button on a notice row
 local AUDIO_BTN_SIZE = 22  -- the bare speaker beside it, deliberately larger
 
@@ -1666,14 +1681,29 @@ local function DressOptionRow(box, index, row, labelW)
             function(_, value) SetOption(row, value) end)
         widget.slider:SetWidth(150)
         AnchorControl(widget, widget.slider, labelW, 0)
-        if widget.slider.title then widget.slider.title:SetText("") end
 
         -- What the handle's position is worth, to the right of it. Reads as a
         -- consequence of the slider rather than a second setting, which is why
         -- it sits after the handle and not in the caption.
+        --
+        -- Fixed width, right justified: these are numbers stacked over each
+        -- other, and a column of numbers lines up on its last digit or it does
+        -- not line up at all. "47% XP" and "100% XP" are different lengths, so
+        -- left aligning them would stagger the "% XP" down the column.
         if row.Note then
             widget.note = widget:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            widget.note:SetPoint("LEFT", widget.slider, "RIGHT", 12, 0)
+            widget.note:SetPoint("LEFT", widget.slider, "RIGHT", NOTE_GAP, 0)
+            widget.note:SetWidth(NOTE_W)
+            widget.note:SetJustifyH("RIGHT")
+            -- Outlined. The note is the only coloured text on the page and the
+            -- XP purple is a mid tone, which on the row's grey has too little
+            -- contrast to read at a glance - the outline gives every stroke a
+            -- dark edge to sit against without lightening the colour itself.
+            -- The default shadow is dropped: under an outline it only muddies
+            -- the bottom of the glyphs.
+            local font, size = widget.note:GetFont()
+            widget.note:SetFont(font, size, "OUTLINE")
+            widget.note:SetShadowOffset(0, 0)
         end
         -- Parenthesised: gsub returns a count as well, and that second value
         -- would arrive as the tooltip body.
