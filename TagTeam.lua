@@ -569,6 +569,14 @@ end
 --                         so is everyone in our party - their damage pools with
 --                         ours against the threshold.
 --
+-- The mode is a SETTING - db.mode, per character, picked on the Players tab.
+-- It used to be inferred (`db.carryKey ~= nil`), which is why every switch had
+-- to WIPE the other list to stay unambiguous, and why every switch needed a
+-- confirm popup in front of it: the thing it was about to throw away was
+-- somebody's configuration. Both lists are now kept forever. The mode decides
+-- which one is LIVE; the other is inert data on disk, invisible to tracking,
+-- comms, markers, pets and party logistics alike.
+--
 -- Tagger mode is tracking only. The party automation (invites, auto-leave, the
 -- grouped-in-combat warning, markers, focus) is all carry-side and stays off,
 -- because in tagger mode being grouped with other taggers is the correct state,
@@ -586,14 +594,35 @@ local dynamicTaggers = {}   -- tagger mode: [key] = { name, level }, self + part
 -- when the call runs, not when the file loads.
 --
 -- What it holds is only ever a REMEMBERED list. db.carries does not make you a
--- carry of several people and does not touch mode exclusivity: exactly one
--- entry is active at a time, the one db.carryKey names, and every transition
--- still goes through the confirm popup. The rest are names you have boosted
--- with before, kept so picking one up again is a click.
+-- carry of several people: exactly one entry is active at a time, the one
+-- db.carryKey names, and that one is the carry tagger mode reads. The rest are
+-- names you have boosted with before, kept so picking one up again is a click.
 local Roster = {}
 
 local function InTaggerMode()
-    return db and db.carryKey ~= nil
+    return db ~= nil and db.mode == "tagger"
+end
+
+-- The two gates the mode is made of, and the reason the rest of the file barely
+-- mentions it. Every READ that drives tracking, comms, markers, pets or party
+-- logistics goes through one of these; every WRITE goes straight at db, because
+-- editing the list you are not currently using is exactly what keeping both is
+-- for.
+--
+-- Anything still reaching past these at db.taggers or db.carryKey directly is
+-- claiming the mode does not apply to it. Three do, and all three are honest:
+-- AddTagger and its neighbours are writes, ReassignMarkers keeps the markers a
+-- carry gets back when they switch, and Roster.Knows answers "have we written
+-- this name down" - which is about not reporting our zone to a stranger, and a
+-- name on the inert list is not a stranger.
+local function SavedTaggers()
+    if not db or db.mode == "tagger" then return nil end
+    return db.taggers
+end
+
+local function ActiveCarryKey()
+    if not db or db.mode ~= "tagger" then return nil end
+    return db.carryKey
 end
 
 -- Rebuilt on roster changes rather than scanned per damage event: this is read
@@ -653,14 +682,16 @@ state.coTaggers = {}   -- [key] = { name, owner = <tagger key>, pet, petKey }
 state.coGroup   = {}   -- [tagger key] = { n = heads sharing the xp, raw = payload }
 
 local function HasTaggers()
-    if db and db.taggers and next(db.taggers) ~= nil then return true end
+    local saved = SavedTaggers()
+    if saved and next(saved) ~= nil then return true end
     return next(dynamicTaggers) ~= nil
 end
 
 local function TaggerKeyOf(name)
     local key = NormalizeName(name)
     if not key then return nil end
-    if db and db.taggers and db.taggers[key] then return key end
+    local saved = SavedTaggers()
+    if saved and saved[key] then return key end
     if dynamicTaggers[key] then return key end
     -- Last, so a real tagger who is also standing in another tagger's party is
     -- still answered as themselves rather than as somebody's guest.
@@ -718,8 +749,9 @@ function Pets.TaggerKey(guid, name)
     local petKey = NormalizeName(name)
     if not petKey then return nil end
 
-    if db and db.taggers then
-        for key, info in pairs(db.taggers) do
+    local saved = SavedTaggers()
+    if saved then
+        for key, info in pairs(saved) do
             if info.petKey == petKey then return key end
         end
     end
@@ -747,11 +779,12 @@ function Pets.Learn(ownerName, petName)
     local petKey = NormalizeName(petName)
 
     local who
-    if key == db.carryKey then
+    if key == ActiveCarryKey() then
         if petKey == db.carryPetKey then return end
         db.carryPet, db.carryPetKey, who = petName, petKey, db.carry
     else
-        local info = db.taggers and db.taggers[key]
+        local saved = SavedTaggers()
+        local info = saved and saved[key]
         if not info or petKey == info.petKey then return end
         info.pet, info.petKey, who = petName, petKey, info.name
     end
@@ -847,20 +880,23 @@ local function IsPartner(name)
     if not db then return false end
     local key = NormalizeName(name)
     if not key then return false end
-    if db.carryKey == key then return true end
-    return (db.taggers and db.taggers[key] ~= nil) or false
+    if ActiveCarryKey() == key then return true end
+    local saved = SavedTaggers()
+    return (saved and saved[key] ~= nil) or false
 end
 
 local function TaggerInfo(key)
-    if db and db.taggers and db.taggers[key] then return db.taggers[key] end
+    local saved = SavedTaggers()
+    if saved and saved[key] then return saved[key] end
     return dynamicTaggers[key]
 end
 
 -- Sorted display names, so listings don't shuffle between calls.
 local function TaggerNames()
     local names, seen = {}, {}
-    if db and db.taggers then
-        for key, info in pairs(db.taggers) do
+    local saved = SavedTaggers()
+    if saved then
+        for key, info in pairs(saved) do
             names[#names + 1] = info.name
             seen[key] = true
         end
@@ -896,8 +932,9 @@ end
 
 -- The tagger holding the first slot. Focus follows the triangle.
 local function PrimaryTaggerKey()
-    if not db or not db.taggers then return nil end
-    for key, info in pairs(db.taggers) do
+    local saved = SavedTaggers()
+    if not saved then return nil end
+    for key, info in pairs(saved) do
         if info.marker == C.TAGGER_MARKERS[1] then return key end
     end
     return nil
@@ -906,13 +943,14 @@ end
 -- Marker order, not alphabetical: triangle, diamond, orange, then anyone unmarked.
 local function TaggersByPriority()
     local list = {}
-    if not db or not db.taggers then return list end
+    local saved = SavedTaggers()
+    if not saved then return list end
     for i = 1, #C.TAGGER_MARKERS do
-        for _, info in pairs(db.taggers) do
+        for _, info in pairs(saved) do
             if info.marker == C.TAGGER_MARKERS[i] then list[#list + 1] = info end
         end
     end
-    for _, info in pairs(db.taggers) do
+    for _, info in pairs(saved) do
         if not info.marker then list[#list + 1] = info end
     end
     return list
@@ -1024,8 +1062,9 @@ local function LowestTaggerLevel()
         end
     end
 
-    if db and db.taggers then
-        for _, info in pairs(db.taggers) do consider(info) end
+    local saved = SavedTaggers()
+    if saved then
+        for _, info in pairs(saved) do consider(info) end
     end
     for _, info in pairs(dynamicTaggers) do consider(info) end
     return lowest
@@ -1054,8 +1093,8 @@ local function ResetAll()
 
     -- A co-tagger only exists as somebody's guest, so an owner who is no longer
     -- a tagger takes their whole party with them. Swept here rather than at the
-    -- four places that drop or wipe the tagger list - /tag remove, /tag reset,
-    -- the window's bin, and the switch into tagger mode - because every one of
+    -- four places that drop the tagger list or stop reading it - /tag remove,
+    -- /tag reset, the window's bin, and Roster.SetMode - because every one of
     -- them already ends in this call and a fifth would be the one that forgot.
     for k, co in pairs(state.coTaggers) do
         if not (db and db.taggers and db.taggers[co.owner]) then
@@ -3944,9 +3983,13 @@ end
 local function SendToPartners(msg)
     if not db.comms then return 0 end
     local n = 0
-    if db.carry then SendAddon(msg, db.carry); n = n + 1 end
-    if db.taggers then
-        for _, info in pairs(db.taggers) do SendAddon(msg, info.name); n = n + 1 end
+    -- Gated on the mode, like everything else that goes out: a name on the list
+    -- you are not using is not a partner, and pushing a threshold at them would
+    -- be the one place a switched-off list still talked to somebody.
+    if ActiveCarryKey() and db.carry then SendAddon(msg, db.carry); n = n + 1 end
+    local saved = SavedTaggers()
+    if saved then
+        for _, info in pairs(saved) do SendAddon(msg, info.name); n = n + 1 end
     end
     return n
 end
@@ -4139,16 +4182,73 @@ end
 function Roster.RememberCarry(name) return Remember(db.carries, "carrySeq", name) end
 function Roster.Carries()           return Listed(db.carries, db.carryKey) end
 
--- The active carry is not really a member of this list, it is the mode you are
--- in. Forgetting it would leave you in tagger mode with a carry that is not on
--- your own roster, so it is refused; ending tagger mode is /tag remove, and
--- saying so is more use than a button that quietly half-works.
+-- Forgetting the ACTIVE carry used to be refused outright, because being that
+-- carry's tagger was the mode and dropping it would have half-ended the mode
+-- through a list button. The mode is its own setting now, so this is a list
+-- edit like any other: the name goes, the tick goes with it, and you stay a
+-- tagger with nobody named - which is the same nothing as being a carry with an
+-- empty tagger list, and reads the same way in the window.
+--
 -- Returns whether it actually forgot one, so a caller working through several
 -- lists can report what it did rather than what it tried.
 function Roster.ForgetCarry(key)
-    if not key or key == db.carryKey or not db.carries[key] then return false end
+    if not key or not db.carries[key] then return false end
     db.carries[key] = nil
+    if key == db.carryKey then Roster.ClearCarry() end
     return true
+end
+
+--------------------------------------------------------------------------------
+-- Getting into the same group
+--
+-- Two directions, one on every row of the Players page: bring them to you, or
+-- ask them to bring you. Both live here rather than in the window, because
+-- which route an ask takes is a fact about whether that client has ever
+-- answered us, and `linked` is not something the window has any business
+-- reading.
+--
+-- Neither is restricted to the live half of the mode. **Every name on every
+-- list can be invited, can be asked, and is auto-accepted from** - the lists
+-- are who you play with, and being between boosts does not make somebody a
+-- stranger. That is `Roster.Knows`, the same trust set that decides whether we
+-- answer a PING, and it is deliberately the wider of the two rules in this file.
+--------------------------------------------------------------------------------
+
+-- Are they standing in our group right now? Same shape as TaggerPartyUnit and
+-- for the same reason - the group of somebody we are not grouped with is not
+-- queryable, but our own is, one token at a time.
+function Roster.InGroupWith(name)
+    local key = NormalizeName(name)
+    if not key then return false end
+    if IsInRaid() then
+        for i = 1, GetNumGroupMembers() do
+            local u = "raid" .. i
+            if UnitExists(u) and NormalizeName(UnitName(u)) == key then return true end
+        end
+    elseif IsInGroup() then
+        for i = 1, 4 do
+            local u = "party" .. i
+            if UnitExists(u) and NormalizeName(UnitName(u)) == key then return true end
+        end
+    end
+    return false
+end
+
+-- Ours goes out as a plain invite and lands silently: their client recognises us
+-- off its own lists and accepts without a popup. Where they are not running the
+-- addon it is an ordinary invite and they get the ordinary dialog, which is the
+-- correct outcome rather than a fallback.
+function Roster.Invite(name)
+    if not name or IsSelf(name) then return end
+    InviteToParty(name)
+    Print(format("invited |cff00ff00%s|r.", name))
+end
+
+-- The other direction. AskForInvite picks the route - the addon link where
+-- there is one, a whispered "inv" where there is not - and says which it took.
+function Roster.AskInvite(name)
+    if not name or IsSelf(name) then return end
+    AskForInvite(name)
 end
 
 -- The follow list is in the macro, so every edit to it has to rebuild the key.
@@ -4190,60 +4290,75 @@ local function SetCarryTo(name)
     RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
 end
 
--- The two modes are mutually exclusive: a client is either boosting or being
--- boosted, never both. Switching always clears the other side, and never without
--- asking - the old set is someone's configuration, not scratch data.
-local function SwitchToCarryMode(taggerName)
+-- Un-naming the carry. Four fields and a re-derive, and it was written out by
+-- hand in three places before this - once here, twice in the slash file - which
+-- is two chances to forget the rebuild.
+function Roster.ClearCarry()
     db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
-    RebuildDynamicTaggers()
-    return AddTagger(taggerName)
+    RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
 end
 
-local function SwitchToTaggerMode(carryName)
-    if db.taggers then wipe(db.taggers) end
-    SetCarryTo(carryName)
-end
-
--- The mode guard, in ONE place. Both /tag and the window add names, and if each
--- decided for itself when a switch needs confirming they would drift - so both
--- come through here and neither gets to skip the popup.
+-- Which of the two the addon is doing, and the ONLY way it changes. Both lists
+-- survive: the switch derives everything that hangs off the live one and leaves
+-- the other exactly as it was, so a character that has been both keeps both
+-- rosters and switching back costs nothing.
 --
--- Returns "switch" when the popup was raised and the caller should say nothing
--- more; the popup's own OnAccept reports what happened. Otherwise "added" or
--- "set", plus the tagger's record where there is one.
+-- The mode is per character (see PER_CHAR); the two rosters are not. Your 60 is
+-- the carry, your alt is the tagger, and both of them see the same lists.
+function Roster.SetMode(mode)
+    mode = (mode == "tagger") and "tagger" or "carry"
+    if db.mode == mode then return false end
+    db.mode = mode
+    -- ReassignMarkers as well as the usual four: markers are carry-side and
+    -- were not being maintained while the tagger list sat inert, so the way
+    -- back into carry mode has to derive them again.
+    ReassignMarkers()
+    RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+    return true
+end
+
+-- Adding a name. There is no mode guard on either of these any more, and no
+-- confirm popup behind them: adding a tagger while you are a tagger yourself
+-- writes a name onto a list you are not currently using, which is a thing
+-- somebody may perfectly well want to do the day before they switch back.
+--
+-- Returns "added" or "set", plus the tagger's record where there is one.
+--
+-- Both say so when the name lands on the list this character is not using. Its
+-- box on the Players page is hidden in that mode, so without this the name goes
+-- somewhere real and nothing anywhere moves - which reads as the click having
+-- done nothing at all.
+local function NoteInert(list)
+    Print(format("|cffff8080saved, but not in use|r - you are set up as a %s, "
+        .. "and that is your %s list. The Players tab on |cffffff00/tag ui|r "
+        .. "is where you change which.",
+        InTaggerMode() and "tagger" or "carry", list))
+end
+
 function Roster.RequestTagger(name)
     if RefuseSelf(name) then return "self" end
-    if InTaggerMode() then
-        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
-            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00tagger mode|r with "
-                .. "|cff00ff00%s|r as your carry.\n\nAdding a tagger switches you to "
-                .. "carry mode and clears your carry.\n\nContinue?", db.carry),
-            nil, { mode = "carry", who = name })
-        return "switch"
-    end
     local info = AddTagger(name)
+    if info and InTaggerMode() then NoteInert("tagger") end
     -- Offer them the inverse role the moment you name them; their client
     -- decides. This used to be /tag link, typed by hand after the fact, which
     -- meant the common case was a pair of clients that each had the other
     -- written down and neither had told the other so.
-    if info then SendAddon("PAIRC", info.name) end
+    --
+    -- Only from the mode that means it: an offer to be somebody's carry, sent
+    -- off a list this client is currently ignoring, is a lie about what we are.
+    if info and not InTaggerMode() then SendAddon("PAIRC", info.name) end
     return "added", info
 end
 
 function Roster.RequestCarry(name)
     if RefuseSelf(name) then return "self" end
-    if db.taggers and next(db.taggers) then
-        StaticPopup_Show("TAGTEAM_MODE_SWITCH",
-            format("|cff33ff99TagTeam|r\n\nYou're in |cffffff00carry mode|r with "
-                .. "|cff00ff00%s|r.\n\nSetting a carry switches you to tagger mode "
-                .. "and clears your tagger list.\n\nContinue?",
-                table.concat(TaggerNames(), ", ")),
-            nil, { mode = "tagger", who = name })
-        return "switch"
-    end
     SetCarryTo(name)
     -- The same automatic offer, from the other side. See RequestTagger.
-    SendAddon("PAIRT", db.carry)
+    if InTaggerMode() then
+        SendAddon("PAIRT", db.carry)
+    else
+        NoteInert("carry")
+    end
     return "set"
 end
 
@@ -4256,12 +4371,12 @@ function Roster.ClearTaggers()
     ResetAll(); UpdateAllPlates(); UpdateMacroButton()
 end
 
+-- The active one goes with the rest. It used to be put straight back, because
+-- it was the mode and clearing the list must not have ended the mode by a side
+-- door; the mode is its own setting now, so "clear" can mean what it says.
 function Roster.ClearCarries()
     wipe(db.carries)
-    -- The active carry is not a member of the roster, it is a mode. Clearing
-    -- the remembered names must not silently drop you out of tagger mode, so
-    -- the one you are actually using is put straight back.
-    if db.carry then Roster.RememberCarry(db.carry) end
+    if db.carryKey then Roster.ClearCarry() end
 end
 
 function Roster.ClearFollows()
@@ -4269,30 +4384,10 @@ function Roster.ClearFollows()
     UpdateMacroButton()
 end
 
-StaticPopupDialogs["TAGTEAM_MODE_SWITCH"] = {
-    text = "%s",
-    button1 = ACCEPT,
-    button2 = CANCEL,
-    timeout = 60,
-    whileDead = true,
-    hideOnEscape = true,
-    preferredIndex = 3,
-    OnAccept = function(_, data)
-        if not data then return end
-        if data.mode == "carry" then
-            local info = SwitchToCarryMode(data.who)
-            if not info then return end
-            Print(format("|cffffff00carry mode|r - tagger |cff00ff00%s|r added, carry cleared.",
-                info.name))
-            SendAddon("PAIRC", info.name)
-        else
-            SwitchToTaggerMode(data.who)
-            Print(format("|cffffff00tagger mode|r - carry is |cff00ff00%s|r, taggers cleared.",
-                db.carry))
-            SendAddon("PAIRT", db.carry)
-        end
-    end,
-}
+-- There was a TAGTEAM_MODE_SWITCH popup here, in front of every transition
+-- between the two modes. It existed to warn that the other list was about to be
+-- wiped, and nothing is wiped any more - so it is gone rather than reworded. A
+-- confirm that confirms nothing teaches people to click through confirms.
 
 -- A tagger dinged. The whole addon exists to make this happen, and until now it
 -- was one chat line that scrolled away behind the pull it arrived in.
@@ -4319,14 +4414,20 @@ StaticPopupDialogs["TAGTEAM_PAIR"] = {
     preferredIndex = 3,   -- avoids tainting Blizzard's popup stack
     OnAccept = function(_, data)
         if not data then return end
-        -- These clear the opposite side. The popup text already warned when that
-        -- was going to happen, so this is the confirmation, not a surprise.
+        -- Accepting sets the MODE as well as the name, and that is the whole of
+        -- what it clears: saying yes to "set them as your carry" is saying you
+        -- are the tagger here. Neither list is touched, so the roster you were
+        -- keeping as the other half of the pair is still there to switch back to.
         if data.role == "carry" then
-            SwitchToTaggerMode(data.who)
-            Print(format("|cff00ff00%s|r is now your carry.", data.who))
+            Roster.SetMode("tagger")
+            SetCarryTo(data.who)
+            Print(format("|cff00ff00%s|r is now your carry - |cffffff00tagger mode|r.",
+                data.who))
         else
-            local info = SwitchToCarryMode(data.who)
-            Print(format("|cff00ff00%s|r added as a tagger.", info and info.name or data.who))
+            Roster.SetMode("carry")
+            local info = AddTagger(data.who)
+            Print(format("|cff00ff00%s|r added as a tagger - |cffffff00carry mode|r.",
+                info and info.name or data.who))
         end
         SendAddon("OK", data.who)
         AnnouncePet(data.who)
@@ -4378,7 +4479,8 @@ end
 local function NoteTaggerGroup(key, list)
     -- Carry side only. A GROUP from our own carry - both halves running the
     -- addon, and them briefly in a party of their own - lands nowhere.
-    local info = db.taggers and db.taggers[key]
+    local saved = SavedTaggers()
+    local info = saved and saved[key]
     if not info then return end
 
     local held = state.coGroup[key]
@@ -4405,7 +4507,7 @@ local function NoteTaggerGroup(key, list)
                 -- Never ourselves, and never over a real tagger. This is a
                 -- temporary fact about where somebody is standing, and the list
                 -- somebody chose outranks it.
-                if k ~= me and not db.taggers[k] then
+                if k ~= me and not saved[k] then
                     if pet == "" then pet = nil end
                     state.coTaggers[k] = {
                         name = name, owner = key,
@@ -4476,28 +4578,34 @@ local function OnAddonMessage(msg, sender)
     if cmd == "PAIRC" then
         -- They set us as their tagger and are offering to be our carry.
         -- Already paired: acknowledge, but say so - a silent confirm looks broken.
-        if db.carryKey == key then
+        if ActiveCarryKey() == key then
             SendAddon("OK", who)
             Print(format("|cff00ff00TagTeam linked|r with %s (already your carry).", who))
             return
         end
+        -- No warning line under it any more: accepting changes the mode and
+        -- nothing else, and the tagger list you have been keeping is still
+        -- there afterwards. What it costs is on the line that says tagger mode.
         StaticPopup_Show("TAGTEAM_PAIR",
-            format("|cff33ff99TagTeam|r\n\n%s has added you as a tagger.\nSet them as your carry?%s", who,
-                (db.taggers and next(db.taggers))
-                    and "\n\n|cffff8080This clears your own tagger list.|r" or ""),
+            format("|cff33ff99TagTeam|r\n\n%s has added you as a tagger.\n"
+                .. "Set them as your carry?%s", who,
+                InTaggerMode() and ""
+                    or "\n\n|cffffff00This switches you to tagger mode.|r"),
             nil, { role = "carry", who = who })
 
     elseif cmd == "PAIRT" then
         -- They set us as their carry and want to be one of our taggers.
-        if db.taggers[key] then
+        local saved = SavedTaggers()
+        if saved and saved[key] then
             SendAddon("OK", who)
             Print(format("|cff00ff00TagTeam linked|r with %s (already a tagger).", who))
             return
         end
         StaticPopup_Show("TAGTEAM_PAIR",
-            format("|cff33ff99TagTeam|r\n\n%s has set you as their carry.\nAdd them as a tagger?%s", who,
+            format("|cff33ff99TagTeam|r\n\n%s has set you as their carry.\n"
+                .. "Add them as a tagger?%s", who,
                 InTaggerMode()
-                    and format("\n\n|cffff8080This clears your carry (%s).|r", db.carry) or ""),
+                    and "\n\n|cffffff00This switches you to carry mode.|r" or ""),
             nil, { role = "tagger", who = who })
 
     elseif cmd == "PING" then
@@ -4552,9 +4660,13 @@ local function OnAddonMessage(msg, sender)
         NoteTaggerGroup(key, arg or "")
 
     elseif cmd == "INV" then
-        -- Only ever from the other half of an established pair. Without this
-        -- check any stranger running the addon could make us open a group.
-        if not IsPartner(who) then return end
+        -- Anyone we have written down, on any of the three lists - the same
+        -- trust set that decides whether we answer a PING, and for the same
+        -- reason: a name we chose is not a stranger, and being on the half of
+        -- the mode we are not using does not make them one. It is still a
+        -- CLOSED set, which is the part that matters: without it any stranger
+        -- running the addon could make us open a group.
+        if not Roster.Knows(key) then return end
         InviteToParty(who)
         Print(format("|cff00ff00%s|r asked for an invite - sent.", who))
 
@@ -5254,25 +5366,88 @@ end
 --------------------------------------------------------------------------------
 -- The per-character half of the saved data
 --
--- Who you are levelling and who is carrying are facts about THIS character:
--- log in on the carry and the taggers list should be your taggers, not the
--- roster you keep while playing the tagger. The follow list is the opposite -
--- it is a list of people you chase whoever you happen to be logged in as - so
--- it stays on `db` with the settings, account wide.
+-- ONE key, and it is the mode. Which end of the boost this character is on is
+-- the fact that actually differs between your 60 and your alt; the rosters do
+-- not. The people you level and the people who level you are the same handful
+-- of characters seen from either side, and keeping two private copies of them
+-- meant writing the same names out again on every new alt - and losing a
+-- tagger list to a mode switch made on some OTHER login.
+--
+-- So `taggers`, `carries` and their sequences, and the active carry with them,
+-- now sit on `db` beside the settings and the follow list, account wide. What
+-- makes something per-character is being in this list and nothing else.
 --
 -- Swapped in at load and back out at logout rather than read through a
--- per-character table everywhere: `db.carry` alone is on fifty lines and half
--- these keys are scalars, which no shared table reference would carry. There
--- is no durability cost - SavedVariables are only written at logout either
--- way, so a session that never reaches PLAYER_LOGOUT was losing these writes
--- before this existed too.
+-- per-character table everywhere. There is no durability cost - SavedVariables
+-- are only written at logout either way, so a session that never reaches
+-- PLAYER_LOGOUT was losing these writes before this existed too.
 --------------------------------------------------------------------------------
 
-local PER_CHAR = { "taggers", "taggerSeq", "carries", "carrySeq",
+local PER_CHAR = { "mode" }
+
+-- The keys that USED to be in it, for the one-time haul back up onto db. Kept
+-- as its own list rather than folded into the migration below because that is
+-- the only thing it is: PER_CHAR is what the addon reads, this is history.
+C.WAS_PER_CHAR = { "taggers", "taggerSeq", "carries", "carrySeq",
                    "carry", "carryKey", "carryPet" }
 
 local function CharKey()
     return (UnitName("player") or "?") .. "-" .. (GetRealmName() or "?")
+end
+
+-- Two migrations, in the order they happened.
+--
+-- `charsMigrated` pushed a pre-split roster DOWN onto whoever logged in first.
+-- `rosterShared` pulls every character's roster back UP, and is the awkward one
+-- because by then there are several. The lists are UNIONED - a name that was a
+-- tagger on any login is a tagger now, which is what an account-wide list would
+-- have held all along had it been one from the start - and each character's
+-- mode is read off the fact the mode used to be inferred from: a saved carryKey
+-- meant tagger mode, and nothing else did.
+--
+-- The active carry is a single value and cannot be unioned, so the character
+-- logging in when the migration runs wins, and any other is fallback. That is
+-- one arbitrary choice, made once, over a name that is one click to re-tick.
+local function ShareRoster()
+    if db.rosterShared then return end
+    db.rosterShared = true
+
+    db.taggers, db.carries = db.taggers or {}, db.carries or {}
+    db.taggerSeq, db.carrySeq = db.taggerSeq or 0, db.carrySeq or 0
+
+    local mineKey = CharKey()
+    for who, saved in pairs(db.chars or {}) do
+        saved.mode = saved.carryKey and "tagger" or "carry"
+
+        for _, half in ipairs({ { saved.taggers, db.taggers, "taggerSeq" },
+                                { saved.carries, db.carries, "carrySeq" } }) do
+            for key, info in pairs(half[1] or {}) do
+                if not half[2][key] then
+                    db[half[3]] = db[half[3]] + 1
+                    info.order = db[half[3]]
+                    half[2][key] = info
+                end
+            end
+        end
+
+        if saved.carryKey and (who == mineKey or not db.carryKey) then
+            db.carry, db.carryKey = saved.carry, saved.carryKey
+            -- Derived rather than carried across: carryPetKey was never one of
+            -- the per-character keys, so there is nothing under that name to
+            -- move and the pet's own name is what there is.
+            db.carryPet = saved.carryPet
+            db.carryPetKey = NormalizeName(saved.carryPet)
+        end
+
+        for _, key in ipairs(C.WAS_PER_CHAR) do saved[key] = nil end
+    end
+
+    -- carryPetKey was never per-character and so was never swapped out, which
+    -- means an account-level one can outlive the carry it belonged to. If no
+    -- character had a carry to bring up here, none of these four mean anything.
+    if not db.carryKey then
+        db.carry, db.carryPet, db.carryPetKey = nil, nil, nil
+    end
 end
 
 local function LoadCharRoster()
@@ -5283,15 +5458,17 @@ local function LoadCharRoster()
     -- starts empty instead of inheriting a roster that was never theirs.
     if not db.charsMigrated then
         local seed = {}
-        for _, key in ipairs(PER_CHAR) do seed[key], db[key] = db[key], nil end
+        for _, key in ipairs(C.WAS_PER_CHAR) do seed[key], db[key] = db[key], nil end
         db.chars[CharKey()] = seed
         db.charsMigrated = true
     end
+    ShareRoster()
 
     local mine = db.chars[CharKey()] or {}
     db.chars[CharKey()] = mine
-    -- Unconditional, nils included: a character with no carry has to end up
-    -- with no carry, not with whatever the last one left on db.
+    -- Unconditional, nils included: a character with no mode saved has to end
+    -- up with no mode - which reads as carry - rather than with whatever the
+    -- last one left on db.
     for _, key in ipairs(PER_CHAR) do db[key] = mine[key] end
 end
 
@@ -5393,13 +5570,14 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
     elseif event == "PLAYER_REGEN_ENABLED" then
         UpdateMacroButton()   -- secure attributes were locked during the fight
     elseif event == "PARTY_INVITE_REQUEST" then
-        -- Strictly the other half of the pair, by name. Auto-accepting anything
-        -- else would hand any passing stranger a way into your group.
-        --
-        -- Either direction, because /tag inv asks THEM to invite US: in tagger
-        -- mode the invite that arrives is the carry's, and the carry is not a
-        -- tagger by any definition this addon uses.
-        if db.autoAccept and IsPartner(arg1) then
+        -- Anyone on any of the three lists, and nobody else. It used to be
+        -- IsPartner - the live half of the mode only - which meant the invite
+        -- you had just pressed a button to ask for popped a dialog whenever the
+        -- name was a follow target, or a carry you were not currently using.
+        -- Every name on these lists is somebody you wrote down in order to play
+        -- with them; the closed set is what keeps a stranger out, not how
+        -- narrow it is.
+        if db.autoAccept and Roster.Knows(NormalizeName(arg1)) then
             AcceptGroup()
             StaticPopup_Hide("PARTY_INVITE")
             askedForInvite = false
@@ -5422,9 +5600,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         TagTeamDB = TagTeamDB or {}
         db = TagTeamDB
         ns.db = db   -- SlashCommands.lua reads it from here; see the exports
-        -- Before anything below reads a roster key. ReassignMarkers at the end
-        -- of this block walks db.taggers, and it has to be walking this
-        -- character's.
+        -- Before anything below reads a roster key. It is also what settles
+        -- db.mode, and every gated read in the file is answered by that.
         LoadCharRoster()
         -- A session that ended while a cue was holding the Sound Effects CVar
         -- left it moved. This is the only place that can know, because the
@@ -5601,10 +5778,20 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         C_Timer.NewTicker(3, CheckAutoLeave)
         UpdateMacroButton()
 
-        local names = TaggerNames()
-        Print(format("loaded. Taggers: %s. Type |cffffff00/tag|r to open it.",
-            #names > 0 and ("|cff00ff00" .. table.concat(names, ", ") .. "|r")
-                or "|cffff8080none|r"))
+        -- Whichever half this character is playing. The old line always said
+        -- "Taggers:", which on a tagger's own login named the one list that
+        -- client is not using.
+        if InTaggerMode() then
+            Print(format("loaded, as a |cffffff00tagger|r. Carry: %s. "
+                .. "Type |cffffff00/tag|r to open it.",
+                db.carry and ("|cff00ff00" .. db.carry .. "|r") or "|cffff8080none|r"))
+        else
+            local names = TaggerNames()
+            Print(format("loaded, as a |cffffff00carry|r. Taggers: %s. "
+                .. "Type |cffffff00/tag|r to open it.",
+                #names > 0 and ("|cff00ff00" .. table.concat(names, ", ") .. "|r")
+                    or "|cffff8080none|r"))
+        end
     end
 end)
 

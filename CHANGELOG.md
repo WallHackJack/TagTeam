@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — say which end you are on
+
+The Players tab used to list Carries and Taggers as two boxes, which was one box
+too many: nobody is both, and every switch between them wiped the list you were
+not using. There is now a **My Setup** box at the top of the page with a single
+dropdown — *I am using TagTeam as a:* **Carry** or **Tagger** — and one list
+under it, the one that mode is about.
+
+- **Changed:** your role is a **setting** now, not something guessed from which
+  list happens to have names in it. Picking it is one click and asks nothing:
+  nothing is thrown away, so there is nothing to confirm.
+
+- **Changed:** **both lists are kept forever.** Switching to Tagger no longer
+  clears your taggers, and switching to Carry no longer clears your carry. The
+  list you are not using is completely ignored while you are not using it — no
+  tracking, no markers, no messages to anyone on it — and is exactly where you
+  left it when you switch back.
+
+- **Changed:** **your roster is account wide again**, and the setting above is
+  what is per character instead. 0.6.0 gave every character its own carries and
+  taggers, which meant writing the same handful of names out on every alt — and
+  a mode switch made on one login quietly emptying a list you were keeping for
+  another. Rosters from all your characters are merged on first login after
+  updating, and each character keeps the role it was already playing.
+
+- **Changed:** the bin next to your **active carry** works. It used to be
+  refused, because being that carry's tagger *was* the mode; the mode is its own
+  setting now, so removing the name just removes the name.
+
+- **Changed:** `/tag` says which mode you are in every time, and the login line
+  names your carry rather than a tagger list you are not using.
+
+- **Added:** every row on the Players tab now has an **invite** button (the
+  green plus) and a **request invite** button (the envelope) beside its bin —
+  on all three lists. The plus invites them; the envelope asks them to invite
+  you, going straight over the addon link where they are running TagTeam and
+  whispering `inv` where they are not.
+
+  Request invite greys out while you are already in a group, and invite greys
+  out for somebody already standing in yours.
+
+- **Changed:** **anyone on any of your lists is auto-accepted from**, and their
+  invite arrives with no dialog at all. Before, only the half of the pair you
+  were actively using was — so an invite from a follow target, or from a carry
+  you were between boosts with, still popped the usual window.
+
+- **Changed:** the add pop-up opens on the role your mode is about — Tagger
+  when you are the carry, Carry when you are the tagger — instead of always
+  Tagger.
+
+- **Removed:** the disabled gear on tagger rows. It was holding a place for
+  per-tagger settings; the two invite buttons have the space now.
+
 ## 0.6.0 — settings, not commands
 
 Eighteen slash commands became settings. What is left of `/tag` is things you

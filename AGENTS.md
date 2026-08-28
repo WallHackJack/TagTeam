@@ -439,17 +439,51 @@ badge already uses for a share that has not failed yet.
 because `/tag` and the window are two front ends to one set of invariants and
 the moment each enforces its own they drift.
 
-That is why `Roster.RequestTagger` / `Roster.RequestCarry` exist: the mode-switch
-guard and its confirm popup used to live inside `commands["add"]` and
-`commands["carry"]`, where the window could not reach them. `"switch"` back from
-either means the popup was raised and the caller reports nothing — the popup's
-own `OnAccept` does that. `Roster.RemoveTagger` moved for the same reason.
+That is why `Roster.RequestTagger` / `Roster.RequestCarry` exist: they used to
+live inside `commands["add"]` and `commands["carry"]`, where the window could
+not reach them. `Roster.RemoveTagger`, `Roster.ClearCarry` and `Roster.SetMode`
+moved for the same reason — each ends in the same four-call re-derive, and a
+second copy of that sequence in the slash file was a second thing to forget.
 
 `Roster` also owns the two remembered lists, `db.carries` and `db.followTargets`.
-**Neither changes the two modes.** `db.carries` is a roster of names you have
-boosted with; exactly one is active at a time, the one `db.carryKey` names, and
-`Roster.Carries` pins that one to slot 1. Forgetting the active carry is refused
-outright — it is a mode, not a list entry.
+**Neither changes the mode**, which is its own setting. `db.carries` is a roster
+of names you have boosted with; exactly one is active at a time, the one
+`db.carryKey` names, and `Roster.Carries` pins that one to slot 1. Forgetting
+the active carry is now allowed — it clears the tick and leaves you a tagger
+with nobody named, which is the same nothing as a carry with an empty list.
+
+The Players page shows **one** of Carries and Taggers, whichever the mode makes
+live; `SECTIONS[n].mode` is the whole of that, and the hidden box is *hidden,
+not emptied* — the list behind it is intact and comes straight back.
+
+Every row on all three lists carries the same three buttons, right to left:
+**bin, ask, invite**. The green plus is `Roster.Invite` and the envelope —
+WhoDoesWhat's mail art, the same picture for the same act — is
+`Roster.AskInvite`, which is `AskForInvite` and therefore picks its own route.
+
+Both are **`UI.CreateBareIconButton` at 20px, not framed**, and that is the
+whole reason they can be bigger than the 18px bin beside them: stripped of a
+`UIPanelButtonTemplate` the art *is* the control. They started framed, like the
+gear before them, and three framed buttons read as a button bar bolted onto the
+end of the name — the plus worst of all, a small picture inside a big button
+that had nothing to do with it.
+
+The plus is **`Interface\PaperDollInfoFrame\Character-Plus`, a glyph, and it is
+not tinted**. It was `Interface\Buttons\UI-PlusButton-Up` twice over — that is
+the quest log's expand control, and it has its own rust-coloured button face
+drawn into the texture. Removing the frame did not remove it, because the frame
+was never what you were looking at. `Character-Plus` is the bare sign and is
+already green, so the kit's own 0.75-to-white hover dims and brightens it for
+free and there is no `SetVertexColor` on this page at all.
+Neither is greyed for being on the inert half of the mode; the core invites,
+asks and accepts for every name on every list. **Ask** greys while you are in
+any group, **invite** greys for somebody already standing in yours, and both of
+those states are in the refresh signature because joining a group fires nothing
+this file listens to.
+
+A disabled gear used to sit where the ask is now, holding a place for
+per-tagger settings. Two buttons that do something beat one that explains why
+it does not.
 
 The window refreshes off a half-second signature check while it is open, rather
 than the core calling into it. That keeps the leaf a leaf, and it means a change
@@ -684,8 +718,8 @@ carry's threshold and estimate are right while the tagger is grouped.
   `Pets.TaggerKey` returns the **owner's** key for a co-tagger's pet: the pool
   wants the damage and nothing else in the addon has a use for the pet itself.
 - **`ResetAll` is where they are swept**, dropping any whose owner is no longer a
-  tagger. Four places drop or wipe the tagger list — `/tag remove`, `/tag reset`,
-  the window's bin, and the switch into tagger mode — and every one of them
+  tagger. Four places drop the tagger list or stop reading it — `/tag remove`,
+  `/tag reset`, the window's bin, and `Roster.SetMode` — and every one of them
   already ends in that call, so a fifth cannot forget.
 
 `GroupSplit()` is the other half of the message: the mob's whole worth divided by
@@ -704,12 +738,33 @@ everything downstream anyway.
 
 ## Two modes
 
-| Mode | Set by | Meaning |
-|---|---|---|
-| carry (default) | `db.taggers` populated | You are the carry; the list is who you're boosting. |
-| tagger | naming a carry sets `db.carryKey` | You are a tagger; **you and your whole party** are taggers, rebuilt into `dynamicTaggers`. |
+| Mode | Meaning |
+|---|---|
+| carry (default) | You are the carry; `db.taggers` is who you're boosting. |
+| tagger | You are a tagger; `db.carry` is who is boosting you, and **you and your whole party** are taggers, rebuilt into `dynamicTaggers`. |
 
-They are **mutually exclusive** and every transition is confirmed by a popup.
+**`db.mode` is a setting, per character, picked from the Players tab's Setup
+box.** It used to be *inferred* — `db.carryKey ~= nil` was tagger mode and
+nothing else was — which is why every transition had to wipe the other list to
+stay unambiguous, and why every transition needed a confirm popup in front of
+the wipe. Both lists are now kept forever; the mode decides which one is live.
+`TAGTEAM_MODE_SWITCH` is gone with the wipe it warned about.
+
+The **inert list is completely inert** — invisible to tracking, comms, markers,
+pets and party logistics alike. That is enforced by exactly two functions,
+`SavedTaggers()` and `ActiveCarryKey()`, and every read that drives behaviour
+goes through one of them. **Writes go straight at `db`**, because editing the
+list you are not using is the point of keeping both. Three readers deliberately
+bypass the gates: `ReassignMarkers` (a marker assigned now is the marker you get
+back when you switch), the per-record writes that keep an inert tagger's level,
+class and pet fresh, and `Roster.Knows` (which answers "have we written this
+name down", and a name on the inert list is not a stranger).
+
+`Roster.SetMode` is the only way it changes, and it re-derives markers, dynamic
+taggers, per-mob state, plates and the follow macro. Accepting a `TAGTEAM_PAIR`
+popup sets it too — saying yes to "set them as your carry" is saying you are the
+tagger here.
+
 Tagger mode is *tracking only* — invites, auto-leave, the grouped-in-combat
 warning, markers and focus are all carry-side and stay off, because in tagger
 mode being grouped with the other taggers is the correct state.
@@ -789,21 +844,28 @@ same way — `Pets`.
 
 ## Important invariants
 
-- **The saved data has two halves, and only one of them is account wide.**
-  `TagTeamDB` is a single account-wide SavedVariable, but the roster keys in
-  `PER_CHAR` — `taggers`, `taggerSeq`, `carries`, `carrySeq`, `carry`,
-  `carryKey`, `carryPet` — are swapped out of `db.chars[CharKey()]` at
-  ADDON_LOADED and written back at PLAYER_LOGOUT. Who you are levelling is a
-  fact about the character you are logged in as; the **follow targets** list
-  (`db.followTargets`, `db.followSeq`) is not, so it stays on `db` with the
-  settings and is shared by every character. `db.seen` is shared too — a
-  character's zone does not care which list found them. The swap is why nothing
-  else in the file needed changing: `db.carry` reads the same on fifty lines.
-  `db.charsMigrated` runs the one-time move of a pre-split roster onto whoever
-  logs in first, **clearing the account-level keys as it goes** so the next
-  character does not inherit a roster that was never theirs. Adding a key to
-  `PER_CHAR` is the whole of making something per-character; adding one that
-  another character should see means leaving it off that list.
+- **`PER_CHAR` holds one key, and it is `mode`.** `TagTeamDB` is a single
+  account-wide SavedVariable; `db.mode` is swapped out of `db.chars[CharKey()]`
+  at ADDON_LOADED and written back at PLAYER_LOGOUT, and everything else lives
+  on `db` and is shared. Which end of the boost a character is on is the fact
+  that actually differs between your 60 and your alt — the **rosters do not**.
+  The people you level and the people who level you are the same handful of
+  characters seen from either side. Adding a key to `PER_CHAR` is the whole of
+  making something per-character; leaving one off it is the whole of sharing it.
+
+  The rosters were per-character once, which cost a fresh copy of the same names
+  on every new alt and lost a tagger list to a mode switch made on some *other*
+  login. **Two migrations, in order.** `db.charsMigrated` pushed a pre-split
+  roster *down* onto whoever logged in first. `db.rosterShared` pulls every
+  character's roster back *up* — the lists are **unioned** (a name that was a
+  tagger on any login is a tagger now), each character's `mode` is read off the
+  `carryKey` the mode used to be inferred from, and `C.WAS_PER_CHAR` is the list
+  of what to clear off each `db.chars` entry as it goes. The active carry is one
+  value and cannot be unioned, so the character logging in when it runs wins.
+
+  `db.seen` was always shared — a character's zone does not care which list
+  found them — and so was **`db.followTargets`/`db.followSeq`**, a list of
+  people you chase whoever you are logged in as.
 
 - Damage accumulates per mob GUID; the threshold is measured against
   `UnitHealthMax`, never against total observed damage — that survives partial
@@ -941,11 +1003,22 @@ same way — `Pets`.
   second invite, and the pair bounced. `WHISPER_COOLDOWN` is the only thing that
   ever stopped it. Both entry points, the out-of-range ticker and `/tag inv`, go
   through the one function so they cannot drift.
-- `TaggerKeyOf` and `IsPartner` answer different questions and are not
-  interchangeable. Tagger mode keeps the carry **out** of `dynamicTaggers` on
-  purpose — the carry's damage is never pooled — so `TaggerKeyOf` says no to our
-  own carry. Anything about *trust* (auto-accept, honouring `INV`, free-for-all
-  loot) must ask `IsPartner`, which matches either half of the pair.
+- `TaggerKeyOf`, `IsPartner` and `Roster.Knows` answer three different questions
+  and are not interchangeable. Tagger mode keeps the carry **out** of
+  `dynamicTaggers` on purpose — the carry's damage is never pooled — so
+  `TaggerKeyOf` says no to our own carry. `IsPartner` is the **live half of the
+  mode**, either direction, and is what free-for-all loot and the group
+  reporting ask. `Roster.Knows` is **every name on every list**, mode ignored,
+  and it is what *getting into a group* asks: auto-accepting a `PARTY_INVITE_REQUEST`,
+  honouring an `INV`, and answering a `PING`.
+
+  That last one is deliberately the widest rule in the file. A name on these
+  lists is somebody you wrote down in order to play with them, and being a
+  follow target — or a carry on the half of the mode you are not using today —
+  does not make them a stranger. What keeps a stranger out is that the set is
+  **closed**, not that it is narrow. Auto-accept was `IsPartner` once, and the
+  symptom was pressing a row's ask button and then being shown the very dialog
+  you had pressed it to avoid.
 
 ## Addon comms
 

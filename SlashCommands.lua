@@ -35,10 +35,11 @@ local TaggerNames               = ns.TaggerNames
 local TaggerKeyOf               = ns.TaggerKeyOf
 local InviteTarget              = ns.InviteTarget
 local PrimaryTaggerKey          = ns.PrimaryTaggerKey
-local RebuildDynamicTaggers     = ns.RebuildDynamicTaggers
-local ResetAll                  = ns.ResetAll
-local UpdateAllPlates           = ns.UpdateAllPlates
-local UpdateMacroButton         = ns.UpdateMacroButton
+-- The four that used to be here - RebuildDynamicTaggers, ResetAll,
+-- UpdateAllPlates, UpdateMacroButton - are gone with the hand-written mode
+-- changes that needed them. /tag remove and /tag reset call Roster now, and
+-- Roster is where the four-call re-derive belongs; a second copy of it in this
+-- file was a second thing to forget.
 local BuildFollowMacro          = ns.BuildFollowMacro
 local RefreshContinent          = ns.RefreshContinent
 local MapDiag                   = ns.MapDiag
@@ -62,17 +63,29 @@ local db            -- refreshed from ns.db on every dispatch
 -- The tail of the menu block, so these are unstamped and indented like the
 -- lines above them. Nothing else calls it.
 local function Status()
-    if InTaggerMode() then
-        PrintRaw(format("  |cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.", db.carry,
-            db.carryPet and format(" with pet |cff00ff00%s|r", db.carryPet) or ""))
-    end
-
+    -- The mode is a setting now rather than something inferred from which list
+    -- has names in it, so it is stated on every /tag whichever way it is set -
+    -- it is the one thing that decides what the rest of these lines mean.
+    --
     -- Who the taggers are, what level each is and which marker each carries is
     -- the window's job, and it does it in a form chat cannot: colour, columns,
     -- and no scrollback burying it. What is left here is the part chat is still
     -- better at - the one-line answer to "is this thing on".
-    if #TaggerNames() == 0 then
-        PrintRaw("  |cffff8080no taggers set|r - |cffffff00/tag pair <name>|r")
+    if InTaggerMode() then
+        if db.carry then
+            PrintRaw(format("  |cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.",
+                db.carry,
+                db.carryPet and format(" with pet |cff00ff00%s|r", db.carryPet) or ""))
+        else
+            PrintRaw("  |cffffff00tagger mode|r - |cffff8080no carry set|r - "
+                .. "|cffffff00/tag pair <name>|r")
+        end
+    elseif #TaggerNames() == 0 then
+        PrintRaw("  |cffffff00carry mode|r - |cffff8080no taggers set|r - "
+            .. "|cffffff00/tag pair <name>|r")
+    else
+        PrintRaw(format("  |cffffff00carry mode|r - |cffffff00%d|r tagger%s.",
+            #TaggerNames(), #TaggerNames() == 1 and "" or "s"))
     end
 
     -- Loud, because a suspended addon looks exactly like a broken one.
@@ -196,15 +209,13 @@ commands["remove"] = function(rest, cmd)
     -- removes taggers too, and both had better do the same four things.
     if Roster.RemoveTagger(key) then gone[#gone + 1] = "tagger" end
 
-    -- The active carry is not a list entry, it is the mode you are in, so
-    -- dropping it is a mode change: back to carry mode, and the party-derived
-    -- taggers that only exist inside tagger mode go with it.
+    -- One call, and it takes the tick with the name where the name had it: the
+    -- active carry is an entry on this list like any other now, and removing it
+    -- does not change the mode - you stay a tagger, with nobody named.
     if key == db.carryKey then
-        db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
-        RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+        Roster.ClearCarry()
         gone[#gone + 1] = "carry"
     end
-    -- After that branch and never before it: ForgetCarry refuses the active one.
     if Roster.ForgetCarry(key) then gone[#gone + 1] = "remembered carry" end
 
     if db.followTargets and db.followTargets[key] then
@@ -229,11 +240,12 @@ end
 commands["rem"], commands["del"] = commands["remove"], commands["remove"]
 
 commands["reset"] = function(rest, cmd)
-    -- Clears both roles: reset means "no relationships", not "no taggers".
-    wipe(db.taggers)
-    db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
-    RebuildDynamicTaggers()
-    ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+    -- Clears both roles: reset means "no relationships", not "no taggers". The
+    -- MODE is left alone - which end of the boost you are on is not a
+    -- relationship, it is how you play this character, and a reset that quietly
+    -- made every alt a carry again would be the one way to lose it.
+    Roster.ClearTaggers()
+    Roster.ClearCarry()
     Print("cleared - no taggers, no carry.")
 end
 commands["clear"], commands["off"], commands["none"] = commands["reset"], commands["reset"], commands["reset"]

@@ -13,9 +13,11 @@ local ADDON_NAME, ns = ...
 -- a pop-up would also want belongs in the kit instead, and then it has to be
 -- copied across. Read the kit's header before adding to it.
 --
--- The window never decides anything. Every button ends in a `ns.Roster` call,
--- so the mode-exclusivity rule and its confirm popup are enforced once, in the
--- core, for this and for /tag alike. See Roster.RequestTagger.
+-- The window never decides anything. Every button ends in a `ns.Roster` call -
+-- the Setup box's dropdown included, which is `Roster.SetMode` and nothing
+-- else. What a mode change re-derives is the core's business, and it is the
+-- same business whether the change came from here, from /tag or from an
+-- accepted pair popup. See Roster.SetMode.
 --
 -- BUILT ON FIRST OPEN. A user who never types the command pays nothing for it,
 -- and the build is free to read anything the core assigns at ADDON_LOADED,
@@ -128,16 +130,26 @@ end
 -- One entry per section, which is what actually keeps the three identical: the
 -- build and refresh code below knows nothing about carries or taggers, only
 -- about these functions. A fourth list is a fourth entry here and nothing else.
+--
+-- `mode` is the one thing that is not the same for all three. Carries and
+-- taggers are the two halves of ONE question - which end of the boost this
+-- character is on - and only one of them is ever the answer, so the page shows
+-- one at a time and the Setup box above them is where you say which. Both are
+-- still built, and the hidden one's box is hidden rather than emptied: the list
+-- behind it is intact and comes straight back when you switch. Follow targets
+-- carry no `mode` and are always on, being a list that means the same thing
+-- whichever half you are playing.
 --------------------------------------------------------------------------------
 
 local SECTIONS = {
     {
         role  = "carry",
+        mode  = "tagger",
         title = "Carries",
         noun  = "Carry",
-        empty = "No carries remembered.",
+        empty = "No carries remembered. Add whoever is levelling you.",
         add   = "Remember a carry - the character doing the killing.",
-        clear = "Forget every remembered carry. The active one stays.",
+        clear = "Forget every remembered carry, the active one included.",
         -- The checkbox IS the active marker, and clicking anywhere on the row
         -- ticks it. That replaces the word "active" on the end of a line: a
         -- column of boxes says which one at a glance, where a word has to be
@@ -152,12 +164,12 @@ local SECTIONS = {
     },
     {
         role  = "tagger",
+        mode  = "carry",
         title = "Taggers",
         noun  = "Tagger",
         empty = "No taggers. Add the character you are levelling.",
         add   = "Add a tagger - the character being levelled.",
         clear = "Remove every tagger.",
-        gear  = true,
         -- Marker order, not alphabetical, so the list reads in the same order
         -- as the markers on screen and the follow macro.
         List  = function()
@@ -196,6 +208,25 @@ local function SectionFor(role)
     end
 end
 
+-- What the Setup dropdown sets, and the one thing the whole page hangs off.
+-- Read through here rather than off ns.db directly so the nil that a character
+-- who has never chosen holds reads as "carry" in one place instead of five.
+local function CurrentMode()
+    return (ns.db and ns.db.mode == "tagger") and "tagger" or "carry"
+end
+
+local function SectionLive(section)
+    return section.mode == nil or section.mode == CurrentMode()
+end
+
+-- The dropdown's two entries, worded as the end of the sentence its label
+-- starts. "Tagger" alone would be the same word on both halves of the page and
+-- would leave which one it means to be worked out; these say what you do.
+local MODES = {
+    { value = "carry",  label = "Carry - I do the killing" },
+    { value = "tagger", label = "Tagger - I am being levelled" },
+}
+
 --------------------------------------------------------------------------------
 -- The prompt
 --------------------------------------------------------------------------------
@@ -214,7 +245,12 @@ local function Ask(role, name, announce)
         hint    = "Character name",
         text    = name,
         choices = (not role) and ROLES or nil,
-        choice  = "tagger",
+        -- The list this character is actually using, not always "tagger". A
+        -- carry naming somebody almost always means a tagger and a tagger
+        -- almost always means their carry, so the mode is the better guess by
+        -- a distance - and it is the one that puts the new name in a box that
+        -- is on screen, where the other silently fills a list nothing reads.
+        choice  = (CurrentMode() == "tagger") and "carry" or "tagger",
         accept  = "Add",
         OnAccept = function(text, chosen)
             local section = SectionFor(role or chosen)
@@ -239,6 +275,47 @@ end
 -- The Players page
 --------------------------------------------------------------------------------
 
+-- The two group buttons every row carries, on every list.
+--
+-- The envelope is WhoDoesWhat's mail button - the same art for the same act,
+-- sending somebody a message - and it is the one that IS a message: an ask goes
+-- out over the addon link where there is one, and as a whispered "inv" where
+-- there is not. The plus is the invite, green because it is the only thing on
+-- the page that adds somebody to something.
+--
+-- The plus is a GLYPH, not a button face. It was Interface\Buttons\UI-PlusButton-Up
+-- first, which is the quest log's expand control - and that art has its own
+-- rust-coloured button drawn into it. Inside a UIPanelButtonTemplate that read
+-- as a button inside a button; stripped of the frame it still read as a small
+-- red tile, because the tile was never the frame. Character-Plus is the bare
+-- sign with nothing around it and is already the green this wanted, which is
+-- why there is no tint anywhere below: the kit's own 0.75-to-white hover dims
+-- and brightens the green for free.
+--
+-- Both are ordinary paths that exist on every client back to vanilla. If either
+-- ever comes up blank these are the two lines to change - a missing texture
+-- draws as nothing rather than erroring, the same as UI.SPEAKER_ICON.
+local INVITE_ICON = "Interface\\PaperDollInfoFrame\\Character-Plus"
+local ASK_ICON    = "Interface\\Icons\\INV_Letter_15"
+
+-- BARE, not framed - and bigger than a framed one because of it. Both of these
+-- started inside a UIPanelButtonTemplate the way the gear before them was, and
+-- a row of three framed buttons read as a button bar bolted onto the end of the
+-- name: the plus in particular came out as a small picture inside a big button
+-- that had nothing to do with it. Stripped of the frame the art IS the control,
+-- so it can have the whole 20px the row will give it. See
+-- UI.CreateBareIconButton, which exists for exactly this - a row that already
+-- has one framed button on it, the bin.
+local ROW_ACTION = 20
+
+-- Static, because UI.AddTooltip captures the body at build and only the
+-- disabled reason is read live. Both say which of the two routes the click
+-- takes, since that is the part somebody cannot see happening.
+local INVITE_TIP = "Invites them to your group. Anyone on these lists who is "
+    .. "running TagTeam accepts it silently, with no dialog on their screen."
+local ASK_TIP = "Asks them to invite you. Goes straight over the addon link "
+    .. "where they are running TagTeam, and whispers \"inv\" where they are not."
+
 -- Row widgets are built once and reused. The refresh below runs on a ticker, so
 -- creating anything in it would leak a frame per name per pass.
 local function DressRow(section, index)
@@ -249,23 +326,31 @@ local function DressRow(section, index)
     row.remove:SetPoint("RIGHT", -2, 0)
     UI.AddTooltip(row.remove, "Remove", "Take this name off the list.")
 
-    local noteAnchor = row.remove
-    if section.gear then
-        row.gear = UI.CreateGearButton(row, "Settings",
-            "Per-tagger settings aren't built yet.", nil)
-        row.gear:SetSize(UI.ROW_ICON, UI.ROW_ICON)
-        row.gear:SetPoint("RIGHT", row.remove, "LEFT", -4, 0)
-        -- Disabled with a reason rather than live and inert: a button that does
-        -- nothing when clicked reads as a bug.
-        row.gear:Disable()
-        row.gear.disabledReason = "Per-tagger settings aren't built yet."
-        noteAnchor = row.gear
-    end
+    -- Right to left off the bin: ask, then invite. The pair reads outward from
+    -- the destructive button rather than being split around it, and the invite
+    -- sits innermost because it is the one you press without thinking - the ask
+    -- is the one you press when the invite is not yours to send.
+    --
+    -- A tagger's gear used to sit in this slot, disabled, holding the place for
+    -- per-tagger settings that were never built. Two buttons that do something
+    -- are worth more than one that explains why it does not, and the list is
+    -- what those settings would have been about anyway.
+    --
+    -- 6px apart rather than the 4 a framed button takes: a frame draws its own
+    -- edge and so separates itself, where bare art butted up that close runs
+    -- into its neighbour.
+    row.ask = UI.CreateBareIconButton(row, ASK_ICON, ROW_ACTION,
+        "Request an invite", ASK_TIP)
+    row.ask:SetPoint("RIGHT", row.remove, "LEFT", -6, 0)
+
+    row.invite = UI.CreateBareIconButton(row, INVITE_ICON, ROW_ACTION,
+        "Invite to group", INVITE_TIP)
+    row.invite:SetPoint("RIGHT", row.ask, "LEFT", -6, 0)
 
     -- Right-aligned and grey: a marker name, or whatever else the section has
     -- to say about a row without competing with the name.
     row.note = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.note:SetPoint("RIGHT", noteAnchor, "LEFT", -6, 0)
+    row.note:SetPoint("RIGHT", row.invite, "LEFT", -6, 0)
     row.note:SetTextColor(0.6, 0.6, 0.6)
 
     local textLeft = 6
@@ -278,7 +363,8 @@ local function DressRow(section, index)
         local function Pick() if row.OnPick then row.OnPick() end end
 
         row.check = UI.CreateCheckbox(row, nil, "Make this your carry",
-            "Sets who is levelling you. Switching modes still asks first.", Pick)
+            "Sets which of these is levelling you right now. The rest stay on "
+            .. "the list.", Pick)
         row.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
         row.check:SetPoint("LEFT", 4, 0)
         textLeft = 4 + UI.ROW_CHECK + 6
@@ -325,6 +411,12 @@ local function DressRow(section, index)
 end
 
 local function RefreshSection(section)
+    -- Hidden, not emptied. StackSections skips a hidden box and leaves no gap,
+    -- and the rows inside keep whatever they last drew - which nobody sees, and
+    -- which is right again the moment the mode comes back.
+    section.box:SetShown(SectionLive(section))
+    if not section.box:IsShown() then return end
+
     local list = section.List()
 
     for i, entry in ipairs(list) do
@@ -346,12 +438,32 @@ local function RefreshSection(section)
             section.Drop(entry.key)
             ns.RefreshView()
         end)
+        row.invite:SetScript("OnClick", function() Roster.Invite(entry.name) end)
+        row.ask:SetScript("OnClick", function() Roster.AskInvite(entry.name) end)
+
+        -- Neither is greyed for being on the list the mode is not using: both
+        -- lists are people you play with, and the core invites and accepts for
+        -- all of them. What does grey them is the two cases where the click
+        -- would do nothing you want.
+        --
+        -- No point asking to be brought somewhere you already are, and an ask
+        -- while grouped is how you end up leaving a party to join the same one.
+        local grouped = IsInGroup() or IsInRaid()
+        UI.SetEnabled(not grouped, row.ask)
+        row.ask.disabledReason = "You are already in a group."
+
+        -- The invite stays live while grouped - a party takes five - and goes
+        -- out only for somebody who is not already standing in it.
+        local here = Roster.InGroupWith(entry.name)
+        UI.SetEnabled(not here, row.invite)
+        row.invite.disabledReason = "Already in your group."
 
         if row.check then
             row.check:SetChecked(live)
             row.OnPick = function()
-                -- Re-ticking the one that is already on would only raise the
-                -- mode popup for a change that is not one.
+                -- Re-ticking the one that is already on is not a change, so it
+                -- does not go anywhere near Roster - it only puts the tick back
+                -- where the click just took it from.
                 if live then
                     row.check:SetChecked(true)
                     return
@@ -361,15 +473,10 @@ local function RefreshSection(section)
             end
         end
 
-        -- The active carry is a mode, not a list entry, and Roster refuses to
-        -- forget it. Show that here rather than letting the click do nothing.
-        if live then
-            row.remove:Disable()
-            row.remove.disabledReason =
-                "This is your carry right now. |cffffff00/tag remove <name>|r first."
-        else
-            row.remove:Enable()
-        end
+        -- The bin works on the active carry too now. It used to be refused,
+        -- because being that carry's tagger WAS the mode; the mode is its own
+        -- setting on the box above, so this is a list entry like any other.
+        row.remove:Enable()
         row:Show()
     end
 
@@ -379,17 +486,63 @@ local function RefreshSection(section)
     UI.LayoutHeaderChain(section.box)
 end
 
+-- Row edge to the label, and label to the control beside it. The same two
+-- numbers the options rows use, written again rather than shared: those live
+-- three hundred lines below this and are locals of that half of the file.
+local SETUP_TEXT_LEFT  = 6
+local SETUP_GAP        = 12
+-- Blizzard's dropdown housing carries transparent padding to the left of its
+-- visible edge, backed out here so the gap written down is the gap you see.
+-- See DROPDOWN_LEAD below, which is the same 15px for the same reason.
+local SETUP_LEAD       = 15
+local SETUP_DD_W       = 168   -- fits "Tagger - I am being levelled"
+
+-- One box, one row, one question - and it is the question the two lists below
+-- it are the answer to, which is why it sits at the top of the page rather than
+-- among the settings tabs. Somebody who has just installed this opens Players
+-- first and needs to say which end they are on before anything else on the page
+-- means what it says.
+local function BuildSetupBox(parent)
+    local box = UI.CreateSectionBox(parent, "My Setup")
+    local row = UI.CreateSectionRow(box, 1)
+
+    row.label = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.label:SetPoint("LEFT", SETUP_TEXT_LEFT, 0)
+    row.label:SetText("I am using TagTeam as a:")
+
+    -- Ends in Roster.SetMode like every other button on this page ends in a
+    -- Roster call: the switch re-derives markers, dynamic taggers and every
+    -- plate on screen, and the window is not the place that knows to.
+    box.dropdown = UI.CreateDropdown(row, "TagTeamPlayersModeDD", SETUP_DD_W,
+        MODES, CurrentMode, function(value)
+            Roster.SetMode(value)
+            ns.RefreshView()
+        end)
+    box.dropdown:SetPoint("LEFT", row.label, "RIGHT", SETUP_GAP - SETUP_LEAD, -2)
+    UI.AddTooltip(box.dropdown, "My role",
+        "Which half of the pair this character is playing. Both lists are kept "
+        .. "either way - switching only changes which one TagTeam is using.")
+
+    UI.SetSectionRowCount(box, 1)
+    return box
+end
+
 local function BuildPlayersPage(page)
     local scroll = UI.CreateScroll(page, "TagTeamViewPlayersScroll")
     scroll:SetPoint("TOPLEFT")
     scroll:SetPoint("BOTTOMRIGHT", -UI.SCROLLBAR_W, 0)
     frame.playersScroll = scroll
 
-    local boxes = {}
+    -- Boxes[1] is the setup box; the lists start at 2. Kept in the same array
+    -- because StackSections takes one list and lays it out top to bottom, which
+    -- is exactly the order the page reads in.
+    local boxes = { BuildSetupBox(scroll:GetScrollChild()) }
+    frame.setupBox = boxes[1]
+
     for i, section in ipairs(SECTIONS) do
         local box = UI.CreateSectionBox(scroll:GetScrollChild(), section.title)
         section.box = box
-        boxes[i] = box
+        boxes[i + 1] = box
 
         -- Chained rightmost-first: [x] hugs the corner, [+] sits to its left.
         section.clearBtn = UI.AddHeaderCloseButton(box, "Clear " .. section.title,
@@ -2494,8 +2647,8 @@ end
 
 -- What the page is currently showing, as one string.
 --
--- The refresh runs on a ticker so a change made from /tag - or by the
--- mode-switch popup, which accepts long after the click that raised it - lands
+-- The refresh runs on a ticker so a change made from /tag - or by the pairing
+-- popup, which accepts long after the message that raised it - lands
 -- in the window without the core having to know this file exists. Comparing
 -- signatures keeps that ticker down to a string build and a compare on the
 -- passes where nothing happened, which is all of them but the rare one.
@@ -2504,20 +2657,34 @@ end
 -- window is toggled.
 local function PingEveryone()
     for _, section in ipairs(SECTIONS) do
-        for _, entry in ipairs(section.List()) do Roster.Ping(entry.name) end
+        -- Only the half this character is using. Asking the other list where it
+        -- is would be a whisper per name for a box nobody can see.
+        if SectionLive(section) then
+            for _, entry in ipairs(section.List()) do Roster.Ping(entry.name) end
+        end
     end
 end
 
 local function Signature()
-    local parts = {}
+    -- First, because it decides which sections contribute anything below it -
+    -- and because /tag and an accepted pair popup both change it behind the
+    -- window's back, which is the whole reason this check exists.
+    -- Being in a group at all greys every ask button on the page, so it is one
+    -- entry rather than one per row.
+    local parts = { CurrentMode(), tostring(IsInGroup() or IsInRaid()) }
     for _, section in ipairs(SECTIONS) do
-        for _, entry in ipairs(section.List()) do
+        for _, entry in ipairs(SectionLive(section) and section.List() or NO_ROWS) do
             -- Presence is in here because it changes on its own: a ping that
             -- goes unanswered turns into "offline" when the timeout passes,
             -- with no event to hang a refresh on.
             parts[#parts + 1] = entry.name ..
                 (section.Note and section.Note(entry) or "") ..
-                PlayerName(entry) .. PlayerTail(entry)
+                PlayerName(entry) .. PlayerTail(entry) ..
+                -- Whether their row's invite button is live. Joining a group
+                -- fires events the window does not listen to, and a plus you
+                -- can still press on somebody standing next to you is the kind
+                -- of stale a half-second check exists to catch.
+                tostring(Roster.InGroupWith(entry.name))
         end
         parts[#parts + 1] = "|"
     end
@@ -2552,6 +2719,8 @@ end
 function ns.RefreshView()
     if not frame then return end
     frame.signature = Signature()
+    -- Before the sections, which show and hide themselves off the same value.
+    frame.setupBox.dropdown:Sync()
     for _, section in ipairs(SECTIONS) do RefreshSection(section) end
     UI.SetScrollHeight(frame.playersScroll,
         UI.StackSections(frame.playersScroll:GetScrollChild(), frame.playersBoxes))
