@@ -130,17 +130,27 @@ local function Register()
     icon:Register(LDB_NAME, launcher, saved)
     registered = true
 
+    local button = icon:GetMinimapButton(LDB_NAME)
+
+    -- Two pixels in from LibDBIcon's default 17x17, so the artwork sits
+    -- inside the ring rather than filling it edge to edge. Odd sizes are the
+    -- ones that land on whole pixels inside a 31x31 button, which is the other
+    -- reason this is 15 and not 14.
+    icon:SetButtonIcon(LDB_NAME, ICON, 15, "CENTER", 0, 0)
+
     -- Rounded off the same way WhoDoesWhat rounds its own, so a square icon
     -- sits inside the ring instead of poking out of the four corners of it.
+    -- Left at the library's full 17x17 slot rather than following the icon
+    -- down, so shrinking the artwork does not tighten the rounding with it.
     -- Guarded because CreateMaskTexture is not on every client this addon
     -- loads on; without it the icon is a square, which is what every minimap
     -- button looked like for fifteen years.
-    local button = icon:GetMinimapButton(LDB_NAME)
     if button and button.CreateMaskTexture then
         local mask = button:CreateMaskTexture(nil, "ARTWORK")
         mask:SetTexture([[Interface\CharacterFrame\TempPortraitAlphaMask]],
             "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-        mask:SetAllPoints(button.icon)
+        mask:SetSize(17, 17)
+        mask:SetPoint("TOPLEFT", 7, -6)
         button.icon:AddMaskTexture(mask)
     end
 
