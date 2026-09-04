@@ -127,7 +127,7 @@ function Menu()
     PrintRaw(format("|cff33ff99TagTeam|r%s |cffffff00Options:|r",
         (UI and UI.VERSION) and format(" |cff808080(v%s)|r", UI.VERSION) or ""))
     PrintRaw("  |cffffff00/tag inv|r - Asks your active partner for an immediate invite")
-    PrintRaw("  |cffffff00/tag pair <name>|r (or |cffffff00add|r) - Add a partner to TagTeam")
+    PrintRaw("  |cffffff00/tag pair [name]|r (or |cffffff00add|r) - Add a partner to TagTeam")
     PrintRaw("  |cffffff00/tag remove <name>|r - Takes that name off every list it is on")
     PrintRaw("  |cffffff00/tag reset|r (or |cffffff00clear|r) - Removes all taggers and carries")
     PrintRaw(format("  |cffffff00/tag sound|r (or |cffffff00audio|r) - Toggle TagTeam's audio, "
@@ -142,7 +142,7 @@ commands["ui"] = function(rest, cmd)
 end
 commands["window"] = commands["ui"]
 
--- /tag pair <name> - the window's add prompt, with the name filled in and the
+-- /tag pair [name] - the window's add prompt, with the name filled in and the
 -- role still open. It deliberately does NOT decide anything itself: naming
 -- somebody is not the same as saying what they are to you, and getting that
 -- backwards is what the two roles exist to prevent.
@@ -151,13 +151,13 @@ commands["window"] = commands["ui"]
 -- you typed, without asking - which is exactly the guess this one refuses to
 -- make - so the word people already have in their fingers lands on the prompt
 -- instead of quietly picking a side for them.
+--
+-- The NAME IS OPTIONAL. It used to answer a bare /tag pair with a line telling
+-- you to type the same command again with a name on it - which is a prompt,
+-- printed into chat, for a box that was one function call away. The prompt
+-- opens empty instead and asks for the name itself.
 commands["pair"] = function(rest, cmd)
-    local name = strtrim(rest or "")
-    if name == "" then
-        Print("|cffffff00/tag pair <name>|r - pick what they are from the list.")
-        return
-    end
-    ShowPairPrompt(name)
+    ShowPairPrompt(strtrim(rest or ""))
 end
 commands["add"] = commands["pair"]
 

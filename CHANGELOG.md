@@ -50,6 +50,34 @@ under it, the one that mode is about.
   when you are the carry, Carry when you are the tagger — instead of always
   Tagger.
 
+- **Changed:** **naming somebody sets your mode.** Adding a tagger says you are
+  the carry, so you are switched to carry mode; setting a carry says you are the
+  tagger, so you are switched to tagger mode. A small pop-up with an OK button
+  says which way it went, and only when it actually changed. This replaces the
+  chat line that used to tell you the name had been saved onto a list your
+  character was not reading and then leave it there.
+
+- **Fixed:** **setting a carry now asks them**, the way adding a tagger always
+  has. The offer that raises the pairing pop-up on their screen was only sent if
+  you happened to already be in tagger mode, so the usual first move — naming
+  your carry while still set up as one — told them nothing at all. The mode is
+  settled first now, so both directions ask.
+
+- **Changed:** the add pop-up is **narrower**, both its controls are **labelled**
+  — *They are my* over the list, *Character name* over the box — and the two are
+  finally the same width. The name field is capped at twelve letters, which is
+  the game's own limit.
+
+- **Added:** a line of grey text under that list saying **what the role you have
+  picked actually is**, changing as you pick. Tagger, carry and follow target are
+  three words that mean nothing on first sight, and the cost of guessing wrong is
+  a name on the wrong list plus an offer sent to somebody not expecting one.
+
+- **Changed:** `/tag pair` and `/tag add` **open the pop-up with no name on
+  them**. They used to answer a bare command by printing a line telling you to
+  type it again with a name — a prompt, in chat, for a box that was one click
+  away.
+
 - **Removed:** the disabled gear on tagger rows. It was holding a place for
   per-tagger settings; the two invite buttons have the space now.
 

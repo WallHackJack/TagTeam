@@ -1090,6 +1090,23 @@ local PROMPT_TOGGLE_STEP = PROMPT_TOGGLE_H + 10
 -- the edit box above it rather than 22px inboard of it. Same number, same
 -- reason, as DROPDOWN_LEAD in the view.
 local PROMPT_DD_LEAD  = 22
+-- The mirror of it on the right, and the reason the dropdown can be SIZED to
+-- the field above it rather than guessed at.
+--
+-- UIDropDownMenu_SetWidth(w) sets the MIDDLE texture to w. What gets drawn is
+-- Left + Middle + Right, so the housing is w + PROMPT_DD_CAPS wide, of which
+-- PROMPT_DD_LEAD on the left and PROMPT_DD_TRAIL on the right are transparent -
+-- and a visible width of v therefore wants w = v + LEAD + TRAIL - CAPS.
+--
+-- CAPS is the two 25px end textures, NOT the 25 that SetWidth adds to the
+-- frame's own width: the art overhangs the frame, which is why sizing off the
+-- frame put the right-hand end cap 25px outside the pop-up.
+local PROMPT_DD_TRAIL = 17
+local PROMPT_DD_CAPS  = 50    -- Left and Right, 25px of housing art each
+-- Grey text under the dropdown, saying what the thing just picked IS. It wraps,
+-- so its height is measured rather than declared; this is only the air left
+-- under it before whatever comes next.
+local PROMPT_NOTE_GAP = 10
 
 -- The first value in a list, submenus included. What a prompt starts on when
 -- the caller did not say - and a caller who groups a long list has a first
@@ -1117,6 +1134,12 @@ end
 --            the escape hatch for what is not on it.
 --   choice   which choice value starts selected
 --   choiceLabel  caption over the dropdown; nil leaves it unlabelled
+--   note     grey wrapped text UNDER the dropdown, or a function(choiceValue)
+--            returning one, re-read every time a choice is picked. For saying
+--            what the thing just chosen actually is - which a tooltip would
+--            say too, except that a tooltip is only read by somebody who
+--            already suspects they need it.
+--   maxLetters  cap on the edit box, 0 or nil for no cap
 --   OnChoice function(choiceValue), as it is picked. For previewing what was
 --            just chosen; the answer itself still arrives at OnAccept.
 --   Field    function(choiceValue) -> show the edit box for this choice? Absent
@@ -1197,6 +1220,16 @@ function UI.CreatePrompt(globalName)
         "UIDropDownMenuTemplate")
     UI.StyleDropdown(dd, true)
     p.dropdown = dd
+
+    -- What the current choice means, in a sentence or two, under the list that
+    -- picked it. Grey and wrapped: it is an explanation, not a control, and it
+    -- must not read as a second caption for the field below it.
+    local note = p:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    note:SetJustifyH("LEFT")
+    note:SetJustifyV("TOP")
+    note:SetTextColor(0.62, 0.62, 0.62)
+    note:Hide()
+    p.note = note
 
     -- Bound once, here, rather than re-initialised on every Ask. The list and
     -- the current value are both read back through `p`, so a new Ask changing
@@ -1323,7 +1356,7 @@ function UI.CreatePrompt(globalName)
         local on = (not self.toggle:IsShown()) or self.toggle:GetChecked()
         UI.SetEnabled(on and true or false,
             self.edit, self.editLabel, self.slider, self.sliderLabel,
-            self.choiceLabel)
+            self.choiceLabel, self.note)
         -- The dropdown has no Enable/Disable of its own to find, so it takes
         -- FrameXML's pair - which greys its text and stops the button opening
         -- the menu, where a bare SetAlpha would have left it clickable.
@@ -1416,7 +1449,13 @@ function UI.CreatePrompt(globalName)
             self.dropdown:ClearAllPoints()
             self.dropdown:SetPoint("TOPLEFT", self, "TOPLEFT",
                 PROMPT_PAD + 6 - PROMPT_DD_LEAD, y)
-            UIDropDownMenu_SetWidth(self.dropdown, width - 90)
+            -- Sized to the FIELD's visible width, not to a fraction of the
+            -- frame: the two controls sit one above the other and anything but
+            -- the same width reads as a mistake. See PROMPT_DD_TRAIL for where
+            -- the arithmetic comes from.
+            UIDropDownMenu_SetWidth(self.dropdown,
+                (width - 2 * PROMPT_PAD - 6)
+                    + PROMPT_DD_LEAD + PROMPT_DD_TRAIL - PROMPT_DD_CAPS)
             self.dropdown:Show()
             -- Asked for its own label rather than told one: the list may have
             -- come from a function, and only the dropdown knows where in it the
@@ -1427,6 +1466,30 @@ function UI.CreatePrompt(globalName)
         else
             self.dropdown:Hide()
             self.choiceLabel:Hide()
+        end
+
+        -- Under the dropdown, and only ever there: it explains the choice, so
+        -- a prompt with no choice to make has nothing for it to say.
+        --
+        -- MEASURED, not declared, and that is what decides how it is anchored.
+        -- A font string pinned by both sides takes its width from a layout pass
+        -- that has not run yet, so GetStringHeight on a fresh one reports the
+        -- height of ONE unwrapped line and the frame comes up short. One anchor
+        -- and an explicit SetWidth wraps it there and then, so the number below
+        -- is the real one.
+        local note = opts.choices and opts.note or nil
+        if type(note) == "function" then note = note(self.choice) end
+        if note and note ~= "" then
+            self.note:ClearAllPoints()
+            self.note:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y)
+            self.note:SetWidth(width - 2 * PROMPT_PAD - 6)
+            self.note:SetText(note)
+            self.note:Show()
+            local grown = ceil(self.note:GetStringHeight()) + PROMPT_NOTE_GAP
+            y = y - grown
+            height = height + grown
+        else
+            self.note:Hide()
         end
 
         -- A labelled field is a CAPTION OVER A BOX, both centred; an unlabelled
@@ -1510,6 +1573,9 @@ function UI.CreatePrompt(globalName)
         -- thing it is editing.
         self.titleText:SetText(opts.title or "")
         self.hint:SetText(opts.hint or "")
+        -- 0 is the EditBox's own word for "no cap", so a prompt that says
+        -- nothing gets what it had before this existed.
+        self.edit:SetMaxLetters(opts.maxLetters or 0)
         self.OnAccept = opts.OnAccept
         self.Validate = opts.Validate
         self.allowEmpty = opts.allowEmpty

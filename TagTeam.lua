@@ -4449,48 +4449,54 @@ function Roster.SetMode(mode)
     return true
 end
 
--- Adding a name. There is no mode guard on either of these any more, and no
--- confirm popup behind them: adding a tagger while you are a tagger yourself
--- writes a name onto a list you are not currently using, which is a thing
--- somebody may perfectly well want to do the day before they switch back.
+-- Adding a name, and the mode that follows from it.
+--
+-- Naming somebody a tagger says you are the carry; naming somebody your carry
+-- says you are the tagger. There is nothing left to ask about, so this SETS the
+-- mode rather than saving the name onto a list this character is not reading
+-- and printing a chat line about it. That line - NoteInert, which lived here -
+-- was the addon telling you it had understood you and then declined to act.
+--
+-- Announced, because it is a second thing happening off one click and the whole
+-- Players page rearranges itself around it. An OK button and nothing else: the
+-- switch has already happened and there is no version of this where you wanted
+-- the name without the mode that gives it meaning.
 --
 -- Returns "added" or "set", plus the tagger's record where there is one.
---
--- Both say so when the name lands on the list this character is not using. Its
--- box on the Players page is hidden in that mode, so without this the name goes
--- somewhere real and nothing anywhere moves - which reads as the click having
--- done nothing at all.
-local function NoteInert(list)
-    Print(format("|cffff8080saved, but not in use|r - you are set up as a %s, "
-        .. "and that is your %s list. The Players tab on |cffffff00/tag ui|r "
-        .. "is where you change which.",
-        InTaggerMode() and "tagger" or "carry", list))
+local function AdoptMode(mode, name, role)
+    -- False when we were already in it, which is the common case and wants no
+    -- popup at all.
+    if not Roster.SetMode(mode) then return end
+    StaticPopup_Show("TAGTEAM_MODE",
+        format("|cff33ff99TagTeam|r\n\n%s is now your %s.\n\n"
+            .. "You are set up as the |cffffff00%s|r from here on.",
+            name, role, mode))
 end
 
 function Roster.RequestTagger(name)
     if RefuseSelf(name) then return "self" end
     local info = AddTagger(name)
-    if info and InTaggerMode() then NoteInert("tagger") end
+    if not info then return "added", nil end
+    -- Before the offer below, not after: an offer to be somebody's carry has to
+    -- go out from a client that IS one.
+    AdoptMode("carry", info.name, "tagger")
     -- Offer them the inverse role the moment you name them; their client
     -- decides. This used to be /tag link, typed by hand after the fact, which
     -- meant the common case was a pair of clients that each had the other
     -- written down and neither had told the other so.
-    --
-    -- Only from the mode that means it: an offer to be somebody's carry, sent
-    -- off a list this client is currently ignoring, is a lie about what we are.
-    if info and not InTaggerMode() then SendAddon("PAIRC", info.name) end
+    SendAddon("PAIRC", info.name)
     return "added", info
 end
 
 function Roster.RequestCarry(name)
     if RefuseSelf(name) then return "self" end
     SetCarryTo(name)
-    -- The same automatic offer, from the other side. See RequestTagger.
-    if InTaggerMode() then
-        SendAddon("PAIRT", db.carry)
-    else
-        NoteInert("carry")
-    end
+    -- The same two steps from the other side. The offer used to be skipped
+    -- unless you happened to already be in tagger mode, which is why naming a
+    -- carry could raise nothing at all on their screen where naming a tagger
+    -- always did. The mode is settled first now, so both directions ask.
+    AdoptMode("tagger", db.carry, "carry")
+    SendAddon("PAIRT", db.carry)
     return "set"
 end
 
@@ -4520,6 +4526,19 @@ end
 -- between the two modes. It existed to warn that the other list was about to be
 -- wiped, and nothing is wiped any more - so it is gone rather than reworded. A
 -- confirm that confirms nothing teaches people to click through confirms.
+--
+-- What is here instead is not a confirm. AdoptMode has already switched by the
+-- time this appears; it is on screen because a click that named one person also
+-- changed which half of the addon is running, and that is too much to happen in
+-- silence. One button, and it asks nothing.
+StaticPopupDialogs["TAGTEAM_MODE"] = {
+    text = "%s",
+    button1 = OKAY,
+    timeout = 30,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,   -- avoids tainting Blizzard's popup stack
+}
 
 -- A tagger dinged. The whole addon exists to make this happen, and until now it
 -- was one chat line that scrolled away behind the pull it arrived in.

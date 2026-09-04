@@ -70,11 +70,34 @@ local TABS = {
 
 -- What a name can be, and the order the pair prompt offers them. The values
 -- key into SECTIONS below, so the two lists cannot drift apart silently.
+--
+-- Each carries the sentence the prompt prints under the list once it is picked.
+-- The three words mean nothing to somebody opening this for the first time, and
+-- the whole cost of a wrong guess here is a name on the wrong list and an offer
+-- sent to somebody who was not expecting it - so the explanation is on screen
+-- rather than behind a tooltip nobody hovers.
 local ROLES = {
-    { value = "tagger", label = "Tagger" },
-    { value = "carry",  label = "Carry" },
-    { value = "follow", label = "Follow target" },
+    { value = "tagger", label = "Tagger",
+      note = "The character being levelled. They tag the mob first so the kill "
+          .. "counts as theirs, and you do the killing." },
+    { value = "carry",  label = "Carry",
+      note = "The character doing the killing. You tag the mob first, and their "
+          .. "kill pays you the XP." },
+    { value = "follow", label = "Follow target",
+      note = "Somebody your follow keybind should run to. Nothing is tracked "
+          .. "for them - it only fills the macro." },
 }
+
+local function RoleNote(value)
+    for _, role in ipairs(ROLES) do
+        if role.value == value then return role.note end
+    end
+end
+
+-- Narrower than the kit's default. A character name is twelve letters at the
+-- most, so 300px was width bought for text that cannot exist - and the pop-up
+-- was reading as a dialog rather than the one-line question it is.
+local PAIR_PROMPT_W = 250
 
 local frame    -- the window, nil until the first open
 local prompt   -- the shared add/pair prompt, nil until something asks for one
@@ -239,12 +262,21 @@ local function Ask(role, name, announce)
 
     local known = role and SectionFor(role)
     prompt:Ask({
-        -- The heading says what is about to happen; the box says what to type.
-        -- Two lines that both said "character name" was one line wasted.
+        -- The heading says what is about to happen; the caption and the box say
+        -- what to type. The caption is new and the placeholder is shorter for
+        -- it: a label that survives once there is text in the box is worth more
+        -- than greyed text that vanishes the moment you start answering.
         title   = known and ("Add a " .. known.noun) or "Pair with a character",
-        hint    = "Character name",
+        width   = PAIR_PROMPT_W,
+        label   = "Character name",
+        hint    = "Name",
+        -- Twelve is the game's own ceiling on a character name, so a box that
+        -- takes more is a box that takes typos.
+        maxLetters = 12,
         text    = name,
         choices = (not role) and ROLES or nil,
+        choiceLabel = "They are my",
+        note    = RoleNote,
         -- The list this character is actually using, not always "tagger". A
         -- carry naming somebody almost always means a tagger and a tagger
         -- almost always means their carry, so the mode is the better guess by
