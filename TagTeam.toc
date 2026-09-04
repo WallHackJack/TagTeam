@@ -12,16 +12,20 @@
 ## X-Category: Leveling
 ## X-License: MIT (code); bundled audio under separate terms, see LICENSE
 
-## OptionalDeps: LibDataBroker-1.1, LibDBIcon-1.0
+## OptionalDeps: LibDataBroker-1.1, LibDBIcon-1.0, LibSharedMedia-3.0
 
 # --- Libraries ---
 #
-# Only what the minimap button needs. LibDBIcon hard-errors without
-# LibDataBroker, which needs CallbackHandler, which needs LibStub - four
-# folders for one button, and the reason it is worth it is in
-# MinimapButton.lua's header.
+# Five folders, two features. LibDBIcon hard-errors without LibDataBroker,
+# which needs CallbackHandler, which needs LibStub - four of them for one
+# minimap button, and the reason that is worth it is in MinimapButton.lua's
+# header. LibSharedMedia rides on the same LibStub and CallbackHandler and is
+# what fills the font and sound dropdowns; see the media block in TagTeam.lua.
+#
+# Load order here is the dependency order and nothing else.
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibSharedMedia-3.0\LibSharedMedia-3.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 

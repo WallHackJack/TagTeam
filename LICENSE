@@ -13,8 +13,13 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 Bundled libraries in the Libs/ directory are the work of their respective
-authors and retain their own licenses (LibStub and ChatThrottleLib: public
-domain; LibSerialize: MIT; LibDeflate: zlib; Ace3: see its own license).
+authors and retain their own licenses: LibStub is in the public domain,
+LibSharedMedia-3.0 is LGPL v2.1, and CallbackHandler-1.0, LibDataBroker-1.1 and
+LibDBIcon-1.0 carry the licenses stated by their own distributions.
+
+The sound files in Media/ are not registered with LibSharedMedia-3.0 and are
+not offered to other addons through it, for the reasons below. TagTeam reads
+that library's list; it does not add to it.
 
 Sound files in the Media/ directory are not covered by the MIT license above.
 The MIT grant - to use, copy, modify, distribute and sublicense - covers the
