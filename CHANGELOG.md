@@ -81,6 +81,14 @@ under it, the one that mode is about.
   being levelled. Upgrading keeps what you had: every tagger on your list starts
   ticked, and your carry starts ticked on the character that had one.
 
+- **Changed:** `/tag clear` (and `reset`, `off`, `none`) **switches every
+  connection off instead of deleting the names.** Emptying a list was the only
+  way to stop the addon back when being on a list was the same thing as being
+  tracked; there is a switch for that now, so off can mean off rather than
+  "throw the names away and type them in again tomorrow". Emptying is still
+  there — it is the Clear button on each list's own box, where the thing being
+  emptied is on screen beside it.
+
 - **Changed:** `/tag` counts what is **switched on** rather than what is written
   down, and the login line names your live carries.
 

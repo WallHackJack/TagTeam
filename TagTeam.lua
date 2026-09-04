@@ -729,7 +729,7 @@ function Roster.LiveCarries()
     return liveCarries
 end
 
-function Roster.Roster.IsLiveCarry(key)
+function Roster.IsLiveCarry(key)
     if not key then return false end
     for _, info in ipairs(liveCarries) do
         if info.key == key then return true end
@@ -4643,6 +4643,29 @@ function Roster.SetLive(role, key, on, announce)
         end
     end
     return true
+end
+
+-- Which role the mode is about. The other one's ticks are dormant data, exactly
+-- like the names under them: kept, ignored, and there when you switch back.
+function Roster.LiveRole()
+    return (db and db.mode == "tagger") and "carries" or "taggers"
+end
+
+-- Every switched-on name in the role that is actually running.
+--
+-- The mode's role ONLY, and that is the whole point of it. A tick in the other
+-- list is not a live connection - the mode gate has already stopped it being
+-- one - so counting it would report connections nobody can see, and switching
+-- it off would send an OFF to somebody we had not been talking to.
+function Roster.LiveNames()
+    local out = {}
+    local role = Roster.LiveRole()
+    local list = (role == "carries") and db.carries or db.taggers
+    for key in pairs(Roster.LiveSet(role)) do
+        local info = list and list[key]
+        out[#out + 1] = (info and info.name) or key
+    end
+    return out
 end
 
 -- Every live name in one role switched off, as one act. The wire messages still

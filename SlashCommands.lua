@@ -136,7 +136,7 @@ function Menu()
     PrintRaw("  |cffffff00/tag inv|r - Asks your active partner for an immediate invite")
     PrintRaw("  |cffffff00/tag pair [name]|r (or |cffffff00add|r) - Add a partner to TagTeam")
     PrintRaw("  |cffffff00/tag remove <name>|r - Takes that name off every list it is on")
-    PrintRaw("  |cffffff00/tag reset|r (or |cffffff00clear|r) - Removes all taggers and carries")
+    PrintRaw("  |cffffff00/tag reset|r (or |cffffff00clear|r) - Switches every connection off, keeps the names")
     PrintRaw(format("  |cffffff00/tag sound|r (or |cffffff00audio|r) - Toggle TagTeam's audio, "
         .. "currently %s", db.audio and "|cff00ff00ON|r" or "|cffff2020OFF|r"))
     Status()
@@ -245,13 +245,30 @@ end
 commands["rem"], commands["del"] = commands["remove"], commands["remove"]
 
 commands["reset"] = function(rest, cmd)
-    -- Clears both roles: reset means "no relationships", not "no taggers". The
-    -- MODE is left alone - which end of the boost you are on is not a
-    -- relationship, it is how you play this character, and a reset that quietly
-    -- made every alt a carry again would be the one way to lose it.
-    Roster.ClearTaggers()
-    Roster.ClearCarry()
-    Print("cleared - no taggers, no carry.")
+    -- SWITCHES OFF, does not delete. This used to wipe both lists, which was
+    -- the only way to stop the addon back when being on a list was the same
+    -- thing as being tracked; there is a switch for that now, so "off" can mean
+    -- off rather than "throw away the names and type them in again tomorrow".
+    -- Emptying a list is still there - it is the Clear button on that list's
+    -- own box, where the thing being emptied is on screen next to it.
+    --
+    -- The mode's own role, not both. A tick on the list you are not using is
+    -- not a connection - the mode already stopped it being one - so switching
+    -- it off would send somebody an OFF for a link that was not open, and would
+    -- empty the setup waiting for you on the other side of the next switch.
+    --
+    -- The MODE is left alone too, for the same reason it survives /tag reset:
+    -- which end of the boost you are on is not a relationship, it is how you
+    -- play this character.
+    local was = #Roster.LiveNames()
+    Roster.ClearLive(Roster.LiveRole())
+    if was == 0 then
+        Print("nothing was switched on.")
+    else
+        Print(format("switched off |cffffff00%d|r connection%s. "
+            .. "Every name is still on its list - tick one to start again.",
+            was, was == 1 and "" or "s"))
+    end
 end
 commands["clear"], commands["off"], commands["none"] = commands["reset"], commands["reset"], commands["reset"]
 commands["stats"] = function(rest, cmd)
