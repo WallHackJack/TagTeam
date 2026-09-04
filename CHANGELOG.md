@@ -81,6 +81,14 @@ under it, the one that mode is about.
   being levelled. Upgrading keeps what you had: every tagger on your list starts
   ticked, and your carry starts ticked on the character that had one.
 
+- **Fixed:** with **nothing switched on, the addon is actually idle.** A tagger
+  with every carry unticked was still badging nameplates and still popping a
+  verdict on each kill — for a link that was off, and with no XP behind it,
+  because there was nobody to report to. Nameplate badges, kill verdicts,
+  bursts, cues, the focus nag and the auto-invite all go quiet now. Presence
+  pings still answer and invites are still accepted, which is what keeps the
+  people on your lists reachable while you are not connected to any of them.
+
 - **Changed:** `/tag clear` (and `reset`, `off`, `none`) **switches every
   connection off instead of deleting the names.** Emptying a list was the only
   way to stop the addon back when being on a list was the same thing as being

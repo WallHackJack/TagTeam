@@ -757,6 +757,21 @@ local function RebuildDynamicTaggers()
     wipe(dynamicTaggers)
     if not InTaggerMode() then return end
 
+    -- NOBODY TO REPORT TO IS NOTHING TO TRACK. In tagger mode the addon exists
+    -- to tell a carry what you just earned them; with no carry switched on
+    -- there is nobody to tell, and tracking anyway meant a badge on every
+    -- nameplate and a verdict pop-up on every kill, for a link that was off.
+    --
+    -- Left empty rather than gated at each of the dozen call sites, because
+    -- HasTaggers already reads this table and is what every one of them asks:
+    -- the plates, the badge, the kill verdict, the bursts, the focus nag and
+    -- the auto-invite all go quiet off this one line.
+    --
+    -- The carry-side half of the same rule needs no code. SavedTaggers is
+    -- already the live set there, so a carry with nothing ticked has no taggers
+    -- and HasTaggers is false for exactly the same reason.
+    if not Roster.HaveCarries() then return end
+
     -- Pets ride on their owner's entry rather than getting one of their own: a
     -- pet is not a head the XP formula knows about, and letting one into the
     -- table would put its level into LowestTaggerLevel and quietly bias every
