@@ -780,33 +780,31 @@ function UI.SetSliderValue(s, value)
     s.settingValue = nil
 end
 
--- A dropdown bound to a fixed list of { value, label }. Blizzard's dropdown
--- carries a lot of transparent housing, so StyleDropdown trims it to something
--- that fits a row; see that function for the numbers.
+-- Teach an already-built dropdown frame a list of { value, label }, and give it
+-- a `Sync` that puts the current value's label in the box.
 --
--- `Selected` is asked for the current value on every open rather than the
--- caller pushing one in, so the control cannot disagree with what it is showing.
+-- Split out of CreateDropdown because the pop-up in CreatePrompt builds its
+-- dropdown itself - it has to, since a UIDropDownMenuTemplate finds its regions
+-- by global name and the pop-up's is named after the pop-up. It used to carry
+-- its own initialiser, which is how it ended up the one dropdown in either
+-- addon that could not do submenus. There is one of these now.
+--
+-- `List` is asked for the entries on every open rather than handed them once:
+-- an entry whose label reports something that moves - where you currently are,
+-- what a setting currently costs - is frozen and wrong otherwise, and a list
+-- that is expensive to build is the caller's problem to memoise.
+--
+-- `Selected` is asked for the current value the same way, so the control cannot
+-- disagree with what it is showing.
 --
 -- An entry carrying `entries` instead of a `value` is a SUBMENU holding that
 -- list. This is not decoration: Blizzard's dropdown draws its buttons in one
 -- column and does not scroll them, so a list long enough to reach past the
--- screen edge simply has a bottom nobody can get to - which is what a font
--- list borrowed from a media pack does the moment it is more than a screenful.
--- Grouping is the caller's business, since only the caller knows what the list
--- means; all this knows is how to nest one.
-function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
-    local dd = CreateFrame("Frame", globalName, parent, "UIDropDownMenuTemplate")
-    dd:SetFrameLevel(parent:GetFrameLevel() + 1)
-    UI.StyleDropdown(dd, true)
-
-    -- `choices` may be a function, and then it is called EVERY time rather than
-    -- resolved once: an entry whose label reports something that moves - where
-    -- you currently are, what a setting currently costs - is frozen and wrong
-    -- otherwise. A caller whose list is expensive to build memoises it itself.
-    local function List()
-        return type(choices) == "function" and choices() or choices
-    end
-
+-- screen edge simply has a bottom nobody can get to - which is what a font or
+-- sound list borrowed from a media pack does the moment it is more than a
+-- screenful. Grouping is the caller's business, since only the caller knows
+-- what the list means; all this knows is how to nest one.
+local function BindDropdown(dd, List, Selected, OnPick)
     -- Depth first: the label for the box has to be found wherever in the tree
     -- the value ended up, and the caller does not tell us where that was.
     local function Find(value, list)
@@ -821,14 +819,14 @@ function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
     end
 
     local function Label(value)
-        return Find(value, List()) or tostring(value)
+        return Find(value, List() or {}) or tostring(value)
     end
 
     -- `menuList` is whatever the parent button put in info.menuList, and comes
     -- back here when a submenu opens - so one initialiser serves every level.
     UIDropDownMenu_Initialize(dd, function(_, level, menuList)
         local current = Selected()
-        for _, entry in ipairs(menuList and menuList.entries or List()) do
+        for _, entry in ipairs(menuList and menuList.entries or List() or {}) do
             local info = UIDropDownMenu_CreateInfo()
             info.text = entry.label
             if entry.entries then
@@ -852,9 +850,25 @@ function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
             UIDropDownMenu_AddButton(info, level)
         end
     end)
-    UIDropDownMenu_SetWidth(dd, width)
 
     function dd:Sync() UIDropDownMenu_SetText(self, Label(Selected())) end
+    return dd
+end
+
+-- A dropdown bound to a list of { value, label }, or to a function returning
+-- one. Blizzard's dropdown carries a lot of transparent housing, so
+-- StyleDropdown trims it to something that fits a row; see that function for
+-- the numbers. Everything about the list itself is in BindDropdown above.
+function UI.CreateDropdown(parent, globalName, width, choices, Selected, OnPick)
+    local dd = CreateFrame("Frame", globalName, parent, "UIDropDownMenuTemplate")
+    dd:SetFrameLevel(parent:GetFrameLevel() + 1)
+    UI.StyleDropdown(dd, true)
+
+    BindDropdown(dd, function()
+        return type(choices) == "function" and choices() or choices
+    end, Selected, OnPick)
+
+    UIDropDownMenu_SetWidth(dd, width)
     dd:Sync()
     return dd
 end
@@ -1071,24 +1085,57 @@ local PROMPT_CAP_H    = 16
 -- the gap comes out of the slack at the bottom rather than making the frame
 -- taller again.
 local PROMPT_TOGGLE_STEP = PROMPT_TOGGLE_H + 10
+-- Transparent padding on the left of Blizzard's dropdown housing. Subtracted
+-- from the dropdown's x so its visible left edge lands in the same column as
+-- the edit box above it rather than 22px inboard of it. Same number, same
+-- reason, as DROPDOWN_LEAD in the view.
+local PROMPT_DD_LEAD  = 22
+
+-- The first value in a list, submenus included. What a prompt starts on when
+-- the caller did not say - and a caller who groups a long list has a first
+-- entry that is a group rather than a choice, so this cannot just read [1].
+local function FirstChoice(list)
+    for _, entry in ipairs(list or {}) do
+        if entry.entries then
+            local found = FirstChoice(entry.entries)
+            if found ~= nil then return found end
+        elseif entry.value ~= nil then
+            return entry.value
+        end
+    end
+end
 
 -- opts:
 --   title    the title bar's text; no version stamp, unlike a window's
 --   width    frame width; defaults to PROMPT_W
 --   hint     greyed text inside the empty edit box, e.g. "Character name"
 --   text     value the edit box opens with (may be nil)
---   choices  { { value = ..., label = ... }, ... }; nil hides the dropdown
+--   choices  { { value = ..., label = ... }, ... }, or a function returning
+--            one; nil hides the dropdown. An entry with `entries` instead of a
+--            `value` is a submenu - see BindDropdown. Sits ABOVE the field: a
+--            list of what is on offer is the choice, and the field under it is
+--            the escape hatch for what is not on it.
 --   choice   which choice value starts selected
+--   choiceLabel  caption over the dropdown; nil leaves it unlabelled
+--   OnChoice function(choiceValue), as it is picked. For previewing what was
+--            just chosen; the answer itself still arrives at OnAccept.
+--   Field    function(choiceValue) -> show the edit box for this choice? Absent
+--            means always, which is every prompt that predates the dropdown.
+--            A hidden field takes its caption with it, and stops being able to
+--            hold the accept button down - there is nothing in it to judge.
 --   slider   { label, min, max, step, value, OnChange } or nil for no slider.
 --            Laid out inline - caption, then the handle - and left aligned, so
 --            it reads as one row rather than a full-width band. Live: OnChange
 --            fires as it moves, because the point of a volume is hearing it.
---   toggle   { label, checked, OnClick } or nil. A centred checkbox above the
---            field, applied on click rather than on accept. It GOVERNS what is
---            below it: unticked, the field and the slider grey out.
+--   toggle   { label, checked, OnClick } or nil. A centred checkbox above
+--            everything else, applied on click rather than on accept. It
+--            GOVERNS what is below it: unticked, the dropdown, the field and
+--            the slider all grey out.
 --   reset    function; adds a Reset button. Closes the prompt.
 --   accept   accept button label, default "Add"
---   allowEmpty  accept an empty box; for a prompt where blank means "reset"
+--   allowEmpty  accept an empty box; for a prompt where blank means "reset".
+--            A field the current choice has hidden counts as this whatever it
+--            says - there was nothing to type, so an empty one is not a slip.
 --   Validate function(text) -> ok, reason. Runs a moment after typing stops and
 --            greys the accept button when it says no. Return nil to abstain -
 --            a validator with no opinion must not disable anything.
@@ -1134,13 +1181,41 @@ function UI.CreatePrompt(globalName)
     problem:Hide()
     p.problem = problem
 
+    -- A caption in front of the dropdown. LEFT, unlike the field's: the field
+    -- is the full width of the pop-up so a centred caption sits over its middle,
+    -- and the dropdown is not, so a centred one would float off its right edge.
+    local choiceLabel = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    choiceLabel:SetJustifyH("LEFT")
+    p.choiceLabel = choiceLabel
+
     -- UIDropDownMenuTemplate finds its own regions by name, so this one needs
-    -- a global name of its own even though nothing else looks it up.
+    -- a global name of its own even though nothing else looks it up. Placed by
+    -- the layout in Ask rather than chained to anything here: the field it used
+    -- to hang off can be hidden now, and an anchor to a hidden frame is an
+    -- anchor to wherever that frame was last put.
     local dd = CreateFrame("Frame", globalName .. "Choice", p,
         "UIDropDownMenuTemplate")
-    dd:SetPoint("TOPLEFT", edit, "BOTTOMLEFT", -22, -8)
     UI.StyleDropdown(dd, true)
     p.dropdown = dd
+
+    -- Bound once, here, rather than re-initialised on every Ask. The list and
+    -- the current value are both read back through `p`, so a new Ask changing
+    -- either is picked up without the menu being rebuilt - which is also what
+    -- lets the pop-up have submenus, since it shares the initialiser every
+    -- other dropdown in the addon uses.
+    BindDropdown(dd,
+        function()
+            local choices = p.opts and p.opts.choices
+            return type(choices) == "function" and choices() or choices
+        end,
+        function() return p.choice end,
+        function(value)
+            p.choice = value
+            if p.opts and p.opts.OnChoice then p.opts.OnChoice(value) end
+            -- The field may live or die by this choice, so the frame is laid
+            -- out again rather than just redrawn.
+            p:LayoutPrompt()
+        end)
 
     -- Caption and handle on one line, left aligned. A slider stretched across
     -- the whole pop-up reads as the main event; this one is a detail on a row.
@@ -1182,8 +1257,10 @@ function UI.CreatePrompt(globalName)
     local function Accept()
         local text = strtrim(edit:GetText() or "")
         -- An empty box is normally a mis-click, not an answer. A prompt that
-        -- means something BY being empty says so.
-        if text == "" and not p.allowEmpty then return end
+        -- means something BY being empty says so - and so does one where the
+        -- box is not on screen at all, since then the answer is the dropdown's
+        -- and there was never anything to type.
+        if text == "" and not (p.allowEmpty or not edit:IsShown()) then return end
         if not accept:IsEnabled() then return end
         p:Hide()
         if p.OnAccept then p.OnAccept(text, p.choice) end
@@ -1200,6 +1277,15 @@ function UI.CreatePrompt(globalName)
     -- keystroke has already been typed finds a token that has moved on, and
     -- does nothing rather than judging text that is no longer there.
     local function Check()
+        -- A hidden field cannot be wrong. Whatever it was holding when it went
+        -- away must not keep the accept button down, so any standing verdict is
+        -- cleared rather than left to stand over a box nobody can see.
+        if not edit:IsShown() then
+            p.checkToken = (p.checkToken or 0) + 1
+            accept:Enable()
+            problem:Hide()
+            return
+        end
         if not p.Validate then return end
         p.checkToken = (p.checkToken or 0) + 1
         local mine = p.checkToken
@@ -1236,14 +1322,187 @@ function UI.CreatePrompt(globalName)
     function p:GateOnToggle()
         local on = (not self.toggle:IsShown()) or self.toggle:GetChecked()
         UI.SetEnabled(on and true or false,
-            self.edit, self.editLabel, self.slider, self.sliderLabel)
+            self.edit, self.editLabel, self.slider, self.sliderLabel,
+            self.choiceLabel)
+        -- The dropdown has no Enable/Disable of its own to find, so it takes
+        -- FrameXML's pair - which greys its text and stops the button opening
+        -- the menu, where a bare SetAlpha would have left it clickable.
+        if self.dropdown:IsShown() and UIDropDownMenu_DisableDropDown then
+            if on then
+                UIDropDownMenu_EnableDropDown(self.dropdown)
+            else
+                UIDropDownMenu_DisableDropDown(self.dropdown)
+            end
+        end
         -- An EditBox keeps the caret and the keyboard when it is disabled, so
         -- letting go has to be spelled out - otherwise a greyed box still eats
         -- what you type.
         if not on then self.edit:ClearFocus() end
     end
 
+    -- Where every row goes and how tall the frame ends up. Run by Ask, and
+    -- again every time a choice is picked: the field can come and go with the
+    -- choice now, so this is a layout that has to be REDONE rather than done
+    -- once at the top of Ask.
+    --
+    -- POSITION AND VISIBILITY ONLY. What a control is set to - the slider's
+    -- value, the toggle's tick, the text in the box - belongs to Ask, and any
+    -- of it in here would snap back under somebody in the middle of using it
+    -- the moment they touched the dropdown.
+    function p:LayoutPrompt()
+        local opts = self.opts or {}
+        local width = opts.width or PROMPT_W
+
+        -- Laid out top down with a RUNNING OFFSET rather than by chaining each
+        -- row to the one above it.
+        --
+        -- Chaining is fine while everything is left aligned. These rows are
+        -- centred, and a centred row chained to the row above centres on THAT
+        -- row - so a caption under the toggle would centre on a checkbox
+        -- sitting at the left edge rather than on the frame. Anchoring every
+        -- row to the frame keeps the two things independent: `y` decides how
+        -- far down, the frame decides where across.
+        --
+        -- The height is accumulated alongside it. PROMPT_BASE_H is the title
+        -- bar, ONE field row and the buttons, so every optional row adds its
+        -- own - and a prompt whose field is hidden hands that row back.
+        local y = -(UI.INSET + UI.TITLEBAR_H + 10)
+        local height = PROMPT_BASE_H
+
+        -- The toggle goes above everything: it decides whether any of it
+        -- matters at all, and a switch found under the setting it governs is a
+        -- switch found second.
+        --
+        -- CENTRED, like the captions under it, which takes arithmetic a
+        -- checkbox cannot do for itself: the label is a separate region hanging
+        -- off the box's right edge, so the pair is only centred when the box
+        -- itself sits half the label's width left of centre. GetStringWidth
+        -- needs the text set first, and Ask has set it by the time we run.
+        if opts.toggle then
+            local labelWidth = self.toggle.label
+                and self.toggle.label:GetStringWidth() or 0
+            self.toggle:ClearAllPoints()
+            self.toggle:SetPoint("TOP", self, "TOP", -(labelWidth + 4) / 2, y)
+            self.toggle:Show()
+            y = y - PROMPT_TOGGLE_STEP
+            height = height + PROMPT_TOGGLE_H
+        else
+            self.toggle:Hide()
+        end
+
+        -- The dropdown sits ABOVE the field, which is a swap: it used to hang
+        -- off the bottom of the edit box. The list is the question now and the
+        -- box under it is the escape hatch for an answer that is not on the
+        -- list, and a hatch found before the door it is an alternative to is
+        -- one nobody reads the list to avoid needing.
+        --
+        -- Left aligned, so it takes the field's x less the transparent lead on
+        -- its housing; there is nothing here to centre.
+        if opts.choices then
+            if opts.choiceLabel then
+                self.choiceLabel:SetText(opts.choiceLabel)
+                self.choiceLabel:ClearAllPoints()
+                -- The field's x, not the frame's padding: this caption names
+                -- the dropdown under it, and the dropdown's visible left edge
+                -- is where the field starts.
+                self.choiceLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y)
+                self.choiceLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
+                self.choiceLabel:Show()
+                y = y - PROMPT_CAP_H
+                height = height + PROMPT_FIELD_H
+            else
+                self.choiceLabel:Hide()
+            end
+            self.dropdown:ClearAllPoints()
+            self.dropdown:SetPoint("TOPLEFT", self, "TOPLEFT",
+                PROMPT_PAD + 6 - PROMPT_DD_LEAD, y)
+            UIDropDownMenu_SetWidth(self.dropdown, width - 90)
+            self.dropdown:Show()
+            -- Asked for its own label rather than told one: the list may have
+            -- come from a function, and only the dropdown knows where in it the
+            -- current value ended up.
+            self.dropdown:Sync()
+            y = y - PROMPT_ROW_H
+            height = height + PROMPT_ROW_H
+        else
+            self.dropdown:Hide()
+            self.choiceLabel:Hide()
+        end
+
+        -- A labelled field is a CAPTION OVER A BOX, both centred; an unlabelled
+        -- one is the box on its own. Stacked rather than inline because these
+        -- pop-ups are narrow and a sound path is long - side by side, the
+        -- caption ate a third of the width the value needed.
+        --
+        -- Absent altogether when the current choice does not want one. A prompt
+        -- with no Field wants one always, which is every prompt written before
+        -- the dropdown could decide.
+        local showField = true
+        if opts.Field then showField = opts.Field(self.choice) and true or false end
+
+        if showField then
+            self.edit:ClearAllPoints()
+            if opts.label then
+                self.editLabel:SetText(opts.label)
+                self.editLabel:ClearAllPoints()
+                -- Both corners at the SAME y: two points that fix the width and
+                -- one height between them, which is what a centred line of text
+                -- needs. A third point for the vertical would fight these two.
+                self.editLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y)
+                self.editLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
+                self.editLabel:Show()
+                y = y - PROMPT_CAP_H
+                height = height + PROMPT_FIELD_H
+            else
+                self.editLabel:Hide()
+            end
+            self.edit:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y)
+            self.edit:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
+            self.edit:Show()
+            y = y - PROMPT_EDIT_H
+        else
+            self.editLabel:Hide()
+            self.edit:Hide()
+            -- An EditBox hidden with the keyboard still on it goes on eating
+            -- what you type, and Enter would accept off a box nobody can see.
+            self.edit:ClearFocus()
+            height = height - PROMPT_EDIT_H
+        end
+
+        -- Placed off `y` like the rows above it; see the note at the top.
+        if opts.slider then
+            -- Caption over the handle, both centred, same as the field above.
+            -- The caption carries the value, so inline it changed width as you
+            -- dragged and walked the handle sideways with it; stacked, there is
+            -- nothing for the digits to push.
+            --
+            -- The handle takes ONE point: a Slider has a width of its own, so
+            -- TOP against the frame centres it across and places it down in the
+            -- same anchor.
+            self.sliderLabel:ClearAllPoints()
+            self.sliderLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y - 10)
+            self.sliderLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 10)
+            self.slider:ClearAllPoints()
+            self.slider:SetPoint("TOP", self, "TOP", 0, y - 10 - PROMPT_CAP_H)
+            self.sliderLabel:Show()
+            self.slider:Show()
+            height = height + PROMPT_SLIDER_H
+        else
+            self.sliderLabel:Hide()
+            self.slider:Hide()
+        end
+
+        self:SetHeight(height)
+        -- The field may have just gone away, and a verdict left standing over a
+        -- box nobody can see would hold the accept button down for good.
+        Check()
+        -- Whatever is on screen now has to obey the switch above it, including
+        -- rows that were hidden when the switch was last consulted.
+        self:GateOnToggle()
+    end
+
     function p:Ask(opts)
+        self.opts = opts
         self:SetWidth(opts.width or PROMPT_W)
         -- Straight onto the title bar's font string rather than through
         -- SetTitle: that one stamps the addon version after the text, which
@@ -1268,113 +1527,24 @@ function UI.CreatePrompt(globalName)
             self.reset:Hide()
         end
 
-        -- Laid out top down with a RUNNING OFFSET rather than by chaining each
-        -- row to the one above it.
-        --
-        -- Chaining is fine while everything is left aligned. These rows are
-        -- centred, and a centred row chained to the row above centres on THAT
-        -- row - so a caption under the toggle would centre on a checkbox
-        -- sitting at the left edge rather than on the frame. Anchoring every
-        -- row to the frame keeps the two things independent: `y` decides how
-        -- far down, the frame decides where across.
-        local y = -(UI.INSET + UI.TITLEBAR_H + 10)
-
-        -- The toggle goes ABOVE the field: it decides whether the thing below
-        -- it matters at all, and a switch found under the setting it governs is
-        -- a switch found second.
-        --
-        -- CENTRED, like the captions under it, which takes arithmetic a
-        -- checkbox cannot do for itself: the label is a separate region hanging
-        -- off the box's right edge, so the pair is only centred when the box
-        -- itself sits half the label's width left of centre. GetStringWidth
-        -- needs the text set first, hence the SetText here rather than with the
-        -- rest of the toggle's state further down.
-        if opts.toggle then
-            if self.toggle.label then
-                self.toggle.label:SetText(opts.toggle.label or "")
-            end
-            local labelWidth = self.toggle.label
-                and self.toggle.label:GetStringWidth() or 0
-            self.toggle:ClearAllPoints()
-            self.toggle:SetPoint("TOP", self, "TOP",
-                -(labelWidth + 4) / 2, y)
-            y = y - PROMPT_TOGGLE_STEP
+        -- Which entry the dropdown opens on. A caller that groups a long list
+        -- has a first entry that is a group rather than a choice, so the
+        -- fallback digs for the first actual value.
+        self.choice = opts.choice
+        if self.choice == nil and opts.choices then
+            local list = type(opts.choices) == "function"
+                and opts.choices() or opts.choices
+            self.choice = FirstChoice(list)
         end
 
-        -- A labelled field is a CAPTION OVER A BOX, both centred; an unlabelled
-        -- one is the box on its own. Stacked rather than inline because these
-        -- pop-ups are narrow and a sound path is long - side by side, the
-        -- caption ate a third of the width the value needed.
-        self.edit:ClearAllPoints()
-        if opts.label then
-            self.editLabel:SetText(opts.label)
-            self.editLabel:ClearAllPoints()
-            -- Both corners at the SAME y: two points that fix the width and one
-            -- height between them, which is what a centred line of text needs.
-            -- A third point for the vertical would fight these two.
-            self.editLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y)
-            self.editLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
-            self.editLabel:Show()
-            y = y - PROMPT_CAP_H
-        else
-            self.editLabel:Hide()
+        -- The toggle's label is set here rather than in the layout because the
+        -- layout MEASURES it: the pair is centred off its width, and a width
+        -- read before the text was set is the last prompt's.
+        if opts.toggle and self.toggle.label then
+            self.toggle.label:SetText(opts.toggle.label or "")
         end
-        self.edit:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD + 6, y)
-        self.edit:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y)
-        y = y - PROMPT_EDIT_H
 
-        self.choices = opts.choices
-        self.choice = opts.choice or (opts.choices and opts.choices[1].value)
-        if opts.choices then
-            self.dropdown:Show()
-            UIDropDownMenu_Initialize(self.dropdown, function()
-                for _, entry in ipairs(self.choices) do
-                    local info = UIDropDownMenu_CreateInfo()
-                    info.text = entry.label
-                    info.checked = entry.value == self.choice
-                    info.func = function()
-                        self.choice = entry.value
-                        UIDropDownMenu_SetText(self.dropdown, entry.label)
-                        CloseDropDownMenus()
-                    end
-                    UIDropDownMenu_AddButton(info)
-                end
-            end)
-            UIDropDownMenu_SetWidth(self.dropdown, (opts.width or PROMPT_W) - 90)
-            for _, entry in ipairs(opts.choices) do
-                if entry.value == self.choice then
-                    UIDropDownMenu_SetText(self.dropdown, entry.label)
-                end
-            end
-            self:SetHeight(PROMPT_BASE_H + PROMPT_ROW_H)
-            -- Chained to the edit box at build time rather than placed off `y`,
-            -- because it is left aligned and has nothing to centre. The running
-            -- offset still has to step past it for anything below.
-            y = y - PROMPT_ROW_H
-        else
-            self.dropdown:Hide()
-            self:SetHeight(PROMPT_BASE_H)
-        end
-        -- The caption above the field is a line the base height does not know
-        -- about. Added here, before the slider and toggle add theirs.
-        if opts.label then self:SetHeight(self:GetHeight() + PROMPT_FIELD_H) end
-
-        -- Placed off `y` like the field above it; see the note there.
         if opts.slider then
-            -- Caption over the handle, both centred, same as the field above.
-            -- The caption carries the value, so inline it changed width as you
-            -- dragged and walked the handle sideways with it; stacked, there is
-            -- nothing for the digits to push.
-            --
-            -- The handle takes ONE point: a Slider has a width of its own, so
-            -- TOP against the frame centres it across and places it down in the
-            -- same anchor.
-            self.sliderLabel:ClearAllPoints()
-            self.sliderLabel:SetPoint("TOPLEFT", self, "TOPLEFT", PROMPT_PAD, y - 10)
-            self.sliderLabel:SetPoint("TOPRIGHT", self, "TOPRIGHT", -PROMPT_PAD, y - 10)
-            self.slider:ClearAllPoints()
-            self.slider:SetPoint("TOP", self, "TOP", 0, y - 10 - PROMPT_CAP_H)
-
             self.slider:SetMinMaxValues(opts.slider.min or 0, opts.slider.max or 100)
             self.slider:SetValueStep(opts.slider.step or 5)
             self.slider.OnChange = opts.slider.OnChange
@@ -1395,42 +1565,35 @@ function UI.CreatePrompt(globalName)
                 self.sliderLabel:SetText(format(opts.slider.label,
                     opts.slider.value or 100))
             end
-            self.sliderLabel:Show()
-            self.slider:Show()
-            self:SetHeight(self:GetHeight() + PROMPT_SLIDER_H)
-        else
-            self.sliderLabel:Hide()
-            self.slider:Hide()
         end
 
-        -- Anchored above, with the rest of the layout. Only its state and its
-        -- handler are set here.
+        -- Placed and shown by the layout. Only its state and its handler are
+        -- set here.
         if opts.toggle then
-            self.toggle:SetChecked(opts.toggle.checked and true or false)
-            -- The label was set during layout, where its width was needed to
-            -- centre the pair.
-            --
             -- Applied as it is clicked rather than on Accept: it is a switch,
             -- not part of the answer being typed, and closing on a box you have
             -- already watched take effect would be a strange thing to want -
             -- the same reasoning the volume slider above it uses.
+            self.toggle:SetChecked(opts.toggle.checked and true or false)
             self.toggle:SetScript("OnClick", function(box)
                 local on = box:GetChecked() and true or false
                 if opts.toggle.OnClick then opts.toggle.OnClick(on) end
                 p:GateOnToggle()
             end)
-            self.toggle:Show()
-            self:SetHeight(self:GetHeight() + PROMPT_TOGGLE_H)
-        else
-            self.toggle:Hide()
         end
 
+        -- Before the layout: it measures the toggle's label, reads the choice
+        -- to decide whether the field is on screen at all, and finishes by
+        -- gating everything on the switch.
         self.edit:SetText(opts.text or "")
-        -- After SetText: the gate greys the box, and greying it takes its focus
-        -- away, which SetText on its own would not.
-        self:GateOnToggle()
+        self:LayoutPrompt()
         self:Show()
-        if self.edit:IsEnabled() then self.edit:SetFocus() end
+        -- Only a field that is on screen AND live takes the keyboard. One the
+        -- current choice has hidden must not, or the first thing typed into a
+        -- pop-up that is asking a dropdown would go into a box nobody can see.
+        if self.edit:IsShown() and self.edit:IsEnabled() then
+            self.edit:SetFocus()
+        end
         -- Taking focus selects whatever is in the box, and a name handed to the
         -- prompt is a starting point rather than something to type over - a
         -- selected one is gone on the first keystroke. Cleared explicitly
@@ -1439,8 +1602,6 @@ function UI.CreatePrompt(globalName)
         -- After SetText, or the caret sits in front of the name they were
         -- handed and typing prepends to it.
         self.edit:SetCursorPosition(strlen(opts.text or ""))
-        -- Judge what it opened with, not only what gets typed into it.
-        Check()
     end
 
     return p

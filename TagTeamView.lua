@@ -564,6 +564,57 @@ local function BuildPlayersPage(page)
 end
 
 --------------------------------------------------------------------------------
+-- Media lists
+--
+-- Two dropdowns on this window are filled from LibSharedMedia - the badge's
+-- font and every cue's sound - and both have the same problem, which is that a
+-- shared media list is as long as the user's addon folder. What is here is the
+-- part that is the same for both; the lists themselves are further down, each
+-- next to the thing it fills.
+--------------------------------------------------------------------------------
+
+-- Blizzard's dropdown draws its list as one column and does not scroll it, so a
+-- list longer than the screen has a bottom nobody can reach. Everything past
+-- what the addon itself offers is therefore filed into submenus of this many,
+-- labelled by the letters they span - which is also how you find "Expressway"
+-- in a media pack of two hundred without reading all two hundred.
+local MEDIA_GROUP = 18
+
+local function LetterRange(first, last)
+    local a, b = first:sub(1, 1):upper(), last:sub(1, 1):upper()
+    return a == b and a or (a .. " - " .. b)
+end
+
+-- Append `list` to `out`: flat while it is short enough to read at a glance,
+-- and in lettered submenus once it is not. The threshold is the group size, so
+-- a list of nineteen does not become two submenus of ten.
+--
+-- `Dress` turns one { value, label } into the entry the dropdown draws - the
+-- font list draws every name in the font it names, the sound list leaves them
+-- as they are - and is applied per entry rather than to the list, because the
+-- group headings are cut off the RAW labels, before anything was appended to
+-- them. `list` must already be sorted by label, or the letters lie.
+local function AppendGrouped(out, list, Dress)
+    if #list <= MEDIA_GROUP then
+        for _, entry in ipairs(list) do
+            out[#out + 1] = Dress and Dress(entry) or entry
+        end
+        return out
+    end
+    for first = 1, #list, MEDIA_GROUP do
+        local last, group = min(first + MEDIA_GROUP - 1, #list), {}
+        for i = first, last do
+            group[#group + 1] = Dress and Dress(list[i]) or list[i]
+        end
+        out[#out + 1] = {
+            label   = LetterRange(list[first].label, list[last].label),
+            entries = group,
+        }
+    end
+    return out
+end
+
+--------------------------------------------------------------------------------
 -- The Sounds page
 --
 -- One row per entry in C.CUES, grouped into the boxes C.CUE_SECTIONS names, so
@@ -640,12 +691,96 @@ StaticPopupDialogs["TAGTEAM_RESET_AUDIO"] = {
     end,
 }
 
+--------------------------------------------------------------------------------
+-- The sounds a cue can be set to
+--
+-- Same arrangement as the font list further down, and for the same reason: the
+-- shared media library is where every addon with a sound setting keeps its
+-- list, so reading it offers whatever your other addons ship - a media pack,
+-- DBM's library, WeakAuras' hundred-odd - for no dependency on any of them.
+-- With nothing else installed you get ours and the list is short, which is a
+-- shorter list and not a broken one.
+--
+-- Two of the values are not paths. A leading \0 cannot appear in a path anyone
+-- could type or register, so the escape hatch cannot collide with a real sound;
+-- the empty string is not a sentinel at all, it is what Cues.SetSound already
+-- reads as "put this cue back to its default".
+--------------------------------------------------------------------------------
+
+local SOUND_DEFAULT = ""
+local SOUND_CUSTOM  = "\0custom"
+
+-- The list, and the set of paths that are on it.
+--
+-- NOT memoised, unlike the font list. That one builds a permanent Font object
+-- per row and so can only afford to be built once; this one is plain tables,
+-- and an addon that registers its sounds after the window was first opened is a
+-- normal thing rather than an edge case.
+local function SoundChoices()
+    local out, known = {}, {}
+    out[#out + 1] = { value = SOUND_DEFAULT, label = "Default" }
+    -- Second, not last. It is the way out of the list for a sound that is not
+    -- on it, and a way out found after two hundred names is one nobody knew
+    -- they were scrolling towards.
+    out[#out + 1] = { value = SOUND_CUSTOM, label = "Custom..." }
+
+    -- Ours are claimed FIRST, so a copy of one registered under some other
+    -- addon's name for the same file is dropped below rather than listed as a
+    -- second sound that happens to sound identical. They are named in the core
+    -- rather than here because the row behind this pop-up reads the same names
+    -- back - see C.SHIPPED_SOUNDS.
+    local ours = {}
+    for _, entry in ipairs(C.SHIPPED_SOUNDS) do
+        ours[#ours + 1] = { value = entry.path, label = entry.name }
+        known[entry.path] = true
+    end
+
+    local shared = {}
+    for _, entry in ipairs(Cues.SharedSounds()) do
+        if not known[entry.path] then
+            shared[#shared + 1] = { value = entry.path, label = entry.name }
+            known[entry.path] = true
+        end
+    end
+
+    AppendGrouped(out, ours)
+    AppendGrouped(out, shared)
+    return out, known
+end
+
+-- Which entry the picker opens on. Anything the list does not have a row for -
+-- a hand-typed path, a SOUNDKIT id, a file from an addon that has since been
+-- uninstalled - is Custom, which is the row that has the text field behind it.
+local function CurrentSoundChoice(cue, known)
+    local file = ns.db[cue.file]
+    if file == nil then return SOUND_DEFAULT end
+    if type(file) == "string" and known[file] then return file end
+    return SOUND_CUSTOM
+end
+
 -- The gear's pop-up: which sound, how loud, and a way back to the default.
 local function AskSound(cue)
     if not prompt then prompt = UI.CreatePrompt("TagTeamPromptFrame") end
+    local choices, known = SoundChoices()
     prompt:Ask({
         title = cue.label .. " Audio Queue",
         width = SOUND_PROMPT_W,
+        choiceLabel = "Sound",
+        choices = choices,
+        choice  = CurrentSoundChoice(cue, known),
+        -- Heard as it is picked. A list of two hundred names is worth nothing
+        -- if choosing one does not tell you what it sounds like, and the choice
+        -- is not saved yet - so this plays the candidate rather than the cue.
+        OnChoice = function(choice)
+            if choice == SOUND_CUSTOM then return end
+            -- nil for Default, which is Cues.Preview's word for "whatever this
+            -- cue falls back to" - a path for most of them and an id for one.
+            Cues.Preview(cue.key, choice ~= SOUND_DEFAULT and choice or nil)
+        end,
+        -- The field is the escape hatch and nothing else, so it is only on
+        -- screen for the row that IS the escape hatch. Somebody choosing a
+        -- sound off the list is not being asked to read a path at the same time.
+        Field = function(choice) return choice == SOUND_CUSTOM end,
         label = "Sound Path",
         hint  = "Sound id, or a file path",
         -- Pre-filled with what it is actually playing. An empty box would make
@@ -670,6 +805,10 @@ local function AskSound(cue)
         -- Nothing to save if the path is not there. A number is always fine -
         -- an id resolves to something or to silence, never to an error - and an
         -- empty box means reset, so both abstain.
+        --
+        -- Only ever consulted while the field is on screen, which is to say
+        -- only for Custom: a sound picked off the list came from a library that
+        -- has already said it is there.
         Validate = function(text)
             if text == "" or tonumber(text) then return nil end
             if Cues.Playable(text) then return nil end
@@ -699,10 +838,15 @@ local function AskSound(cue)
             Cues.Play(cue.key)
             ns.RefreshView()
         end,
-        OnAccept = function(text)
+        OnAccept = function(text, choice)
+            -- The dropdown is the answer, unless it pointed at the field - and
+            -- then the field is. Default arrives as the empty string, which
+            -- SetSound already reads as "back to what it shipped with", so all
+            -- three roads end in the same call.
+            local answer = (choice == SOUND_CUSTOM) and text or choice
             -- Reported in chat rather than in the prompt: a bad path is worth
             -- keeping a record of, and the prompt is gone by then.
-            local ok, message = Cues.SetSound(cue.key, text)
+            local ok, message = Cues.SetSound(cue.key, answer)
             Print(ok and message or ("|cffff8080" .. message .. "|r"))
             if ok then Cues.Play(cue.key) end
             ns.RefreshView()
@@ -725,8 +869,9 @@ local function DressCueRow(box, index, cue)
     end)
 
     row.gear = UI.CreateGearButton(row, "Change the sound",
-        "Pick a SOUNDKIT id or a file path, set this cue's own volume, or "
-        .. "reset it. A path is checked by playing it.",
+        "Pick from this addon's sounds and every sound your other addons share, "
+        .. "set this cue's own volume, or reset it. Custom takes a SOUNDKIT id "
+        .. "or a file path, checked by playing it.",
         function() AskSound(cue) end)
     row.gear:SetSize(UI.ROW_ICON, UI.ROW_ICON)
     row.gear:SetPoint("RIGHT", -4, 0)
@@ -1044,18 +1189,6 @@ local SHIPPED_FONTS = {
     { value = "Fonts\\SKURRI.TTF",   label = "Skurri" },
 }
 
--- Blizzard's dropdown draws its list as one column and does not scroll it, so a
--- list longer than the screen has a bottom nobody can reach. Everything past
--- the game's own fonts is therefore filed into submenus of this many, labelled
--- by the letters they span - which is also how you find "Expressway" in a media
--- pack of two hundred without reading all two hundred.
-local FONT_GROUP = 18
-
-local function LetterRange(first, last)
-    local a, b = first:sub(1, 1):upper(), last:sub(1, 1):upper()
-    return a == b and a or (a .. " - " .. b)
-end
-
 -- Every row drawn in the font it names, with a sample of the thing the badge
 -- actually shows on the end of it. A name in a uniform font tells you what a
 -- font is called; it does not tell you whether its digits are legible at speed
@@ -1126,23 +1259,11 @@ local function FontChoices()
         end
     end
 
-    -- One flat run while there are few enough to read at a glance; grouped once
-    -- there are not. The threshold is the same number the groups are sized to,
-    -- so a list of nineteen does not become two submenus of ten.
-    if #extra <= FONT_GROUP then
-        for _, entry in ipairs(extra) do out[#out + 1] = Sampled(entry) end
-    else
-        for first = 1, #extra, FONT_GROUP do
-            local last, group = min(first + FONT_GROUP - 1, #extra), {}
-            for i = first, last do group[#group + 1] = Sampled(extra[i]) end
-            -- Off the RAW names, before the sample was appended to them: the
-            -- first letter is the same either way, but the intent is not.
-            out[#out + 1] = {
-                label = LetterRange(extra[first].label, extra[last].label),
-                entries = group,
-            }
-        end
-    end
+    -- Flat while there are few enough to read at a glance, lettered submenus
+    -- once there are not. Sampled is applied by AppendGrouped rather than here,
+    -- so the group headings are cut off the raw names - the first letter is the
+    -- same either way, but the intent is not.
+    AppendGrouped(out, extra, Sampled)
 
     -- A saved font that is not on the list any more - its addon was removed -
     -- still has to name itself in the box, or the dropdown falls back to

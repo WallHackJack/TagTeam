@@ -31,9 +31,15 @@ core still reads neither.
 
 ## The minimap button registers with LibDBIcon, and that is the point
 
-`Libs/` holds four folders — LibStub, CallbackHandler-1.0, LibDataBroker-1.1,
-LibDBIcon-1.0 — and they exist for one button. They are the **only** libraries
-the addon carries, and the reason is not convenience.
+`Libs/` holds five folders and they buy **two** things. Four of them — LibStub,
+CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0 — exist for one button,
+and the reason is not convenience; it is the rest of this section. The fifth is
+LibSharedMedia-3.0, which rides on the same LibStub and CallbackHandler and is
+covered below.
+
+That is the whole list. A sixth needs the same standard of argument these two
+met: something the addon cannot do correctly by hand, not something it would be
+pleasant not to write.
 
 Every addon that manages minimap buttons finds them by walking LibDBIcon's
 `lib.objects` registry. Leatrix Plus's "hide addon buttons" is the case that
@@ -59,6 +65,28 @@ Two smaller things follow from the library owning the button:
 - **Registration happens on `PLAYER_LOGIN`**, not earlier. That is when the core
   has assigned `ns.db`, and it is also what lets Leatrix's
   `LibDBIcon_IconCreated` callback see us and apply the user's setting.
+
+## LibSharedMedia is read, never written
+
+`Cues.SharedSounds` and `Cues.MediaName` in the core are the entire contact
+surface with LibSharedMedia-3.0, and the font list in `TagTeamView.lua` is the
+other reader. They fill two dropdowns with whatever the user's other addons
+have registered — media packs, DBM, WeakAuras — so the picker offers the same
+sounds and fonts as the rest of their UI, and offers a short list rather than a
+broken one when nothing else is installed.
+
+**Do not register TagTeam's media with it.** The files under `Media/` are
+licensed for use as part of this addon and are explicitly not redistributable
+or reusable separately; see LICENSE. Registering them publishes them into a
+table any other addon can play from. They are named for the picker by
+`C.SHIPPED_SOUNDS` in the core instead — which is also where `Cues.Describe`
+reads them back, so the dropdown and the row under it cannot end up with two
+names for one sound.
+
+Both readers guard the library member by member, like every other optional API
+here. It is embedded, so it is normally present — but LibStub hands back the
+newest copy loaded, which may belong to another addon, and an old copy is a
+likelier thing to meet than no copy at all.
 
 ## WallhackUiKit.lua is shared with WhoDoesWhat
 

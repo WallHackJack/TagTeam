@@ -53,6 +53,33 @@ under it, the one that mode is about.
 - **Removed:** the disabled gear on tagger rows. It was holding a place for
   per-tagger settings; the two invite buttons have the space now.
 
+- **Added:** **every cue is picked from a list now.** The gear on an Audio row
+  used to open a box you typed a file path into; it opens a **dropdown** —
+  the nine sounds TagTeam ships, then every sound your other addons share
+  through LibSharedMedia, which is where WeakAuras, DBM, Plater and the media
+  packs all keep theirs. Long lists are filed into lettered submenus, because
+  Blizzard's dropdown does not scroll. **Choosing one plays it**, at that cue's
+  own volume, so you are hearing the thing you are about to save.
+
+- **Changed:** typing a path is now the **Custom** entry on that list rather
+  than the only way in. Pick it and the text field appears, still taking a file
+  path or a SOUNDKIT id and still checked by playing it; pick anything else and
+  the field is not on screen at all. **Default** is the first entry, and does
+  what leaving the box empty used to.
+
+- **Changed:** a cue's row says what the sound is **called** — "Oh No", not
+  "OhNo.ogg" — for anything the shared library or TagTeam has a name for.
+
+- **Fixed:** four of the bundled sounds were **too quiet next to the rest** —
+  Bell Ding, Error Chord and Sharp Beep have been levelled to sit with Level Up
+  and Meep Merp, so switching a cue from one to another no longer changes how
+  loud your cues are. Jumpscare was not quiet at all; it had a fifth of a second
+  of dead air in front of it and was landing late, which has been trimmed.
+
+- **Note:** TagTeam **reads** that shared list and does not add to it. The
+  sounds under `Media/` are licensed for use as part of this addon and are not
+  ours to hand to other addons; see LICENSE.
+
 ## 0.6.0 — settings, not commands
 
 Eighteen slash commands became settings. What is left of `/tag` is things you

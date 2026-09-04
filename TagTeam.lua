@@ -2526,6 +2526,26 @@ function Cues.PlayMaster()
     PlayAt(volume, C.DEFAULT_MISS_FILE, nil)
 end
 
+-- Play the sound somebody is CONSIDERING rather than the one the cue is set to.
+-- That is the sound picker's job: a list of two hundred names is worth nothing
+-- if choosing one does not let you hear it, and the choice is not saved until
+-- Save is pressed - so there is no cue setting to play at that point.
+--
+-- At the cue's own volume, because what you are auditioning is what that cue
+-- will sound like. Behind the cue's own switch too, for the reason above
+-- Cues.Play: off means off, and previews are not an exception.
+-- `file` nil is "whatever this cue falls back to with nothing saved", which is
+-- exactly what the picker's Default entry is offering to put it back to - and
+-- the only shape that can reach the id behind a cue that has no file at all.
+function Cues.Preview(key, file)
+    local cue = Cues.Def(key)
+    if not cue or not db[cue.enable] then return end
+    if file == nil then
+        return PlayAt(Cues.Volume(key), cue.files, cue.fixedId)
+    end
+    return PlayAt(Cues.Volume(key), file, nil)
+end
+
 -- Put the Sound Effects slider back where the user had it. Safe to call when
 -- nothing is held, which is what makes it usable both from the timer above and
 -- from ADDON_LOADED after a session that ended mid-cue.
@@ -2535,9 +2555,109 @@ function Cues.ReleaseVolume()
     db.sfxRestore = nil
 end
 
+--------------------------------------------------------------------------------
+-- Shared media
+--
+-- LibSharedMedia-3.0 is where nearly every addon with a sound or a font setting
+-- keeps its list, and reading it is what fills the cue picker: a media pack's
+-- library, DBM's, WeakAuras' hundred-odd, all of it, for one embedded library
+-- and a hard dependency on none of them. Nothing installed but us is a list of
+-- our own sounds and the game's, which is a shorter list and not a broken one.
+--
+-- READ ONLY, and that is a licensing decision rather than an oversight. The
+-- files under Media\ are not ours to hand out - see LICENSE, the BOOM Library
+-- terms in particular. Registering them would publish them into a table any
+-- other addon can play from, which is the "reused separately" those terms rule
+-- out. The list comes in; nothing goes back.
+--
+-- Guarded member by member like every other optional API. The library is
+-- embedded so it is normally there - but LibStub hands back the NEWEST copy
+-- loaded, which may be one carried in by some other addon, and an old copy is a
+-- likelier thing to meet than no copy at all.
+--------------------------------------------------------------------------------
+
+local function SharedMedia()
+    return LibStub and LibStub("LibSharedMedia-3.0", true)
+end
+
+-- The sounds the addon carries, named. Not registered with the library for the
+-- reason above, so this table is the only place they have names at all - which
+-- is why it lives here rather than in the window: the picker offers them, and
+-- Cues.Describe reads the same names back for the row under it. A cue showing
+-- "BellDing.ogg" beside a dropdown that called it "TagTeam Bell Ding" would be
+-- two names for one sound.
+--
+-- Sorted by name. The picker files a long list into lettered submenus and puts
+-- this one through the same machinery.
+C.SHIPPED_SOUNDS = {
+    { name = "TagTeam Bell Ding",
+      path = [[Interface\AddOns\TagTeam\Media\BellDing.ogg]] },
+    { name = "TagTeam Click 1",
+      path = [[Interface\AddOns\TagTeam\Media\FastPercussiveClick1.ogg]] },
+    { name = "TagTeam Click 2",
+      path = [[Interface\AddOns\TagTeam\Media\FastPercussiveClick2.ogg]] },
+    { name = "TagTeam Error Chord",
+      path = [[Interface\AddOns\TagTeam\Media\ErrorChord.ogg]] },
+    { name = "TagTeam Jumpscare",
+      path = [[Interface\AddOns\TagTeam\Media\JumpscareChord.ogg]] },
+    { name = "TagTeam Level Up 1",
+      path = [[Interface\AddOns\TagTeam\Media\LevelUp-8bit-1.ogg]] },
+    { name = "TagTeam Level Up 2",
+      path = [[Interface\AddOns\TagTeam\Media\LevelUp-8bit-2.ogg]] },
+    { name = "TagTeam Meep Merp",
+      path = [[Interface\AddOns\TagTeam\Media\meepmerp.ogg]] },
+    { name = "TagTeam Sharp Beep",
+      path = [[Interface\AddOns\TagTeam\Media\BeepHardSharp.ogg]] },
+}
+
+-- Every sound the library knows, as { name =, path = }, in the order it lists
+-- them - which is sorted, and is what makes the picker's letter groups mean
+-- something.
+--
+-- Rebuilt per call rather than cached. An addon that loads after us registers
+-- into the same table, and a list frozen at first open would be missing
+-- whatever arrived since.
+function Cues.SharedSounds()
+    local out = {}
+    local LSM = SharedMedia()
+    if not (LSM and LSM.List and LSM.Fetch) then return out end
+    for _, name in ipairs(LSM:List("sound") or {}) do
+        -- The third argument is "do not hand me the default instead", so a name
+        -- that resolves to nothing is skipped rather than listed as one more
+        -- copy of whatever the default happens to be.
+        local path = LSM:Fetch("sound", name, true)
+        -- Paths only. A registered sound may be a FileDataID or the library's
+        -- own "None" placeholder, and every road this addon takes to a sound -
+        -- PlaySoundFile, the saved setting, a typed custom path - is a string.
+        if type(path) == "string" and path ~= "" then
+            out[#out + 1] = { name = name, path = path }
+        end
+    end
+    return out
+end
+
+-- What the library calls this path, if it calls it anything. A cue pointed at
+-- Interface\AddOns\WeakAuras\Media\Sounds\OhNo.ogg is worth naming as "Oh No"
+-- in a row with space for two words and not for sixty characters.
+function Cues.MediaName(path)
+    if type(path) ~= "string" then return nil end
+    -- Ours first, and the library never gets a say on them: nothing registers
+    -- these, so a hit here is the only name they have.
+    for i = 1, #C.SHIPPED_SOUNDS do
+        if C.SHIPPED_SOUNDS[i].path == path then return C.SHIPPED_SOUNDS[i].name end
+    end
+    local LSM = SharedMedia()
+    local hash = LSM and LSM.HashTable and LSM:HashTable("sound")
+    if not hash then return nil end
+    for name, value in pairs(hash) do
+        if value == path then return name end
+    end
+end
+
 -- What the cue is set to, in one line, for a tooltip or a row.
 --
--- A path is shown as its file name only. The full one is
+-- A path is shown as the name the shared media library gives it, and failing
+-- that as its file name alone. The full one is
 -- Interface\AddOns\TagTeam\Media\LevelUp-8bit-1.ogg, which in a list of seven
 -- tells you nothing the last twelve characters do not.
 -- Is this path one the cue ships with? `files` is a single path on the three
@@ -2564,7 +2684,7 @@ function Cues.Describe(key)
     if file == nil then return "Default" end
     if type(file) == "string" then
         if IsDefaultPath(cue, file) then return "Default" end
-        return strmatch(file, "([^\\/]+)$") or file
+        return Cues.MediaName(file) or strmatch(file, "([^\\/]+)$") or file
     end
 
     -- file == false: they picked an id.
