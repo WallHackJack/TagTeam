@@ -1056,7 +1056,8 @@ fail; it plays some unrelated noise.
 
 `SOUNDKIT.LEVELUP` is verified: the addon already uses it as the fallback
 threshold cue. It does not collide with that in practice, because `PlayCue`
-prefers a file and `db.soundFile` defaults to WeakAuras' Brass.
+prefers a file and `db.soundFile` defaults to a file that ships with the addon,
+so the id is never reached.
 
 **Accepting a quest makes two sounds, and only one of them means "accepted".**
 The quest log's paper page-turn comes first, then the drums-and-horns fanfare.

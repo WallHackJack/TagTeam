@@ -10,7 +10,7 @@
 #@end-debug@
 ## SavedVariables: TagTeamDB
 ## X-Category: Leveling
-## X-License: MIT
+## X-License: MIT (code); bundled audio under separate terms, see LICENSE
 
 ## OptionalDeps: LibDataBroker-1.1, LibDBIcon-1.0
 

@@ -113,18 +113,17 @@ C.FULL_XP_SHARE = 40
 -- the minimum, so the graded band between them has somewhere to live.
 C.SUGGEST_LOW = 36.5
 
--- WeakAuras' bundled "Brass" sound. Referenced where it sits rather than copied
--- in: it's WA's asset, not Blizzard's, so it isn't in SOUNDKIT and can't be
--- played by id. PlaySoundFile reports whether it actually played, so if WA is
--- ever uninstalled we fall back to a built-in instead of going silent.
-C.DEFAULT_SOUND_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]]
--- Shipped with the addon rather than borrowed from WeakAuras: the cue you hear
--- most often is the one that must not be able to go missing.
+-- Every cue below ships with the addon. A default that lives in someone else's
+-- folder is a default that can be uninstalled out from under you, which is the
+-- one thing the sound that says the kill is yours must not do.
+C.DEFAULT_SOUND_FILE = [[Interface\AddOns\TagTeam\Media\LevelUp-8bit-1.ogg]]
+-- The cue you hear most often, and so the one that can least afford to go
+-- missing.
 C.DEFAULT_MISS_FILE  = [[Interface\AddOns\TagTeam\Media\meepmerp.ogg]]
 -- The near miss, between the fanfare and the error beep and sounding like
 -- neither: a kill that fell short of the threshold but cleared the minimum paid
 -- most of its XP, so scolding it with the miss beep overstates what happened.
-C.DEFAULT_SHORT_FILE = [[Interface\AddOns\WeakAuras\Media\Sounds\Glass.mp3]]
+C.DEFAULT_SHORT_FILE = [[Interface\AddOns\TagTeam\Media\BellDing.ogg]]
 -- Superseded defaults, all of them kept: someone who skipped a release is still
 -- sitting on the one before it. Same rule as LEGACY_THRESHOLDS.
 C.LEGACY_MISS_FILES = {
@@ -134,6 +133,18 @@ C.LEGACY_MISS_FILES = {
     -- changed, only where it ships from, so an old saved setting is pointing at
     -- a file that no longer exists.
     [ [[Interface\AddOns\TagTeam\meepmerp.mp3]] ]                 = true,
+}
+
+-- What these two cues defaulted to before the addon carried its own audio. Same
+-- rule as LEGACY_MISS_FILES: nothing rewrote saved settings, so anyone from
+-- before the change is still pinned to a path in another addon's folder, and
+-- hears nothing at all without it installed. The strings stay for as long as
+-- someone might still be carrying one.
+C.LEGACY_SOUND_FILES = {
+    [ [[Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3]] ] = true,
+}
+C.LEGACY_SHORT_FILES = {
+    [ [[Interface\AddOns\WeakAuras\Media\Sounds\Glass.mp3]] ] = true,
 }
 
 -- The quest-progress cue briefly defaulted to these. They resolve to the
@@ -2205,8 +2216,9 @@ C.DING_FILES = {
 
 -- The backstop, and this one is on solid ground: LEVELUP is an exposed SOUNDKIT
 -- key. It is also this addon's *fallback* threshold cue - but only the
--- fallback: a file wins over an id in PlayCue, and db.soundFile defaults to
--- WeakAuras' Brass, so the two only collide on a client with no WeakAuras.
+-- fallback: a file wins over an id in PlayCue, and db.soundFile defaults to a
+-- file that ships with the addon and so cannot go missing, which is what keeps
+-- the two from colliding.
 C.DING_CUE = SOUNDKIT and SOUNDKIT.LEVELUP
 
 -- Accepting a quest makes TWO sounds, and they are not interchangeable: the quest
@@ -2526,7 +2538,7 @@ end
 -- What the cue is set to, in one line, for a tooltip or a row.
 --
 -- A path is shown as its file name only. The full one is
--- Interface\AddOns\WeakAuras\Media\Sounds\Brass.mp3, which in a list of seven
+-- Interface\AddOns\TagTeam\Media\LevelUp-8bit-1.ogg, which in a list of seven
 -- tells you nothing the last twelve characters do not.
 -- Is this path one the cue ships with? `files` is a single path on the three
 -- pull cues and a candidate list on the four progress ones, so both shapes are
@@ -5739,6 +5751,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         if db.missFile  == nil then db.missFile  = C.DEFAULT_MISS_FILE end
         if db.shortFile == nil then db.shortFile = C.DEFAULT_SHORT_FILE end
         -- Saved settings pin the old default, so move anyone still on it.
+        if C.LEGACY_SOUND_FILES[db.soundFile] then db.soundFile = C.DEFAULT_SOUND_FILE end
+        if C.LEGACY_SHORT_FILES[db.shortFile] then db.shortFile = C.DEFAULT_SHORT_FILE end
         if C.LEGACY_MISS_FILES[db.missFile] then db.missFile = C.DEFAULT_MISS_FILE end
         -- mistagFile defaults to the same file, so it inherits the same stale
         -- paths and needs the same sweep.

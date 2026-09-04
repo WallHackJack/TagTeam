@@ -16,6 +16,17 @@ Bundled libraries in the Libs/ directory are the work of their respective
 authors and retain their own licenses (LibStub and ChatThrottleLib: public
 domain; LibSerialize: MIT; LibDeflate: zlib; Ace3: see its own license).
 
+Sound files in the Media/ directory are not covered by the MIT license above.
+The MIT grant - to use, copy, modify, distribute and sublicense - covers the
+source code, and does not extend to any of them.
+
+Those derived from BOOM Library (boomlibrary.com) sound effects are licensed
+under BOOM Library's End User License Agreement, for use as part of this addon
+only; they may not be extracted, redistributed, or reused separately.
+
+meepmerp.ogg originates from Dota 2 and is the property of Valve Corporation.
+It is a short excerpt, included without a license from Valve.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
