@@ -50,6 +50,40 @@ under it, the one that mode is about.
   when you are the carry, Carry when you are the tagger — instead of always
   Tagger.
 
+- **Added:** **a tick box beside every name on the Taggers and Carries lists,**
+  and it is the connection itself. Ticked is a live link — tracked, marked,
+  talked to, listened to. Unticked is a name on a list and nothing else. With
+  nothing ticked in the mode you are in, TagTeam is idle, which is now something
+  you can reach without emptying a list you want to keep.
+
+- **Changed:** **you can have several carries.** Before, `db.carryKey` named
+  exactly one and the rest of the Carries list was people you had boosted with
+  before; now any number can be switched on at once and a tagger reports its XP,
+  quest and level lines to all of them. Taggers could always be plural and still
+  are — there are three raid markers, so the first three switched-on taggers get
+  one and any beyond that are tracked without.
+
+- **Changed:** **unticking tells the other client.** The link goes down on both
+  sides, so the two of you never disagree about whether you are connected. A
+  switched-off partner's XP and quest lines stay out of your chat frame, nothing
+  of yours is sent to them, and they hold no marker and no place in the follow
+  macro — it is a disconnect, not a mute.
+
+- **Changed:** **ticking asks them,** using the same accept/decline pop-up a
+  fresh pairing raises. It is silent only when it costs them nothing: they
+  already have you on the matching list and are already in the matching mode, in
+  which case both ends just light up. A tagger who is not running TagTeam can
+  still be ticked — they are tracked off the combat log and there is nobody to
+  tell.
+
+- **Changed:** the tick boxes are **per character**, like the mode and unlike the
+  rosters. Your 60 having a tagger switched on does not switch it on for the alt
+  being levelled. Upgrading keeps what you had: every tagger on your list starts
+  ticked, and your carry starts ticked on the character that had one.
+
+- **Changed:** `/tag` counts what is **switched on** rather than what is written
+  down, and the login line names your live carries.
+
 - **Changed:** **naming somebody sets your mode.** Adding a tagger says you are
   the carry, so you are switched to carry mode; setting a carry says you are the
   tagger, so you are switched to tagger mode. A small pop-up with an OK button

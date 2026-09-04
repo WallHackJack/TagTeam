@@ -71,17 +71,24 @@ local function Status()
     -- the window's job, and it does it in a form chat cannot: colour, columns,
     -- and no scrollback burying it. What is left here is the part chat is still
     -- better at - the one-line answer to "is this thing on".
+    -- Both halves count what is SWITCHED ON, which is not the same as what is
+    -- on the list. A carry with four taggers written down and none ticked is
+    -- not running, and this is the line that has to say so.
     if InTaggerMode() then
-        if db.carry then
-            PrintRaw(format("  |cffffff00tagger mode|r - carry is |cff00ff00%s|r%s.",
-                db.carry,
-                db.carryPet and format(" with pet |cff00ff00%s|r", db.carryPet) or ""))
+        local carries = {}
+        for _, info in ipairs(Roster.LiveCarries()) do
+            carries[#carries + 1] = info.name
+                .. (info.pet and format(" (pet %s)", info.pet) or "")
+        end
+        if #carries > 0 then
+            PrintRaw(format("  |cffffff00tagger mode|r - |cff00ff00%s|r.",
+                table.concat(carries, ", ")))
         else
-            PrintRaw("  |cffffff00tagger mode|r - |cffff8080no carry set|r - "
+            PrintRaw("  |cffffff00tagger mode|r - |cffff8080no carry switched on|r - "
                 .. "|cffffff00/tag pair <name>|r")
         end
     elseif #TaggerNames() == 0 then
-        PrintRaw("  |cffffff00carry mode|r - |cffff8080no taggers set|r - "
+        PrintRaw("  |cffffff00carry mode|r - |cffff8080no taggers switched on|r - "
             .. "|cffffff00/tag pair <name>|r")
     else
         PrintRaw(format("  |cffffff00carry mode|r - |cffffff00%d|r tagger%s.",
@@ -209,14 +216,12 @@ commands["remove"] = function(rest, cmd)
     -- removes taggers too, and both had better do the same four things.
     if Roster.RemoveTagger(key) then gone[#gone + 1] = "tagger" end
 
-    -- One call, and it takes the tick with the name where the name had it: the
-    -- active carry is an entry on this list like any other now, and removing it
-    -- does not change the mode - you stay a tagger, with nobody named.
-    if key == db.carryKey then
-        Roster.ClearCarry()
-        gone[#gone + 1] = "carry"
-    end
-    if Roster.ForgetCarry(key) then gone[#gone + 1] = "remembered carry" end
+    -- One call, and it takes the tick with the name where the name had it.
+    -- There is no separate "active carry" to clear first any more: being live
+    -- is a tick on a list entry, so removing the entry removes the tick, and
+    -- ForgetCarry is what tells their client the link is over. Removing it does
+    -- not change the mode - you stay a tagger, with nobody switched on.
+    if Roster.ForgetCarry(key) then gone[#gone + 1] = "carry" end
 
     if db.followTargets and db.followTargets[key] then
         Roster.ForgetFollow(key)
@@ -318,7 +323,7 @@ commands["inv"] = function(rest, cmd)
     -- be accepted, leaving the rest as stale popups.
     -- Typed by hand, so it falls back to the primary tagger where the automatic
     -- out-of-range path deliberately would not - see InviteTarget.
-    local target = InTaggerMode() and db.carry or InviteTarget(true)
+    local target = (InTaggerMode() and Roster.ActiveCarryName()) or InviteTarget(true)
 
     if not target then
         Print("|cffff8080Nobody to ask|r - add a tagger or set a carry first.")

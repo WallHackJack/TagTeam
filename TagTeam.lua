@@ -576,9 +576,9 @@ end
 -- Two modes, and the whole addon reads its identities through here:
 --
 --   carry mode (default)  db.taggers lists who we're boosting. We are the carry.
---   tagger mode           db.carry names who is boosting US. We are a tagger, and
---                         so is everyone in our party - their damage pools with
---                         ours against the threshold.
+--   tagger mode           db.carries lists who is boosting US. We are a tagger,
+--                         and so is everyone in our party - their damage pools
+--                         with ours against the threshold.
 --
 -- The mode is a SETTING - db.mode, per character, picked on the Players tab.
 -- It used to be inferred (`db.carryKey ~= nil`), which is why every switch had
@@ -587,6 +587,16 @@ end
 -- somebody's configuration. Both lists are now kept forever. The mode decides
 -- which one is LIVE; the other is inert data on disk, invisible to tracking,
 -- comms, markers, pets and party logistics alike.
+--
+-- BOTH LISTS ARE PLURAL. Several taggers can be switched on at once, which they
+-- always could, and several carries can be too, which they could not: there was
+-- a db.carryKey naming exactly one, and the other entries were names you had
+-- boosted with before. A tagger with two carries reports its XP to both of them.
+--
+-- What decides whether a name on a list counts for anything is db.live, one set
+-- per role, per character - see LiveSet below. The mode picks the list; db.live
+-- picks the names on it. Nothing switched on in the mode you are in is the
+-- addon idle, and that is a state you can reach without emptying anything.
 --
 -- Tagger mode is tracking only. The party automation (invites, auto-leave, the
 -- grouped-in-combat warning, markers, focus) is all carry-side and stays off,
@@ -604,11 +614,37 @@ local dynamicTaggers = {}   -- tagger mode: [key] = { name, level }, self + part
 -- above that point still work: `Roster.RememberCarry` is a field lookup made
 -- when the call runs, not when the file loads.
 --
--- What it holds is only ever a REMEMBERED list. db.carries does not make you a
--- carry of several people: exactly one entry is active at a time, the one
--- db.carryKey names, and that one is the carry tagger mode reads. The rest are
--- names you have boosted with before, kept so picking one up again is a click.
+-- What it holds is a remembered list, and db.live below says which of those
+-- names are switched ON. Both lists are now plural in the same way: several
+-- taggers can be live at once (they always could), and several carries can be
+-- live at once (they could not - db.carryKey named exactly one). A tagger with
+-- two carries reports XP to both.
 local Roster = {}
+
+-- Which names are actually connected, per character, one set per role.
+--
+-- PER CHARACTER, like the mode and unlike the rosters: db.taggers and
+-- db.carries are the people you play with on this account, and this is what
+-- THIS character is doing with them right now. Your 60 having a tagger lit must
+-- not light it on the alt that is being levelled.
+--
+-- A key in here is a live connection: tracked, marked, talked to, and listened
+-- to. A key out of it is a name on a list and nothing else - no reports out, no
+-- reports in, no marker, no macro entry. Nothing enabled in the mode you are in
+-- is the addon switched off, which is a state worth being able to reach.
+-- ON ROSTER, not as file-level locals, and that is the ceiling talking rather
+-- than taste: the main chunk of this file sits near Lua 5.1's 200-local limit,
+-- which is what `Roster` was made a table for in the first place. Ten more
+-- named functions here is ten the compiler will not give us.
+function Roster.LiveSet(role)
+    db.live = db.live or {}
+    db.live[role] = db.live[role] or {}
+    return db.live[role]
+end
+
+function Roster.IsLive(role, key)
+    return key ~= nil and Roster.LiveSet(role)[key] == true
+end
 
 local function InTaggerMode()
     return db ~= nil and db.mode == "tagger"
@@ -620,25 +656,104 @@ end
 -- editing the list you are not currently using is exactly what keeping both is
 -- for.
 --
--- Anything still reaching past these at db.taggers or db.carryKey directly is
--- claiming the mode does not apply to it. Three do, and all three are honest:
+-- Anything still reaching past these at db.taggers or db.carries directly is
+-- claiming the mode does not apply to it. Four do, and all four are honest:
 -- AddTagger and its neighbours are writes, ReassignMarkers keeps the markers a
--- carry gets back when they switch, and Roster.Knows answers "have we written
--- this name down" - which is about not reporting our zone to a stranger, and a
--- name on the inert list is not a stranger.
-local function SavedTaggers()
-    if not db or db.mode == "tagger" then return nil end
-    return db.taggers
+-- carry gets back when they switch, Roster.Taggers is the window's list and has
+-- to show the switched-off names, and Roster.Knows answers "have we written this
+-- name down" - which is about not reporting our zone to a stranger, and a name
+-- on the inert list is not a stranger.
+--
+-- The gates now filter on db.live as well as on the mode, so "the list you are
+-- using" has become "the names on it you have switched on". That is what makes
+-- a disabled link a full cut: a switched-off name is not in SavedTaggers, so it
+-- is not a partner, not a marker, not in the macro and not somebody whose
+-- reports are believed.
+
+-- Both are CACHES, rebuilt on roster and switch changes rather than filtered per
+-- call, for the same reason dynamicTaggers below is: these are read from the
+-- combat log and from every message that arrives, and building a table on each
+-- read would allocate through an AoE pull. RebuildLive is on the re-derive chain
+-- that every write already runs - see Roster.SetLive.
+local liveTaggers = {}   -- carry mode:  [key] = info, switched-on taggers only
+local liveCarries = {}   -- tagger mode: array of info, establishment order
+
+function Roster.RebuildLive()
+    wipe(liveTaggers)
+    wipe(liveCarries)
+    if not db then return end
+
+    if db.mode == "tagger" then
+        local live = Roster.LiveSet("carries")
+        for key, info in pairs(db.carries or {}) do
+            -- The key is carried on the entry rather than looked up again by
+            -- every reader: this array is walked per report and per damage
+            -- event, and NormalizeName is not free.
+            if live[key] then
+                info.key = key
+                liveCarries[#liveCarries + 1] = info
+            end
+        end
+        sort(liveCarries, function(a, b) return (a.order or 0) < (b.order or 0) end)
+    else
+        local live = Roster.LiveSet("taggers")
+        for key, info in pairs(db.taggers or {}) do
+            if live[key] then liveTaggers[key] = info end
+        end
+    end
 end
 
+local function SavedTaggers()
+    if not db or db.mode == "tagger" then return nil end
+    return liveTaggers
+end
+
+-- The first live carry by establishment order, which is the one name the things
+-- that can only have one - the follow key, /tag inv, the range check - act on.
+-- Reports do not go through here; they go to all of them. Stays a local: it was
+-- one before any of this and half the file already calls it.
 local function ActiveCarryKey()
-    if not db or db.mode ~= "tagger" then return nil end
-    return db.carryKey
+    local info = liveCarries[1]
+    return info and info.key or nil
+end
+
+function Roster.ActiveCarryName()
+    local info = liveCarries[1]
+    return info and info.name or nil
+end
+
+-- Every live carry, for the reports that go to all of them. Empty in carry
+-- mode, so callers need no mode check of their own - which is also why none of
+-- the three below test db.mode: RebuildLive only fills this in tagger mode.
+function Roster.LiveCarries()
+    return liveCarries
+end
+
+function Roster.Roster.IsLiveCarry(key)
+    if not key then return false end
+    for _, info in ipairs(liveCarries) do
+        if info.key == key then return true end
+    end
+    return false
+end
+
+-- Their pets, as one lookup. Damage attribution asks this per combat-log event.
+function Roster.IsLiveCarryPet(key)
+    if not key then return false end
+    for _, info in ipairs(liveCarries) do
+        if info.petKey == key then return true end
+    end
+    return false
 end
 
 -- Rebuilt on roster changes rather than scanned per damage event: this is read
 -- from the combat log, which fires constantly during AoE.
 local function RebuildDynamicTaggers()
+    -- First, and this is why every re-derive in the file starts here: the two
+    -- live caches are what the mode gates read, so anything rebuilt off a stale
+    -- one is rebuilt wrong. Putting it at the top of this call rather than
+    -- beside it means the existing four-call chain picks it up unchanged.
+    Roster.RebuildLive()
     wipe(dynamicTaggers)
     if not InTaggerMode() then return end
 
@@ -650,7 +765,9 @@ local function RebuildDynamicTaggers()
     local function add(unit, petUnit)
         local name = UnitName(unit)
         local key = NormalizeName(name)
-        if not key or key == db.carryKey then return end
+        -- Any live carry, not just the first: a carry standing in the party is
+        -- not somebody whose damage pools with ours, however many there are.
+        if not key or Roster.IsLiveCarry(key) then return end
         local pet = petUnit and UnitExists(petUnit) and UnitName(petUnit) or nil
         dynamicTaggers[key] = {
             name = name, level = UnitLevel(unit),
@@ -789,16 +906,17 @@ function Pets.Learn(ownerName, petName)
     if petName == "" then petName = nil end
     local petKey = NormalizeName(petName)
 
+    -- A carry's pet lives on that carry's own entry now, the way a tagger's
+    -- always has. It was one pair of fields on db while there was one carry;
+    -- with several live at once a single db.carryPet would have been whichever
+    -- of them summoned last, credited to all of them.
     local who
-    if key == ActiveCarryKey() then
-        if petKey == db.carryPetKey then return end
-        db.carryPet, db.carryPetKey, who = petName, petKey, db.carry
-    else
-        local saved = SavedTaggers()
-        local info = saved and saved[key]
-        if not info or petKey == info.petKey then return end
-        info.pet, info.petKey, who = petName, petKey, info.name
-    end
+    local carry = Roster.IsLiveCarry(key) and db.carries and db.carries[key]
+    local info = carry or (SavedTaggers() or {})[key]
+    if not info or petKey == info.petKey then return end
+    info.pet, info.petKey, who = petName, petKey, info.name
+    -- The live cache holds the same tables db.carries does, so the write above
+    -- is already visible to IsLiveCarryPet. Nothing to re-derive.
 
     -- Silent when a pet goes away: a dismissed pet deals no damage, so there is
     -- nothing to tell anyone. Learning one changes what counts, so that is said.
@@ -887,11 +1005,15 @@ end
 -- tagger mode deliberately keeps the carry out of dynamicTaggers (it is not
 -- someone whose damage we pool), so asking TaggerKeyOf about our own carry
 -- correctly says no. That is right for damage accounting and wrong for trust.
+--
+-- ANY live carry, not the first one. ActiveCarryKey answers a narrower question
+-- - which single name the follow key acts on - and using it here would have made
+-- the second and third carries strangers to every message that arrives.
 local function IsPartner(name)
     if not db then return false end
     local key = NormalizeName(name)
     if not key then return false end
-    if ActiveCarryKey() == key then return true end
+    if Roster.IsLiveCarry(key) then return true end
     local saved = SavedTaggers()
     return (saved and saved[key] ~= nil) or false
 end
@@ -923,11 +1045,23 @@ end
 -- actually talked to ours, or we've laid eyes on them - anyone can be added, but
 -- a name that's never answered can't hold the triangle. Confirmed players sort
 -- by WHO ANSWERED FIRST; the rest fall in behind by when they were added.
+--
+-- LIVE taggers only, and unlimited numbers of them: there are three markers and
+-- any number of switched-on taggers, so the first three by the sort below get
+-- one and the rest are tracked without. A switched-off tagger holds no marker
+-- at all - it would be a mark on a nameplate for somebody the addon is not
+-- watching - and has its old one cleared here rather than left standing.
 local function ReassignMarkers()
     if not db or not db.taggers then return end
 
     local list = {}
-    for _, info in pairs(db.taggers) do list[#list + 1] = info end
+    for key, info in pairs(db.taggers) do
+        if Roster.IsLive("taggers", key) then
+            list[#list + 1] = info
+        else
+            info.marker = nil
+        end
+    end
 
     sort(list, function(a, b)
         local ac, bc = a.confirmed and 1 or 0, b.confirmed and 1 or 0
@@ -994,15 +1128,17 @@ local function BuildFollowMacro()
     -- worked out from who is being levelled.
     for _, entry in ipairs(Roster.Follows()) do add(entry.name) end
 
-    if InTaggerMode() and db.carry then
-        -- On a tagger's client the carry is the only name worth following, ahead
-        -- of any tagger entries left over from using this character as a carry.
-        add(db.carry)
+    if InTaggerMode() then
+        -- On a tagger's client the carries are the only names worth following,
+        -- ahead of any tagger entries left over from using this character as a
+        -- carry. All of the live ones, in establishment order: the chain below
+        -- is built so the first is the one that wins where several are near.
+        for _, info in ipairs(Roster.LiveCarries()) do add(info.name) end
     else
         local before = #targets
         for _, info in ipairs(TaggersByPriority()) do add(info.name) end
         -- No taggers to chase? Follow the carry - the other half of the pair.
-        if #targets == before then add(db.carry) end
+        if #targets == before then add(Roster.ActiveCarryName()) end
     end
 
     local lines = {}
@@ -2138,15 +2274,17 @@ local function MatchesCarry(guid, name)
     end
 
     if state.isCarryGuid[guid] then return true end
-    if name and NormalizeName(name) == db.carryKey then
+    -- ANY live carry, not one named key. Two carries working the same mob are
+    -- both carries as far as this question goes, and the cache walk is over a
+    -- list that is almost always one entry long.
+    if name and Roster.IsLiveCarry(NormalizeName(name)) then
         state.isCarryGuid[guid] = true
         return true
     end
 
     local owner = state.petOwner[guid]
     if owner and state.isCarryGuid[owner] then return true end
-    if db.carryPetKey and Pets.IsPetGuid(guid)
-        and NormalizeName(name) == db.carryPetKey then
+    if Pets.IsPetGuid(guid) and Roster.IsLiveCarryPet(NormalizeName(name)) then
         return true
     end
     return false
@@ -4118,12 +4256,33 @@ local function SendToPartners(msg)
     -- Gated on the mode, like everything else that goes out: a name on the list
     -- you are not using is not a partner, and pushing a threshold at them would
     -- be the one place a switched-off list still talked to somebody.
-    if ActiveCarryKey() and db.carry then SendAddon(msg, db.carry); n = n + 1 end
+    -- Gated on the live sets rather than on the mode alone: a switched-off name
+    -- is not a partner either, and a full cut means we stop talking as well as
+    -- stop listening.
+    for _, info in ipairs(Roster.LiveCarries()) do SendAddon(msg, info.name); n = n + 1 end
     local saved = SavedTaggers()
     if saved then
         for _, info in pairs(saved) do SendAddon(msg, info.name); n = n + 1 end
     end
     return n
+end
+
+-- The tagger-side reporters' one way out. Twelve of them opened with
+-- `if not InTaggerMode() or not db.carry then return end` and closed with
+-- `SendAddon(msg, db.carry)`, which is the same two lines written out twelve
+-- times around a single name; with several carries to reach it would have been
+-- the same LOOP written out twelve times. Returns how many heard it, so a
+-- caller that has nobody can leave before doing the work.
+function Roster.SendToCarries(msg)
+    local n = 0
+    for _, info in ipairs(Roster.LiveCarries()) do SendAddon(msg, info.name); n = n + 1 end
+    return n
+end
+
+-- Whether there is anyone to report to at all. The guard the reporters open
+-- with, and it implies tagger mode: liveCarries is empty in the other one.
+function Roster.HaveCarries()
+    return #liveCarries > 0
 end
 
 -- Our own pet, to one partner or to both halves of the pair.
@@ -4247,7 +4406,6 @@ function Roster.Knows(key)
     return (db.taggers and db.taggers[key] ~= nil)
         or (db.carries and db.carries[key] ~= nil)
         or (db.followTargets and db.followTargets[key] ~= nil)
-        or key == db.carryKey
 end
 
 function Roster.NoteSeen(key, level, class, zone)
@@ -4311,8 +4469,38 @@ function Roster.Presence(key)
     return "silent"
 end
 
+-- Every tagger written down, live or not, in the order the window draws them:
+-- the marked ones first in marker order, then the rest by establishment.
+--
+-- Deliberately NOT TaggersByPriority, which is the same sort over the live ones
+-- only. The window is the one caller that has to see the switched-off names -
+-- they are what its unticked boxes are - and it is the reason this exists.
+function Roster.Taggers()
+    local out = {}
+    for key, info in pairs(db.taggers or {}) do
+        out[#out + 1] = { key = key, name = info.name, marker = info.marker,
+                          class = info.class, level = info.level,
+                          order = info.order }
+    end
+    -- Marker to its slot number, so the sort can compare them. 99 for anyone
+    -- unmarked, which puts every switched-off name below the marked ones
+    -- without needing a second pass.
+    local function slot(marker)
+        for i = 1, #C.TAGGER_MARKERS do
+            if C.TAGGER_MARKERS[i] == marker then return i end
+        end
+        return 99
+    end
+    sort(out, function(a, b)
+        local am, bm = slot(a.marker), slot(b.marker)
+        if am ~= bm then return am < bm end
+        return (a.order or 0) < (b.order or 0)
+    end)
+    return out
+end
+
 function Roster.RememberCarry(name) return Remember(db.carries, "carrySeq", name) end
-function Roster.Carries()           return Listed(db.carries, db.carryKey) end
+function Roster.Carries()           return Listed(db.carries, ActiveCarryKey()) end
 
 -- Forgetting the ACTIVE carry used to be refused outright, because being that
 -- carry's tagger was the mode and dropping it would have half-ended the mode
@@ -4325,8 +4513,10 @@ function Roster.Carries()           return Listed(db.carries, db.carryKey) end
 -- lists can report what it did rather than what it tried.
 function Roster.ForgetCarry(key)
     if not key or not db.carries[key] then return false end
+    -- Switched off BEFORE the entry goes, because that is what tells their
+    -- client to switch us off too and it needs the name to send it to.
+    Roster.SetLive("carries", key, false)
     db.carries[key] = nil
-    if key == db.carryKey then Roster.ClearCarry() end
     return true
 end
 
@@ -4402,32 +4592,82 @@ end
 function Roster.RemoveTagger(key)
     if not key or not db.taggers[key] then return nil end
     local was = db.taggers[key].name
+    -- Same order and same reason as ForgetCarry: the switch-off is a message to
+    -- them, and it needs the name that is about to be deleted.
+    Roster.SetLive("taggers", key, false)
     db.taggers[key] = nil
     ReassignMarkers()
     ResetAll(); UpdateAllPlates(); UpdateMacroButton()
     return was
 end
 
-local function SetCarryTo(name)
-    if IsSelf(name) then return end
-    db.carry = DisplayName(name)
-    db.carryKey = NormalizeName(name)
-    -- Every carry you set joins the remembered roster, so the list fills itself
-    -- from normal use rather than needing to be curated.
-    Roster.RememberCarry(db.carry)
-    -- A new carry's pet is not the old carry's pet.
-    db.carryPet, db.carryPetKey = nil, nil
-    -- UpdateMacroButton matters here: in tagger mode the carry IS the follow
-    -- target, so leaving the secure button stale makes the keybind a no-op.
-    RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+--------------------------------------------------------------------------------
+-- The switch
+--
+-- One write, both roles, and the only thing that moves a name in or out of
+-- db.live. Everything the tick box does goes through here, and so does every
+-- remote request to switch one - which is why the wire message is sent from
+-- inside rather than by the four callers who would each have to remember.
+--
+-- `announce` is false for a change we were TOLD about: their client already
+-- knows, and echoing it back is how two clients talk each other in a circle.
+--------------------------------------------------------------------------------
+function Roster.SetLive(role, key, on, announce)
+    if not key then return false end
+    local live = Roster.LiveSet(role)
+    on = on and true or nil        -- nil, not false: an off entry is no entry
+    if live[key] == on then return false end
+    live[key] = on
+
+    -- A carry that has just been switched off keeps its pet on its own record,
+    -- which is right - it is that carry's pet whether or not we are listening -
+    -- but it must stop counting as one for damage while the link is down. That
+    -- falls out of the rebuild: IsLiveCarryPet only walks live entries.
+    RebuildDynamicTaggers()
+    ReassignMarkers()
+    ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+
+    if announce ~= false then
+        local list = (role == "carries") and db.carries or db.taggers
+        local info = list and list[key]
+        if info then
+            -- Off is TOLD, never asked: nobody needs permission to stop. On is
+            -- an offer, because it puts us back on their screen - it goes out
+            -- as the same PAIR message a fresh pairing uses, and their client
+            -- decides whether that is silent or a popup.
+            if on then
+                SendAddon((role == "carries") and "PAIRT" or "PAIRC", info.name)
+            else
+                SendAddon("OFF", info.name)
+            end
+        end
+    end
+    return true
 end
 
--- Un-naming the carry. Four fields and a re-derive, and it was written out by
--- hand in three places before this - once here, twice in the slash file - which
--- is two chances to forget the rebuild.
+-- Every live name in one role switched off, as one act. The wire messages still
+-- go out one per name: the other client has no idea this was a single click.
+function Roster.ClearLive(role)
+    for key in pairs(Roster.LiveSet(role)) do
+        Roster.SetLive(role, key, false)
+    end
+end
+
+local function SetCarryTo(name)
+    if IsSelf(name) then return end
+    -- Every carry you set joins the remembered roster, so the list fills itself
+    -- from normal use rather than needing to be curated - and it has to be ON
+    -- the list before it can be switched on, since that is where SetLive reads
+    -- the name it sends to.
+    local info = Roster.RememberCarry(DisplayName(name))
+    if not info then return end
+    Roster.SetLive("carries", NormalizeName(name), true)
+end
+
+-- Un-naming every carry. It used to clear four fields on db; there are no such
+-- fields now, so it is the switch-off of whatever is currently on.
 function Roster.ClearCarry()
-    db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
-    RebuildDynamicTaggers(); ResetAll(); UpdateAllPlates(); UpdateMacroButton()
+    Roster.ClearLive("carries")
 end
 
 -- Which of the two the addon is doing, and the ONLY way it changes. Both lists
@@ -4477,26 +4717,25 @@ function Roster.RequestTagger(name)
     if RefuseSelf(name) then return "self" end
     local info = AddTagger(name)
     if not info then return "added", nil end
-    -- Before the offer below, not after: an offer to be somebody's carry has to
-    -- go out from a client that IS one.
+    -- Before the switch below, not after: an offer to be somebody's carry has
+    -- to go out from a client that IS one, and SetLive is what sends it.
     AdoptMode("carry", info.name, "tagger")
-    -- Offer them the inverse role the moment you name them; their client
-    -- decides. This used to be /tag link, typed by hand after the fact, which
-    -- meant the common case was a pair of clients that each had the other
-    -- written down and neither had told the other so.
-    SendAddon("PAIRC", info.name)
+    -- Adding somebody is switching them on. The offer to them rides on that -
+    -- see SetLive - which used to be a SendAddon written out here, and was one
+    -- of two places that had to remember it.
+    Roster.SetLive("taggers", NormalizeName(name), true)
     return "added", info
 end
 
 function Roster.RequestCarry(name)
     if RefuseSelf(name) then return "self" end
+    -- Mode first, for the reason RequestTagger gives: SetCarryTo switches them
+    -- on, and switching on is what sends the offer.
+    AdoptMode("tagger", DisplayName(name), "carry")
+    -- The offer used to be skipped unless you happened to already be in tagger
+    -- mode, which is why naming a carry could raise nothing at all on their
+    -- screen where naming a tagger always did. Both directions ask now.
     SetCarryTo(name)
-    -- The same two steps from the other side. The offer used to be skipped
-    -- unless you happened to already be in tagger mode, which is why naming a
-    -- carry could raise nothing at all on their screen where naming a tagger
-    -- always did. The mode is settled first now, so both directions ask.
-    AdoptMode("tagger", db.carry, "carry")
-    SendAddon("PAIRT", db.carry)
     return "set"
 end
 
@@ -4504,6 +4743,9 @@ end
 -- everything; the other two are remembered names and nothing downstream reads
 -- them yet.
 function Roster.ClearTaggers()
+    -- Before the wipe: every live one is told the link is over, and that needs
+    -- the names.
+    Roster.ClearLive("taggers")
     wipe(db.taggers)
     ReassignMarkers()
     ResetAll(); UpdateAllPlates(); UpdateMacroButton()
@@ -4513,8 +4755,8 @@ end
 -- it was the mode and clearing the list must not have ended the mode by a side
 -- door; the mode is its own setting now, so "clear" can mean what it says.
 function Roster.ClearCarries()
+    Roster.ClearLive("carries")
     wipe(db.carries)
-    if db.carryKey then Roster.ClearCarry() end
 end
 
 function Roster.ClearFollows()
@@ -4569,14 +4811,22 @@ StaticPopupDialogs["TAGTEAM_PAIR"] = {
         -- what it clears: saying yes to "set them as your carry" is saying you
         -- are the tagger here. Neither list is touched, so the roster you were
         -- keeping as the other half of the pair is still there to switch back to.
+        --
+        -- Both halves switch the link on with announce = false. The OK below is
+        -- the answer to their offer; sending our own PAIR message back would be
+        -- answering an offer with the same offer, and their client would print
+        -- a second line about a link they opened.
+        local key = NormalizeName(data.who)
         if data.role == "carry" then
             Roster.SetMode("tagger")
-            SetCarryTo(data.who)
+            Roster.RememberCarry(DisplayName(data.who))
+            Roster.SetLive("carries", key, true, false)
             Print(format("|cff00ff00%s|r is now your carry - |cffffff00tagger mode|r.",
                 data.who))
         else
             Roster.SetMode("carry")
             local info = AddTagger(data.who)
+            Roster.SetLive("taggers", key, true, false)
             Print(format("|cff00ff00%s|r added as a tagger - |cffffff00carry mode|r.",
                 info and info.name or data.who))
         end
@@ -4729,9 +4979,22 @@ local function OnAddonMessage(msg, sender)
     if cmd == "PAIRC" then
         -- They set us as their tagger and are offering to be our carry.
         -- Already paired: acknowledge, but say so - a silent confirm looks broken.
-        if ActiveCarryKey() == key then
+        if Roster.IsLiveCarry(key) then
             SendAddon("OK", who)
             Print(format("|cff00ff00TagTeam linked|r with %s (already your carry).", who))
+            return
+        end
+        -- Costs us nothing: they are already on our carry list and we are
+        -- already a tagger, so switching them on takes no decision away from
+        -- anybody. Silent, and no popup - this is the message that arrives when
+        -- somebody re-ticks a box beside a name we have had written down for
+        -- weeks. `false` stops it echoing the switch straight back at them.
+        if InTaggerMode() and db.carries and db.carries[key] then
+            Roster.SetLive("carries", key, true, false)
+            SendAddon("OK", who)
+            Print(format("|cff00ff00%s|r switched your link back on - "
+                .. "they are your carry again.", who))
+            ns.RefreshView()
             return
         end
         -- No warning line under it any more: accepting changes the mode and
@@ -4752,12 +5015,40 @@ local function OnAddonMessage(msg, sender)
             Print(format("|cff00ff00TagTeam linked|r with %s (already a tagger).", who))
             return
         end
+        -- The mirror of the silent path above. See there.
+        if not InTaggerMode() and db.taggers and db.taggers[key] then
+            Roster.SetLive("taggers", key, true, false)
+            SendAddon("OK", who)
+            Print(format("|cff00ff00%s|r switched your link back on - "
+                .. "they are one of your taggers again.", who))
+            ns.RefreshView()
+            return
+        end
         StaticPopup_Show("TAGTEAM_PAIR",
             format("|cff33ff99TagTeam|r\n\n%s has set you as their carry.\n"
                 .. "Add them as a tagger?%s", who,
                 InTaggerMode()
                     and "\n\n|cffffff00This switches you to carry mode.|r" or ""),
             nil, { role = "tagger", who = who })
+
+    elseif cmd == "OFF" then
+        -- They switched our link off at their end. Nobody needs permission to
+        -- stop, so this is applied rather than asked about - and applied on
+        -- BOTH roles without checking which we thought it was, because the one
+        -- that was not live is a no-op and guessing wrong would leave a
+        -- half-open link that only one side believes in.
+        --
+        -- `false` again: they already know, and answering an off with an off is
+        -- the same loop the enable path avoids.
+        local wasCarry = Roster.IsLive("carries", key)
+        local hit = Roster.SetLive("carries", key, false, false)
+        hit = Roster.SetLive("taggers", key, false, false) or hit
+        if hit then
+            Print(format("|cffff8080%s switched your link off.|r They are still "
+                .. "on your %s list - tick them again to reconnect.",
+                who, wasCarry and "carry" or "tagger"))
+            ns.RefreshView()
+        end
 
     elseif cmd == "PING" then
         -- Answered only for names on our own lists. Symmetric with Roster.Ping,
@@ -4842,6 +5133,11 @@ local function OnAddonMessage(msg, sender)
             pct, who))
 
     elseif cmd == "XP" then
+        -- Partners only, and a partner is a LIVE one: a switched-off link must
+        -- not put their kills in our counters or their XP in our chat frame.
+        -- This was ungated, which was safe only while the mode alone decided who
+        -- could reach us - there was no way to be written down and switched off.
+        if not IsPartner(who) then return end
         local amount = tonumber(arg)
         if not amount then return end
         state.reportedKills = state.reportedKills + 1
@@ -4884,6 +5180,8 @@ local function OnAddonMessage(msg, sender)
         FloatKill(kill, amount)
 
     elseif cmd == "XPQ" or cmd == "XPD" then
+        -- Partners only, and a live one, exactly as XP above.
+        if not IsPartner(who) then return end
         -- XP the tagger earned away from the tag: a quest turn-in, or a zone
         -- discovery while running to you. Said out loud so a jump in their bar
         -- has a name on it, but deliberately kept out of the kill counters and
@@ -5041,9 +5339,9 @@ end
 -- on. Report the kill itself with a zero, so the carry can still see the link
 -- working and count tags.
 ReportTaggedKill = function()
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     if not AtMaxLevel() then return end   -- PLAYER_XP_UPDATE covers every other case
-    SendAddon("XP:0", db.carry)
+    Roster.SendToCarries("XP:0")
 end
 
 -- Tagger side: read the real gain off UnitXP and relay it - one message per MOB,
@@ -5156,7 +5454,7 @@ local function Flush()
     wipe(batch)
     questXP, questName, discovered, evidenceAt = nil, nil, nil, nil
 
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
 
     -- Xp was gained, so the rested pool has just drained by some of it. Checked
     -- HERE rather than on a ticker, because gaining xp is the only thing that
@@ -5177,7 +5475,7 @@ local function Flush()
         if qXP <= 0 and n == 0 then qXP = gained end
         if qXP > gained then qXP = gained end
         if qXP > 0 then
-            SendAddon("XPQ:" .. qXP .. ":" .. (qName or ""), db.carry)
+            Roster.SendToCarries("XPQ:" .. qXP .. ":" .. (qName or ""))
             gained = gained - qXP
             if gained <= 0 then return end
         end
@@ -5186,7 +5484,7 @@ local function Flush()
     -- Reporting a kill and logging it on our own screen are the same event, so
     -- they are one call. Both ends then describe the kill through PrintKillLine.
     local function SendKill(part)
-        SendAddon("XP:" .. part, db.carry)
+        Roster.SendToCarries("XP:" .. part)
         ReportOwnKill(part)
     end
 
@@ -5197,7 +5495,7 @@ local function Flush()
         -- announced ITSELF is labelled one, and everything else reports as the
         -- plain kill it almost always is.
         if explored then
-            SendAddon("XPD:" .. gained, db.carry)
+            Roster.SendToCarries("XPD:" .. gained)
         else
             SendKill(gained)
         end
@@ -5244,7 +5542,7 @@ ReportXPGain = Schedule
 -- only a share until the tick's total is known.
 NoteXPGainLine = function(msg)
     if type(msg) ~= "string" then return end
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     local p = KillPattern()
     if not p then return end
     local _, amount = strmatch(msg, p)
@@ -5275,7 +5573,7 @@ end
 -- xp is classified once against the field update - the only number that knows
 -- what actually landed. Two turn-ins in a frame add up rather than overwrite.
 NoteQuestTurnIn = function(questID, xpReward)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     questXP = (questXP or 0) + (tonumber(xpReward) or 0)
     if questID then turnedIn[questID] = true end
 
@@ -5299,9 +5597,9 @@ end
 -- Nameless goes unsent. "Accepted a quest" tells the carry nothing they can act
 -- on, and a wrong name is worse than no line at all.
 NoteQuestAccepted = function(logIndex, questID)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     local title = QuestTitle(questID, logIndex)
-    if title then SendAddon("QACC:" .. title, db.carry) end
+    if title then Roster.SendToCarries("QACC:" .. title) end
 end
 
 -- QUEST_REMOVED, which fires for a hand-in and an abandon ALIKE and does not say
@@ -5314,7 +5612,7 @@ end
 -- client still has the quest to be asked about.
 NoteQuestRemoved = function(questID)
     if not questID then return end
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
 
     local title = QuestTitle(questID)
     if not title then return end   -- nameless goes unsent, same rule as QACC
@@ -5324,7 +5622,7 @@ NoteQuestRemoved = function(questID)
         local handedIn = turnedIn[questID]
         turnedIn[questID] = nil
         if handedIn then return end
-        if InTaggerMode() and db.carry then SendAddon("QDROP:" .. title, db.carry) end
+        if Roster.HaveCarries() then Roster.SendToCarries("QDROP:" .. title) end
     end)
 end
 
@@ -5358,7 +5656,7 @@ end
 -- force is the handshake and the ding, where the carry needs a number regardless
 -- of what we last sent - they may have just logged in with none of this.
 ReportRested = function(force)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
 
     local pct = RestedPct()
     if not force and lastRest then
@@ -5369,7 +5667,7 @@ ReportRested = function(force)
     end
 
     lastRest = pct
-    SendAddon(format("REST:%.1f", pct), db.carry)
+    Roster.SendToCarries(format("REST:%.1f", pct))
 end
 
 -- Our party, to the carry. Everybody standing in it holds a share of our tag, and
@@ -5388,7 +5686,7 @@ end
 do
 local lastGroup    -- block-scoped, like lastRest above; see Pets on slots
 ReportGroup = function(force)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
 
     local me = NormalizeName(UnitName("player"))
     local parts = {}
@@ -5409,7 +5707,7 @@ ReportGroup = function(force)
     -- rides the whisper channel, so a broadcast only goes out on a change.
     if not force and msg == lastGroup then return end
     lastGroup = msg
-    SendAddon(msg, db.carry)
+    Roster.SendToCarries(msg)
 end
 end
 
@@ -5422,9 +5720,9 @@ end
 -- arg1 is the new level. UnitLevel has not necessarily caught up when this fires,
 -- so it is only the fallback.
 local function ReportLevelUp(newLevel)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     newLevel = tonumber(newLevel) or UnitLevel("player")
-    if newLevel and newLevel > 0 then SendAddon("LEVEL:" .. newLevel, db.carry) end
+    if newLevel and newLevel > 0 then Roster.SendToCarries("LEVEL:" .. newLevel) end
     -- The pool is a percentage of the level, and the level just changed, so the
     -- number they hold is stale the instant this fires. Forced for that reason.
     if ReportRested then ReportRested(true) end
@@ -5466,7 +5764,7 @@ C.DISCOVERY_INFO = {
 -- that produced it has already formatted and localised it, and re-deriving it
 -- here could only make it worse.
 local function ReportInfoMessage(errorType, message)
-    if not InTaggerMode() or not db.carry then return end
+    if not Roster.HaveCarries() then return end
     if not GetGameMessageInfo then return end   -- guarded on its own, as ever
     local kind = GetGameMessageInfo(errorType)
 
@@ -5476,7 +5774,7 @@ local function ReportInfoMessage(errorType, message)
 
     if type(message) ~= "string" or message == "" then return end
     if not C.QUEST_PROGRESS[kind] then return end
-    SendAddon("QPROG:" .. message, db.carry)
+    Roster.SendToCarries("QPROG:" .. message)
 end
 
 --------------------------------------------------------------------------------
@@ -5534,7 +5832,7 @@ end
 -- PLAYER_LOGOUT was losing these writes before this existed too.
 --------------------------------------------------------------------------------
 
-local PER_CHAR = { "mode" }
+local PER_CHAR = { "mode", "live" }
 
 -- The keys that USED to be in it, for the one-time haul back up onto db. Kept
 -- as its own list rather than folded into the migration below because that is
@@ -5601,6 +5899,51 @@ local function ShareRoster()
     end
 end
 
+-- The third migration: one active carry becomes a live SET.
+--
+-- db.carry and its three companions are gone from the running addon - a carry
+-- is an entry on db.carries that is switched on, and its pet rides on that
+-- entry like a tagger's always has. This retires the four fields.
+--
+-- db.legacyCarryKey outlives them on purpose, and is the one key here that
+-- cannot be cleaned up on the spot: the live set is PER CHARACTER and this runs
+-- on whichever character logs in first, so the seed in LoadCharRoster below
+-- needs it still to be there when the others arrive. It is read once per
+-- character, ever, and nothing writes it again.
+local function RetireSingleCarry()
+    if db.liveMigrated then return end
+    db.liveMigrated = true
+
+    local key = db.carryKey
+    if key then
+        -- Onto the roster entry, creating it if the carry was somehow never
+        -- remembered - which an install old enough predates RememberCarry.
+        local info = db.carries[key] or Roster.RememberCarry(db.carry or key)
+        if info and db.carryPet then
+            info.pet, info.petKey = db.carryPet, NormalizeName(db.carryPet)
+        end
+        db.legacyCarryKey = key
+    end
+    db.carry, db.carryKey, db.carryPet, db.carryPetKey = nil, nil, nil, nil
+end
+
+-- What this character had switched on, the first time it logs in after the
+-- switch existed. Everything it was tracking before must go on tracking: a
+-- carry's taggers were all live by virtue of being on the list, and a tagger's
+-- one carry is whichever RetireSingleCarry rescued.
+--
+-- Only ever for a character with NO live table at all. Once there is one,
+-- empty is a real answer - it is how you turn the addon off.
+local function SeedLive()
+    if db.live then return end
+    db.live = { taggers = {}, carries = {} }
+    if db.mode == "tagger" then
+        if db.legacyCarryKey then db.live.carries[db.legacyCarryKey] = true end
+    else
+        for key in pairs(db.taggers or {}) do db.live.taggers[key] = true end
+    end
+end
+
 local function LoadCharRoster()
     db.chars = db.chars or {}
     -- One-time. An install from before the split has one roster sitting on db
@@ -5614,6 +5957,7 @@ local function LoadCharRoster()
         db.charsMigrated = true
     end
     ShareRoster()
+    RetireSingleCarry()
 
     local mine = db.chars[CharKey()] or {}
     db.chars[CharKey()] = mine
@@ -5621,6 +5965,9 @@ local function LoadCharRoster()
     -- up with no mode - which reads as carry - rather than with whatever the
     -- last one left on db.
     for _, key in ipairs(PER_CHAR) do db[key] = mine[key] end
+    -- After the swap, because it is this character's live table it seeds and
+    -- the swap is what decides whether there is one.
+    SeedLive()
 end
 
 local function SaveCharRoster()
@@ -5853,10 +6200,8 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         -- three lists: the same character can be a carry here and a tagger on
         -- your other login, and their zone does not care which.
         db.seen = db.seen or {}
-        -- An install that already had a carry when these lists arrived would
-        -- otherwise show an empty roster next to a set carry. Seeding is safe to
-        -- run every login: Remember is a no-op once the key is there.
-        if db.carry then Roster.RememberCarry(db.carry) end
+        -- RetireSingleCarry moved the last single carry onto db.carries, so
+        -- there is no longer an account-level name here to seed from.
         db.banlistSeed = nil   -- retired with the scheme that used it
         -- Both forced on. The link IS the addon working: without it there is no
         -- pairing, no real XP, and no pet names - and a partner who quietly has
@@ -5921,6 +6266,10 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
                 info.order = db.taggerSeq
             end
         end
+        -- Before the markers, which are handed only to live taggers, and before
+        -- the login line, which names the live carries. Nothing has re-derived
+        -- yet at this point in the load - the caches are still empty.
+        Roster.RebuildLive()
         ReassignMarkers()
 
         C_Timer.NewTicker(C.REFRESH_INTERVAL, UpdateAllPlates)
@@ -5935,9 +6284,15 @@ frame:SetScript("OnEvent", function(self, event, arg1, arg2, arg3, arg4)
         -- "Taggers:", which on a tagger's own login named the one list that
         -- client is not using.
         if InTaggerMode() then
-            Print(format("loaded, as a |cffffff00tagger|r. Carry: %s. "
+            local carries = {}
+            for _, info in ipairs(Roster.LiveCarries()) do
+                carries[#carries + 1] = info.name
+            end
+            Print(format("loaded, as a |cffffff00tagger|r. Carries: %s. "
                 .. "Type |cffffff00/tag|r to open it.",
-                db.carry and ("|cff00ff00" .. db.carry .. "|r") or "|cffff8080none|r"))
+                #carries > 0
+                    and ("|cff00ff00" .. table.concat(carries, ", ") .. "|r")
+                    or "|cffff8080none|r"))
         else
             local names = TaggerNames()
             Print(format("loaded, as a |cffffff00carry|r. Taggers: %s. "

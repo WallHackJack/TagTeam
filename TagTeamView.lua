@@ -31,7 +31,6 @@ local BuildFollowMacro  = ns.BuildFollowMacro
 local ReassignMarkers   = ns.ReassignMarkers
 local PushThreshold     = ns.PushThreshold
 local Roster, Cues, Mobs = ns.Roster, ns.Cues, ns.Mobs
-local TaggersByPriority = ns.TaggersByPriority
 local NormalizeName = ns.NormalizeName
 local Print = ns.Print
 local C = ns.C
@@ -172,18 +171,23 @@ local SECTIONS = {
         noun  = "Carry",
         empty = "No carries remembered. Add whoever is levelling you.",
         add   = "Remember a carry - the character doing the killing.",
-        clear = "Forget every remembered carry, the active one included.",
-        -- The checkbox IS the active marker, and clicking anywhere on the row
-        -- ticks it. That replaces the word "active" on the end of a line: a
-        -- column of boxes says which one at a glance, where a word has to be
-        -- read on every row to find out it is not there.
+        clear = "Forget every remembered carry, the connected ones included.",
+        -- The checkbox is the CONNECTION, and clicking anywhere on the row
+        -- toggles it. It used to mean "this is the one active carry" and was
+        -- exclusive; several can be lit now, and a tagger with two carries
+        -- reports XP to both. Nothing lit is the addon switched off, which is a
+        -- state worth being able to reach from the list rather than by emptying
+        -- it.
         check = true,
+        checkTip = { "Connect", "Switches the link with this carry on and off. "
+            .. "Their client is told either way, so the two of you agree. "
+            .. "Several can be on at once; none means TagTeam is idle." },
         List  = function() return Roster.Carries() end,
         Add   = function(name) Roster.RequestCarry(name) end,
         Drop  = function(key) Roster.ForgetCarry(key) end,
         Clear = function() Roster.ClearCarries() end,
-        Active = function(entry) return ns.db and entry.key == ns.db.carryKey end,
-        Pick   = function(entry) Roster.RequestCarry(entry.name) end,
+        Active = function(entry) return Roster.IsLive("carries", entry.key) end,
+        Pick   = function(entry, on) Roster.SetLive("carries", entry.key, on) end,
     },
     {
         role  = "tagger",
@@ -193,12 +197,24 @@ local SECTIONS = {
         empty = "No taggers. Add the character you are levelling.",
         add   = "Add a tagger - the character being levelled.",
         clear = "Remove every tagger.",
+        -- The same connection tick the carries have. There are three markers
+        -- and no limit on how many taggers can be switched on, so the fourth
+        -- and beyond are tracked without one - see ReassignMarkers.
+        check = true,
+        checkTip = { "Connect", "Switches the link with this tagger on and off. "
+            .. "Their client is told either way. A tagger who is not running "
+            .. "TagTeam can still be ticked - they are tracked off the combat "
+            .. "log, and there is nobody to tell." },
+        Active = function(entry) return Roster.IsLive("taggers", entry.key) end,
+        Pick   = function(entry, on) Roster.SetLive("taggers", entry.key, on) end,
         -- Marker order, not alphabetical, so the list reads in the same order
-        -- as the markers on screen and the follow macro.
+        -- as the markers on screen and the follow macro. Roster.Taggers rather
+        -- than TaggersByPriority: this list has to show the switched-off names
+        -- too, since they are what the unticked boxes are.
         List  = function()
             local out = {}
-            for _, info in ipairs(TaggersByPriority()) do
-                out[#out + 1] = { key = NormalizeName(info.name),
+            for _, info in ipairs(Roster.Taggers()) do
+                out[#out + 1] = { key = info.key,
                                   name = info.name, marker = info.marker,
                                   class = info.class, level = info.level }
             end
@@ -394,9 +410,9 @@ local function DressRow(section, index)
         -- the handler rather than forwarding to the row.
         local function Pick() if row.OnPick then row.OnPick() end end
 
-        row.check = UI.CreateCheckbox(row, nil, "Make this your carry",
-            "Sets which of these is levelling you right now. The rest stay on "
-            .. "the list.", Pick)
+        row.check = UI.CreateCheckbox(row, nil,
+            section.checkTip and section.checkTip[1] or "Connect",
+            section.checkTip and section.checkTip[2] or "", Pick)
         row.check:SetSize(UI.ROW_CHECK, UI.ROW_CHECK)
         row.check:SetPoint("LEFT", 4, 0)
         textLeft = 4 + UI.ROW_CHECK + 6
@@ -492,15 +508,12 @@ local function RefreshSection(section)
 
         if row.check then
             row.check:SetChecked(live)
+            -- A TOGGLE now, not an exclusive pick. Both lists let several names
+            -- be on at once, so re-clicking the one that is already lit is a
+            -- real change - it switches the link off - where before it was the
+            -- one click that had to be swallowed.
             row.OnPick = function()
-                -- Re-ticking the one that is already on is not a change, so it
-                -- does not go anywhere near Roster - it only puts the tick back
-                -- where the click just took it from.
-                if live then
-                    row.check:SetChecked(true)
-                    return
-                end
-                if section.Pick then section.Pick(entry) end
+                if section.Pick then section.Pick(entry, not live) end
                 ns.RefreshView()
             end
         end
@@ -2837,7 +2850,11 @@ local function Signature()
                 -- fires events the window does not listen to, and a plus you
                 -- can still press on somebody standing next to you is the kind
                 -- of stale a half-second check exists to catch.
-                tostring(Roster.InGroupWith(entry.name))
+                tostring(Roster.InGroupWith(entry.name)) ..
+                -- And whether the link is on, which the OTHER client can
+                -- change: an OFF arriving from them unticks a box here with
+                -- nothing in this window having been clicked.
+                tostring(section.Active and section.Active(entry))
         end
         parts[#parts + 1] = "|"
     end
