@@ -2607,6 +2607,8 @@ end
 local LINKS = {
     { label = "CurseForge", value = "https://www.curseforge.com/wow/addons/tagteam" },
     { label = "GitHub",     value = "https://github.com/WallHackJack/TagTeam" },
+    { label = "Video",      value = "https://www.youtube.com/watch?v=QovJpfTLRh0" },
+    { label = "Donate",     value = "https://ko-fi.com/wallhackjack" },
 }
 
 local DISCORD = "wallhackjack"
