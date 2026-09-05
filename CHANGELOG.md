@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — say which end you are on
+## 1.0.0 — say which end you are on
 
 The Players tab used to list Carries and Taggers as two boxes, which was one box
 too many: nobody is both, and every switch between them wiped the list you were

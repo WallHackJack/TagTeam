@@ -2615,15 +2615,24 @@ local DISCORD = "wallhackjack"
 
 -- Newest first. One entry per tagged release, and the first is the one the
 -- panel opens on - so the top of this list is what somebody who has just
--- updated gets shown. EMPTY UNTIL 1.0, deliberately: the panel below draws a
--- hint instead of a version picker while there is nothing in here, which is
--- why adding the first entry needs no other change.
+-- updated gets shown.
 --
 --     { version = "1.0.0", date = "2026-09-01", notes = { "...", "..." } }
 --
 -- CHANGELOG.md stays the long form. These are the same releases said in one
 -- line each, because this panel is glanced at in a window rather than read.
-local RELEASES = {}
+local RELEASES = {
+    { version = "1.0.0", date = "2026-09-05", notes = {
+        "Your role is a setting: one dropdown says whether you are a Carry or a Tagger, and both rosters are kept forever.",
+        "A tick box beside every name IS the connection - ticked is tracked, marked and talked to, unticked is just a name.",
+        "You can have several carries, and a tagger reports XP, quest and level lines to all of them.",
+        "With nothing switched on the addon is genuinely idle - no badges, no verdicts, no cues.",
+        "Invite and request-invite buttons on every roster row.",
+        "Naming somebody sets your mode, and both directions now ask the other player.",
+        "Every audio cue is picked from a dropdown, including sounds shared by your other addons.",
+        "Four bundled sounds levelled to match the rest; Jumpscare no longer lands late.",
+    } },
+}
 
 local TAGLINE = "Tracks how much of a mob's health your power-levelling partner "
     .. "has dealt, and marks the nameplate the moment they have earned the kill."
